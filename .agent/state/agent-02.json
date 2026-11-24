@@ -1,9 +1,10 @@
 {
   "slot": "agent-02",
   "name": "Agent 02 (Dev)",
-  "role": "SOFTWARE_ENGINEER",
-  "provider": "openai",
-  "model": "gpt-4.1-turbo",
-  "status": "STANDBY",
-  "currentTask": null
+  "role": "CORE_DEVELOPER",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
+  "status": "IDLE",
+  "lifecycleState": "IDLE",
+  "currentTask": "PART-02 Completed - Ready for PART-03"
 }

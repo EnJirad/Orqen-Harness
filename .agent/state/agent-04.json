@@ -1,9 +1,10 @@
 {
   "slot": "agent-04",
   "name": "Agent 04 (Reviewer)",
-  "role": "SECURITY_REVIEWER",
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
-  "status": "STANDBY",
-  "currentTask": null
+  "role": "CODE_REVIEWER",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "status": "IDLE",
+  "lifecycleState": "IDLE",
+  "currentTask": "PART-02 Completed - Ready for PART-03"
 }

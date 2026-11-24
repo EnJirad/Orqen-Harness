@@ -1,6 +1,8 @@
 package com.jarves.mh.multiagent.locks
 
 import com.jarves.mh.multiagent.model.AgentSlot
+import com.jarves.mh.multiagent.model.IFileLockCoordinator
+import com.jarves.mh.multiagent.model.LockAcquisitionResult
 import java.util.concurrent.ConcurrentHashMap
 
 data class FileLock(
@@ -18,8 +20,50 @@ data class FileLock(
     }
 }
 
-class FileLockManager {
+class FileLockManager : IFileLockCoordinator {
     private val locks = ConcurrentHashMap<String, FileLock>()
+
+    override fun tryAcquire(
+        filePath: String,
+        slot: AgentSlot,
+        taskId: String,
+        reason: String,
+        ttlMs: Long,
+    ): LockAcquisitionResult {
+        cleanExpiredLocks()
+        val normalized = normalizePath(filePath)
+        val existing = locks[normalized]
+
+        if (existing != null && !existing.isExpired && existing.agentSlot != slot) {
+            val remaining = (existing.expiresAtMillis - System.currentTimeMillis()).coerceAtLeast(0L)
+            return LockAcquisitionResult.Conflict(
+                lockedBy = existing.agentSlot,
+                remainingTtlMs = remaining,
+                reason = existing.reason,
+            )
+        }
+
+        val newLock = FileLock(
+            filePath = normalized,
+            agentSlot = slot,
+            taskId = taskId,
+            acquiredAtMillis = System.currentTimeMillis(),
+            expiresAtMillis = System.currentTimeMillis() + ttlMs,
+            reason = reason,
+        )
+        locks[normalized] = newLock
+        return LockAcquisitionResult.Success(newLock)
+    }
+
+    override fun renewLock(filePath: String, slot: AgentSlot, extendByMs: Long): Boolean {
+        val normalized = normalizePath(filePath)
+        val existing = locks[normalized] ?: return false
+        if (existing.agentSlot != slot || existing.isExpired) return false
+        locks[normalized] = existing.copy(
+            expiresAtMillis = System.currentTimeMillis() + extendByMs
+        )
+        return true
+    }
 
     @Synchronized
     fun acquireLock(
@@ -29,24 +73,11 @@ class FileLockManager {
         reason: String = "Editing",
         ttlMs: Long = FileLock.DEFAULT_LOCK_TTL_MS,
     ): Boolean {
-        cleanExpiredLocks()
-        val normalized = normalizePath(filePath)
-        val existing = locks[normalized]
+        return tryAcquire(filePath, agentSlot, taskId, reason, ttlMs) is LockAcquisitionResult.Success
+    }
 
-        if (existing != null && !existing.isExpired && existing.agentSlot != agentSlot) {
-            // Locked by another agent!
-            return false
-        }
-
-        locks[normalized] = FileLock(
-            filePath = normalized,
-            agentSlot = agentSlot,
-            taskId = taskId,
-            acquiredAtMillis = System.currentTimeMillis(),
-            expiresAtMillis = System.currentTimeMillis() + ttlMs,
-            reason = reason,
-        )
-        return true
+    override fun release(filePath: String, slot: AgentSlot): Boolean {
+        return releaseLock(filePath, slot)
     }
 
     @Synchronized
@@ -61,16 +92,17 @@ class FileLockManager {
     }
 
     @Synchronized
-    fun releaseAllForAgent(agentSlot: AgentSlot) {
-        val toRemove = locks.filter { it.value.agentSlot == agentSlot }.keys
+    override fun releaseAllForAgent(slot: AgentSlot): Int {
+        val toRemove = locks.filter { it.value.agentSlot == slot }.keys
         toRemove.forEach { locks.remove(it) }
+        return toRemove.size
     }
 
-    fun isLockedByOther(filePath: String, agentSlot: AgentSlot): Boolean {
+    override fun isLockedByOther(filePath: String, slot: AgentSlot): Boolean {
         cleanExpiredLocks()
         val normalized = normalizePath(filePath)
         val existing = locks[normalized] ?: return false
-        return !existing.isExpired && existing.agentSlot != agentSlot
+        return !existing.isExpired && existing.agentSlot != slot
     }
 
     fun getLockOwner(filePath: String): AgentSlot? {
@@ -80,7 +112,7 @@ class FileLockManager {
         return if (!lock.isExpired) lock.agentSlot else null
     }
 
-    fun getActiveLocks(): List<FileLock> {
+    override fun getActiveLocks(): List<FileLock> {
         cleanExpiredLocks()
         return locks.values.filterNot { it.isExpired }
     }
