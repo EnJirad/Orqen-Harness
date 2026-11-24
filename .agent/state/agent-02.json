@@ -1,0 +1,9 @@
+{
+  "slot": "agent-02",
+  "name": "Agent 02 (Dev)",
+  "role": "SOFTWARE_ENGINEER",
+  "provider": "openai",
+  "model": "gpt-4.1-turbo",
+  "status": "STANDBY",
+  "currentTask": null
+}

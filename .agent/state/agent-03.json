@@ -1,0 +1,9 @@
+{
+  "slot": "agent-03",
+  "name": "Agent 03 (DevOps)",
+  "role": "DEVOPS_ENGINEER",
+  "provider": "gemini",
+  "model": "gemini-2.5-pro",
+  "status": "STANDBY",
+  "currentTask": null
+}

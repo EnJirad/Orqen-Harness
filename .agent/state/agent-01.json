@@ -1,0 +1,9 @@
+{
+  "slot": "agent-01",
+  "name": "Agent 01 (Lead)",
+  "role": "TEAM_LEADER",
+  "provider": "antigravity",
+  "model": "gemini-3.8-flash-high",
+  "status": "ACTIVE",
+  "currentTask": "PART-01 Project Analysis"
+}

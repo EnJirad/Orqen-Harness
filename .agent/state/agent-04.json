@@ -1,0 +1,9 @@
+{
+  "slot": "agent-04",
+  "name": "Agent 04 (Reviewer)",
+  "role": "SECURITY_REVIEWER",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
+  "status": "STANDBY",
+  "currentTask": null
+}
