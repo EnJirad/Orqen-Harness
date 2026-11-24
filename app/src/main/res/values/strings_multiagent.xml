@@ -125,4 +125,53 @@
     <string name="chat_mention_agent">@Mention Agent</string>
     <string name="chat_assign_to">Assign to %1$s</string>
     <string name="chat_send_to_team">Send to AI Team</string>
+
+    <!-- Agent Detail Screen -->
+    <string name="agent_detail_title">Agent Configuration</string>
+    <string name="agent_detail_name">Agent Name</string>
+    <string name="agent_detail_role">Role &amp; Responsibilities</string>
+    <string name="agent_detail_enabled">Enabled / Active</string>
+    <string name="agent_detail_provider_model">Provider &amp; Model</string>
+    <string name="agent_detail_system_prompt">System Prompt</string>
+    <string name="agent_detail_template_lead">Lead / Architect</string>
+    <string name="agent_detail_template_dev">Core Developer</string>
+    <string name="agent_detail_template_devops">DevOps &amp; Testing</string>
+    <string name="agent_detail_template_reviewer">Code Reviewer</string>
+    <string name="agent_detail_temperature">Temperature: %1$.2f</string>
+    <string name="agent_detail_max_tokens">Max Output Tokens: %1$d</string>
+    <string name="agent_detail_lifecycle_state">Lifecycle State</string>
+    <string name="agent_detail_held_locks">Held File Locks (%1$d)</string>
+    <string name="agent_detail_release_lock">Release</string>
+    <string name="agent_detail_chat_btn">Open Private Chat</string>
+    <string name="agent_detail_save_btn">Save Configuration</string>
+
+    <!-- Quota Management Screen -->
+    <string name="quota_mgmt_title">Quota &amp; Expense Monitor</string>
+    <string name="quota_total_estimated_usd">Estimated: $%1$.4f USD</string>
+    <string name="quota_total_estimated_thb">Estimated: ฿%1$.2f THB</string>
+    <string name="quota_budget_guard_title">Budget Guard &amp; Auto-Pause</string>
+    <string name="quota_budget_limit">Budget Limit: $%1$.2f (฿%2$.2f)</string>
+    <string name="quota_budget_auto_pause">Auto-pause team when budget reached</string>
+    <string name="quota_per_agent_breakdown">Cost Allocation by Agent</string>
+    <string name="quota_pricing_table_title">Model Rate Card (per 1M Tokens)</string>
+    <string name="quota_pricing_input">Input</string>
+    <string name="quota_pricing_output">Output</string>
+    <string name="quota_currency_toggle">Switch to %1$s</string>
+
+    <!-- Activity Feed Screen -->
+    <string name="feed_title">Multi-Agent Activity Feed</string>
+    <string name="feed_filter_all">All</string>
+    <string name="feed_filter_critical">Critical</string>
+    <string name="feed_filter_locks">File Locks</string>
+    <string name="feed_filter_commits">Commits</string>
+    <string name="feed_filter_reviews">Reviews</string>
+    <string name="feed_filter_tests">Tests</string>
+    <string name="feed_empty">No activity events recorded yet</string>
+
+    <!-- Navigation Tabs -->
+    <string name="nav_tab_overview">Overview</string>
+    <string name="nav_tab_agents">Agents (4)</string>
+    <string name="nav_tab_quota">Quota</string>
+    <string name="nav_tab_feed">Feed</string>
+    <string name="nav_tab_chat">Team Chat</string>
 </resources>

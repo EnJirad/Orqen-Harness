@@ -54,6 +54,9 @@ data class AgentConfig(
     val priority: Int = 1,
     val canAssignToSlots: List<AgentSlot> = emptyList(),
     val isEnabled: Boolean = true,
+    val temperature: Float = 0.7f,
+    val maxTokens: Int = 8192,
+    val customPrompt: String = "",
 )
 
 enum class ActivityType(val iconName: String, val labelRes: Int) {
@@ -87,6 +90,7 @@ data class AgentActivityState(
 data class AgentState(
     val config: AgentConfig,
     val activityState: AgentActivityState = AgentActivityState(),
+    val lifecycleState: AgentLifecycleState = AgentLifecycleState.IDLE,
     val officialQuota: OfficialQuota? = null,
     val estimatedUsage: EstimatedUsage? = null,
     val localUsage: LocalUsage = LocalUsage(),

@@ -285,6 +285,9 @@ import androidx.compose.material.icons.filled.Groups
 import com.jarves.mh.multiagent.model.AgentSlot
 import com.jarves.mh.multiagent.chat.GroupMessageType
 import com.jarves.mh.multiagent.ui.TeamDashboardScreen
+import com.jarves.mh.multiagent.ui.AgentDetailScreen
+import com.jarves.mh.multiagent.ui.QuotaManagementScreen
+import com.jarves.mh.multiagent.ui.ActivityFeedScreen
 import com.jarves.mh.multiagent.ui.CentralGroupChatScreen
 import com.jarves.mh.multiagent.ui.PrivateAgentChatScreen
 import com.jarves.mh.multiagent.ui.ProviderManagementScreen
@@ -2580,9 +2583,48 @@ private fun RootScreenHost(
                                 viewModel.setActivePrivateSlot(slot)
                                 viewModel.setTeamScreenMode(TeamScreenMode.PRIVATE_CHAT)
                             },
+                            onOpenAgentDetail = { slot ->
+                                viewModel.setActivePrivateSlot(slot)
+                                viewModel.setTeamScreenMode(TeamScreenMode.AGENT_DETAIL)
+                            },
+                            onToggleAgentEnabled = viewModel::toggleAgentEnabled,
+                            onOpenQuotaDashboard = { viewModel.setTeamScreenMode(TeamScreenMode.QUOTA_DASHBOARD) },
+                            onOpenActivityFeed = { viewModel.setTeamScreenMode(TeamScreenMode.ACTIVITY_FEED) },
+                            onReleaseFileLock = viewModel::releaseFileLock,
                             onOpenGroupChat = { viewModel.setTeamScreenMode(TeamScreenMode.GROUP_CHAT) },
                             onOpenProviderSettings = { viewModel.setTeamScreenMode(TeamScreenMode.PROVIDER_SETTINGS) },
                             onNextPart = viewModel::advanceTeamPart,
+                        )
+                        TeamScreenMode.AGENT_DETAIL -> {
+                            val slot = state.activePrivateSlot ?: AgentSlot.AGENT_1
+                            val agentState = state.teamAgents.firstOrNull { it.config.slot == slot }
+                                ?: state.teamAgents.first()
+                            AgentDetailScreen(
+                                agentState = agentState,
+                                fileLocks = state.teamFileLocks,
+                                onSaveConfig = { config -> viewModel.updateAgentConfig(slot, config) },
+                                onReleaseFileLock = viewModel::releaseFileLock,
+                                onOpenChat = { targetSlot ->
+                                    viewModel.setActivePrivateSlot(targetSlot)
+                                    viewModel.setTeamScreenMode(TeamScreenMode.PRIVATE_CHAT)
+                                },
+                                onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
+                            )
+                        }
+                        TeamScreenMode.QUOTA_DASHBOARD -> QuotaManagementScreen(
+                            officialQuota = state.teamOfficialQuota,
+                            estimatedUsage = state.teamEstimatedUsage,
+                            localUsage = state.teamLocalUsage,
+                            agents = state.teamAgents,
+                            budgetLimitUsd = state.budgetLimitUsd,
+                            isAutoPauseEnabled = state.budgetAutoPauseEnabled,
+                            onUpdateBudget = viewModel::updateBudget,
+                            onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
+                        )
+                        TeamScreenMode.ACTIVITY_FEED -> ActivityFeedScreen(
+                            events = state.teamCollaborationEvents,
+                            onClearEvents = viewModel::clearTeamCollaborationEvents,
+                            onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
                         )
                         TeamScreenMode.GROUP_CHAT -> CentralGroupChatScreen(
                             teamName = state.activeProject?.name ?: "ORQEN Workspace",

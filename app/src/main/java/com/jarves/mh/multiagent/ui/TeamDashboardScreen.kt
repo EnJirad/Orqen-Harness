@@ -6,10 +6,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,7 +32,6 @@ import com.jarves.mh.multiagent.tasks.TeamTask
 import com.jarves.mh.provider.core.EstimatedUsage
 import com.jarves.mh.provider.core.LocalUsage
 import com.jarves.mh.provider.core.OfficialQuota
-import com.jarves.mh.provider.core.QuotaHealth
 
 @Composable
 fun TeamDashboardScreen(
@@ -50,6 +51,11 @@ fun TeamDashboardScreen(
     onResumeTeam: () -> Unit,
     onStopTeam: () -> Unit,
     onOpenAgentChat: (AgentSlot) -> Unit,
+    onOpenAgentDetail: (AgentSlot) -> Unit = {},
+    onToggleAgentEnabled: (AgentSlot) -> Unit = {},
+    onOpenQuotaDashboard: () -> Unit = {},
+    onOpenActivityFeed: () -> Unit = {},
+    onReleaseFileLock: (String, AgentSlot) -> Unit = { _, _ -> },
     onOpenGroupChat: () -> Unit,
     onOpenProviderSettings: () -> Unit,
     onNextPart: () -> Unit,
@@ -64,6 +70,51 @@ fun TeamDashboardScreen(
         contentPadding = PaddingValues(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        // Navigation Bar / Quick Switcher
+        item {
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(stringResource(R.string.nav_tab_overview), fontWeight = FontWeight.Bold) },
+                        leadingIcon = { Icon(Icons.Default.Dashboard, contentDescription = null, Modifier.size(16.dp)) },
+                        colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onOpenQuotaDashboard,
+                        label = { Text(stringResource(R.string.nav_tab_quota)) },
+                        leadingIcon = { Icon(Icons.Default.Paid, contentDescription = null, Modifier.size(16.dp)) },
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onOpenActivityFeed,
+                        label = { Text(stringResource(R.string.nav_tab_feed)) },
+                        leadingIcon = { Icon(Icons.Default.DynamicFeed, contentDescription = null, Modifier.size(16.dp)) },
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onOpenGroupChat,
+                        label = { Text(stringResource(R.string.nav_tab_chat)) },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, Modifier.size(16.dp)) },
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onOpenProviderSettings,
+                        label = { Text("Providers") },
+                        leadingIcon = { Icon(Icons.Default.Dns, contentDescription = null, Modifier.size(16.dp)) },
+                    )
+                }
+            }
+        }
+
         // 1. Team Header Card
         item {
             Card(
@@ -175,7 +226,7 @@ fun TeamDashboardScreen(
                     onClick = onOpenGroupChat,
                     modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)),
                 ) {
-                    Icon(Icons.Default.Chat, contentDescription = "Group Chat")
+                    Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Group Chat")
                 }
 
                 IconButton(
@@ -189,19 +240,32 @@ fun TeamDashboardScreen(
 
         // 3. Four Agent Cards Header
         item {
-            Text(
-                text = "AI AGENTS (${agents.size} / ${AgentSlot.MAX_AGENTS})",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "AI AGENTS (${agents.size} / ${AgentSlot.MAX_AGENTS})",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = "Tap card to configure",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         // 4. Agent Cards List (Up to 4 Agents)
         items(agents) { agent ->
             AgentCard(
                 agent = agent,
-                onCardClick = { onOpenAgentChat(agent.config.slot) },
+                onCardClick = { onOpenAgentDetail(agent.config.slot) },
+                onChatClick = { onOpenAgentChat(agent.config.slot) },
+                onToggleEnabled = { onToggleAgentEnabled(agent.config.slot) },
             )
         }
 
@@ -211,12 +275,16 @@ fun TeamDashboardScreen(
                 officialQuota = officialQuota,
                 estimatedUsage = estimatedUsage,
                 localUsage = localUsage,
+                onCardClick = onOpenQuotaDashboard,
             )
         }
 
         // 6. File Locks & Ownership Card
         item {
-            FileLocksCard(fileLocks = fileLocks)
+            FileLocksCard(
+                fileLocks = fileLocks,
+                onReleaseLock = onReleaseFileLock,
+            )
         }
 
         // 7. Continuous Execution Options
@@ -283,6 +351,8 @@ fun TeamDashboardScreen(
 fun AgentCard(
     agent: AgentState,
     onCardClick: () -> Unit,
+    onChatClick: () -> Unit,
+    onToggleEnabled: () -> Unit,
 ) {
     val activity = agent.activityState.activity
     val activityColor = ActivityVisuals.colorFor(activity)
@@ -303,7 +373,7 @@ fun AgentCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     Box(
                         modifier = Modifier
                             .size(36.dp)
@@ -320,11 +390,27 @@ fun AgentCard(
                     }
                     Spacer(Modifier.width(10.dp))
                     Column {
-                        Text(
-                            text = agent.config.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = agent.config.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            if (!agent.config.isEnabled) {
+                                Spacer(Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                ) {
+                                    Text(
+                                        text = "DISABLED",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                    )
+                                }
+                            }
+                        }
                         Text(
                             text = agent.config.role.title,
                             style = MaterialTheme.typography.bodySmall,
@@ -333,23 +419,20 @@ fun AgentCard(
                     }
                 }
 
-                // Provider / Model Badge
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                ) {
-                    Text(
-                        text = agent.config.modelId.take(16),
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    )
+                // Chat & Configure actions
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onChatClick, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Chat", modifier = Modifier.size(18.dp))
+                    }
+                    IconButton(onClick = onCardClick, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Settings, contentDescription = "Configure", modifier = Modifier.size(18.dp))
+                    }
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
 
-            // Activity Bar
+            // Activity & Lifecycle Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -413,21 +496,33 @@ fun QuotaMonitorCard(
     officialQuota: OfficialQuota?,
     estimatedUsage: EstimatedUsage?,
     localUsage: LocalUsage,
+    onCardClick: () -> Unit = {},
 ) {
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+            .clickable(onClick = onCardClick),
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(
-                text = "REAL PROVIDER QUOTA & USAGE",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "REAL PROVIDER QUOTA & USAGE",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Details", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                }
+            }
             Spacer(Modifier.height(12.dp))
 
             // A. Official Quota
@@ -539,7 +634,10 @@ fun QuotaMonitorCard(
 }
 
 @Composable
-fun FileLocksCard(fileLocks: List<FileLock>) {
+fun FileLocksCard(
+    fileLocks: List<FileLock>,
+    onReleaseLock: (String, AgentSlot) -> Unit = { _, _ -> },
+) {
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -579,23 +677,32 @@ fun FileLocksCard(fileLocks: List<FileLock>) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFFFFB74D), modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = lock.filePath,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            text = lock.agentSlot.defaultName,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFFFFB74D), modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Column {
+                                Text(
+                                    text = lock.filePath,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = lock.agentSlot.defaultName,
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                        TextButton(
+                            onClick = { onReleaseLock(lock.filePath, lock.agentSlot) },
+                        ) {
+                            Text("Release", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
             }

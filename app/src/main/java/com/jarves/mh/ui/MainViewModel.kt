@@ -284,7 +284,15 @@ private data class ImportedZipProject(
     val sourceAttachment: ChatAttachment,
 )
 
-enum class TeamScreenMode { DASHBOARD, GROUP_CHAT, PRIVATE_CHAT, PROVIDER_SETTINGS }
+enum class TeamScreenMode {
+    DASHBOARD,
+    AGENT_DETAIL,
+    QUOTA_DASHBOARD,
+    ACTIVITY_FEED,
+    GROUP_CHAT,
+    PRIVATE_CHAT,
+    PROVIDER_SETTINGS,
+}
 
 data class AppUiState(
     val startupStage: StartupStage = StartupStage.CHECKING,
@@ -428,6 +436,9 @@ data class AppUiState(
     val teamGroupMessages: List<GroupChatMessage> = emptyList(),
     val providerConfigs: List<ProviderConfig> = emptyList(),
     val activePrivateSlot: AgentSlot? = null,
+    val budgetLimitUsd: Double = 10.0,
+    val budgetAutoPauseEnabled: Boolean = true,
+    val teamCollaborationEvents: List<PrioritizedCollaborationEvent> = emptyList(),
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -5706,6 +5717,82 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getProviderApiKey(configId: String): String {
         return providerManager.getApiKey(configId)
+    }
+
+    fun updateAgentConfig(slot: AgentSlot, config: AgentConfig) {
+        val current = _state.value.teamAgents.toMutableList()
+        val index = current.indexOfFirst { it.config.slot == slot }
+        if (index >= 0) {
+            val old = current[index]
+            current[index] = old.copy(config = config)
+            _state.update { it.copy(teamAgents = current) }
+            recordCollaborationEvent(
+                type = TeamEventType.TASK_ASSIGNED,
+                senderSlot = slot,
+                message = "Agent configuration updated for ${config.name} (${config.role.title})",
+                priority = EventPriority.NORMAL,
+            )
+        }
+    }
+
+    fun toggleAgentEnabled(slot: AgentSlot) {
+        val current = _state.value.teamAgents.toMutableList()
+        val index = current.indexOfFirst { it.config.slot == slot }
+        if (index >= 0) {
+            val old = current[index]
+            val updatedConfig = old.config.copy(isEnabled = !old.config.isEnabled)
+            current[index] = old.copy(config = updatedConfig)
+            _state.update { it.copy(teamAgents = current) }
+            recordCollaborationEvent(
+                type = TeamEventType.TASK_ASSIGNED,
+                senderSlot = slot,
+                message = "${old.config.name} ${if (updatedConfig.isEnabled) "Enabled" else "Disabled"}",
+                priority = EventPriority.NORMAL,
+            )
+        }
+    }
+
+    fun releaseFileLock(filePath: String, slot: AgentSlot) {
+        fileLockManager.release(filePath, slot)
+        _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
+        recordCollaborationEvent(
+            type = TeamEventType.FILE_UNLOCKED,
+            senderSlot = slot,
+            filePath = filePath,
+            message = "Lock released for $filePath by ${slot.defaultName}",
+            priority = EventPriority.NORMAL,
+        )
+    }
+
+    fun updateBudget(limitUsd: Double, autoPause: Boolean) {
+        _state.update {
+            it.copy(budgetLimitUsd = limitUsd, budgetAutoPauseEnabled = autoPause)
+        }
+    }
+
+    fun clearTeamCollaborationEvents() {
+        _state.update { it.copy(teamCollaborationEvents = emptyList()) }
+    }
+
+    fun recordCollaborationEvent(
+        type: TeamEventType,
+        senderSlot: AgentSlot?,
+        message: String,
+        filePath: String? = null,
+        commitSha: String? = null,
+        priority: EventPriority = EventPriority.NORMAL,
+    ) {
+        val rawEvent = TeamCollaborationEvent(
+            type = type,
+            senderSlot = senderSlot,
+            message = message,
+            filePath = filePath,
+            commitSha = commitSha,
+        )
+        val prioritized = PrioritizedCollaborationEvent(event = rawEvent, priority = priority)
+        val current = _state.value.teamCollaborationEvents.toMutableList()
+        current.add(0, prioritized)
+        _state.update { it.copy(teamCollaborationEvents = current.take(100)) }
     }
 
     private suspend fun runTeamCycle() {

@@ -125,4 +125,53 @@
     <string name="chat_mention_agent">@ระบุ Agent</string>
     <string name="chat_assign_to">มอบหมายให้ %1$s</string>
     <string name="chat_send_to_team">ส่งเข้ากลุ่ม AI</string>
+
+    <!-- Agent Detail Screen (ภาษาไทย) -->
+    <string name="agent_detail_title">การกำหนดค่า Agent</string>
+    <string name="agent_detail_name">ชื่อ Agent</string>
+    <string name="agent_detail_role">บทบาทและความรับผิดชอบ</string>
+    <string name="agent_detail_enabled">เปิดใช้งาน / ทำงานอยู่</string>
+    <string name="agent_detail_provider_model">ผู้ให้บริการและโมเดล</string>
+    <string name="agent_detail_system_prompt">คำสั่งระบบ (System Prompt)</string>
+    <string name="agent_detail_template_lead">หัวหน้าทีม / สถาปนิก</string>
+    <string name="agent_detail_template_dev">นักพัฒนาหลัก (Core Dev)</string>
+    <string name="agent_detail_template_devops">DevOps และการทดสอบ</string>
+    <string name="agent_detail_template_reviewer">ผู้ตรวจทานโค้ด (Reviewer)</string>
+    <string name="agent_detail_temperature">ความสุ่ม (Temperature): %1$.2f</string>
+    <string name="agent_detail_max_tokens">จำนวนโทเคนสูงสุด: %1$d</string>
+    <string name="agent_detail_lifecycle_state">สถานะวงจรการทำงาน (Lifecycle)</string>
+    <string name="agent_detail_held_locks">ไฟล์ที่ถือครองล็อก (%1$d)</string>
+    <string name="agent_detail_release_lock">ปลดล็อก</string>
+    <string name="agent_detail_chat_btn">เปิดแชทส่วนตัว</string>
+    <string name="agent_detail_save_btn">บันทึกการตั้งค่า</string>
+
+    <!-- Quota Management Screen (ภาษาไทย) -->
+    <string name="quota_mgmt_title">ระบบติดตามโควตาและค่าใช้จ่าย</string>
+    <string name="quota_total_estimated_usd">ประมาณการ: $%1$.4f USD</string>
+    <string name="quota_total_estimated_thb">ประมาณการ: ฿%1$.2f บาท</string>
+    <string name="quota_budget_guard_title">ระบบป้องกันงบประมาณบานปลาย &amp; หยุดชั่วคราวอัตโนมัติ</string>
+    <string name="quota_budget_limit">ขีดจำกัดงบประมาณ: $%1$.2f (฿%2$.2f)</string>
+    <string name="quota_budget_auto_pause">พักการทำงานของทีมอัตโนมัติเมื่องบประมาณถึงขีดจำกัด</string>
+    <string name="quota_per_agent_breakdown">สัดส่วนค่าใช้จ่ายแยกตาม Agent</string>
+    <string name="quota_pricing_table_title">ตารางอัตราค่าบริการโมเดล (ต่อ 1 ล้านโทเคน)</string>
+    <string name="quota_pricing_input">โทเคนขาเข้า (Input)</string>
+    <string name="quota_pricing_output">โทเคนขาออก (Output)</string>
+    <string name="quota_currency_toggle">เปลี่ยนเป็นสกุลเงิน %1$s</string>
+
+    <!-- Activity Feed Screen (ภาษาไทย) -->
+    <string name="feed_title">ฟีดกิจกรรม Multi-Agent</string>
+    <string name="feed_filter_all">ทั้งหมด</string>
+    <string name="feed_filter_critical">ด่วนวิกฤต</string>
+    <string name="feed_filter_locks">การล็อกไฟล์</string>
+    <string name="feed_filter_commits">Commit</string>
+    <string name="feed_filter_reviews">การตรวจทาน</string>
+    <string name="feed_filter_tests">การทดสอบ</string>
+    <string name="feed_empty">ยังไม่มีบันทึกกิจกรรมในขณะนี้</string>
+
+    <!-- Navigation Tabs (ภาษาไทย) -->
+    <string name="nav_tab_overview">ภาพรวม</string>
+    <string name="nav_tab_agents">Agent ทั้ง 4</string>
+    <string name="nav_tab_quota">โควตา &amp; ค่าใช้จ่าย</string>
+    <string name="nav_tab_feed">ฟีดกิจกรรม</string>
+    <string name="nav_tab_chat">แชททีม</string>
 </resources>
