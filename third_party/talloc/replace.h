@@ -1,5 +1,5 @@
-#ifndef MOBILE_HARNESS_TALLOC_REPLACE_H
-#define MOBILE_HARNESS_TALLOC_REPLACE_H
+#ifndef ORQEN_TALLOC_REPLACE_H
+#define ORQEN_TALLOC_REPLACE_H
 
 // Android/Bionic provides the portability functions used by talloc.c.
 #include <errno.h>

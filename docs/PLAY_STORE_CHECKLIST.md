@@ -1,10 +1,10 @@
 # Google Play release checklist
 
-This checklist covers the Play-facing work for package `com.jarves.mh`. It does not resolve the separate policy and technical review required for the downloadable local Linux and Claude Code runtime.
+This checklist covers the Play-facing work for package `com.orqen.app`. It does not resolve the separate policy and technical review required for the downloadable local Linux and Claude Code runtime.
 
 ## Implemented in the project
 
-- [x] Stable application ID: `com.jarves.mh`
+- [x] Stable application ID: `com.orqen.app`
 - [x] API 36 Play build switch
 - [x] ARM64-only native output for Play builds
 - [x] Android 16 KB page-size alignment verified for 64-bit libraries
@@ -27,7 +27,7 @@ This checklist covers the Play-facing work for package `com.jarves.mh`. It does 
 - [x] Publish `PRIVACY.md` at the HTTPS URL configured by `privacyPolicyUrl`
 - [x] Create and protect a Play upload keystore
 - [ ] Enrol in Play App Signing
-- [ ] Reserve and register `com.jarves.mh` in Play Console
+- [ ] Reserve and register `com.orqen.app` in Play Console
 - [ ] Increment `appVersionCode` for every uploaded release
 - [x] Create a 512×512 Play icon and 1024×500 feature graphic
 - [ ] Review phone screenshots against the final release build
@@ -42,7 +42,7 @@ This checklist covers the Play-facing work for package `com.jarves.mh`. It does 
 - [ ] Complete Anthropic branding, authentication, licensing, and redistribution review
 - [ ] Resolve or obtain approval for the local executable-runtime architecture
 
-Account-deletion and Play Billing requirements apply only if Mobile Harness later introduces first-party accounts or sells digital subscriptions in the app.
+Account-deletion and Play Billing requirements apply only if ORQEN later introduces first-party accounts or sells digital subscriptions in the app.
 
 ## Build configuration
 

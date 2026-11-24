@@ -1,6 +1,5 @@
-Initial Mobile Harness alpha:
-- Persistent projects and Quick Projects
-- Streaming AI coding chat and tool activity
-- Ubuntu 20.04 ARM64 local runtime
-- Project and global terminals
-- File browser, diffs, checkpoints, and local preview
+Initial ORQEN alpha:
+- Local-first AI collaboration workspace on ARM64 Android
+- Claude Code, Antigravity CLI, and DeepSeek Harness integrations
+- Private PRoot Ubuntu runtime environment
+- Built-in terminals, file manager, and local web preview

@@ -108,7 +108,7 @@
     <string name="st_update_badge">ΕΝΗΜΕΡΩΣΗ</string>
     <string name="st_update_channel">Κανάλι ενημερώσεων</string>
     <string name="st_update_channel_default">Προεπιλεγμένη έκδοση GitHub</string>
-    <string name="st_update_channel_help">Μόνο για builds εντοπισμού σφαλμάτων. Επικολλήστε το προσωρινό URL manifest από Cloudflare Tunnel, ngrok ή οποιονδήποτε διακομιστή HTTPS που φιλοξενεί το mobile-harness-update.json και ένα νεότερο APK.</string>
+    <string name="st_update_channel_help">Μόνο για builds εντοπισμού σφαλμάτων. Επικολλήστε το προσωρινό URL manifest από Cloudflare Tunnel, ngrok ή οποιονδήποτε διακομιστή HTTPS που φιλοξενεί το orqen-update.json και ένα νεότερο APK.</string>
     <string name="st_update_channel_overridden">Παρακάμφθηκε · μόνο debug</string>
     <string name="st_use_and_check">Χρήση &amp; έλεγχος</string>
     <string name="st_use_custom_model_id">Χρήση προσαρμοσμένου ID μοντέλου:</string>

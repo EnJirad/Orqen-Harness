@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Builds a newer debug APK and serves it (with a matching
-# mobile-harness-update.json) from a local HTTP directory so the in-app
+# mobile-harness-update.json or orqen-update.json) from a local HTTP directory so the in-app
 # updater can be exercised end-to-end without publishing to GitHub.
 #
 # Usage:
@@ -29,7 +29,7 @@ fi
 serve_dir="$project_dir/dist/update-test"
 flavor="online"
 variant="debug"
-apk_name="mobile-harness-${flavor}-${variant}.apk"
+apk_name="orqen-${flavor}-${variant}.apk"
 
 cd "$project_dir"
 
@@ -53,7 +53,7 @@ cp "$apk_src" "$serve_dir/$apk_name"
 sha="$(shasum -a 256 "$serve_dir/$apk_name" | awk '{print $1}')"
 size="$(stat -f%z "$serve_dir/$apk_name")"
 
-cat > "$serve_dir/mobile-harness-update.json" <<JSON
+cat > "$serve_dir/orqen-update.json" <<JSON
 {
   "versionCode": $version_code,
   "versionName": "$version_name",
@@ -78,8 +78,8 @@ Files:
 APK URL baked into the manifest:
   $base_url/$apk_name
 
-In a debug build of Mobile Harness, open Settings → Update channel, paste:
-  $base_url/mobile-harness-update.json
+In a debug build of ORQEN, open Settings → Update channel, paste:
+  $base_url/orqen-update.json
 and tap Use & check.
 
 The app accepts this URL because the tunnel provides HTTPS. No LAN IP or

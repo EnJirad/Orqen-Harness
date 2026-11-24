@@ -1,0 +1,128 @@
+<resources>
+    <!-- Multi-Agent AI Workspace (ภาษาไทย) -->
+    <string name="tab_team">ทีม AI</string>
+    <string name="team_workspace_title">พื้นที่ทำงาน Multi-Agent</string>
+    <string name="team_dashboard">แดชบอร์ดทีม</string>
+    <string name="team_group_chat">แชทกลุ่ม</string>
+    <string name="team_private_chat">แชทส่วนตัว</string>
+    <string name="team_agents_count">%1$d / 4 Agent</string>
+    <string name="team_max_agents_exceeded">ORQEN รองรับ Agent สูงสุด 4 ตัวเท่านั้น</string>
+    <string name="team_start">เริ่มทำงานทั้งทีม</string>
+    <string name="team_pause">พักการทำงานทั้งหมด</string>
+    <string name="team_resume">ทำงานต่อทั้งหมด</string>
+    <string name="team_stop">หยุดทีม</string>
+    <string name="team_create_group">สร้างกลุ่ม AI ใหม่</string>
+    <string name="team_group_name">ชื่อกลุ่ม AI</string>
+    <string name="team_member_count">จำนวน Agent (1–4 ตัว)</string>
+    <string name="team_current_part">Part ปัจจุบัน: %1$s</string>
+    <string name="team_task_queue">คิวงาน (Task Queue)</string>
+    <string name="team_active_tasks">%1$d งานที่กำลังทำ</string>
+    <string name="team_completed_tasks">%1$d งานเสร็จสิ้น</string>
+    <string name="team_failed_tasks">%1$d งานล้มเหลว</string>
+    <string name="team_file_locks">การล็อกไฟล์ (%1$d)</string>
+    <string name="team_no_file_locks">ไม่มีไฟล์ที่ถูกล็อก</string>
+    <string name="team_file_locked_by">ล็อกโดย %1$s (%2$s)</string>
+    <string name="team_conflict_warning">ตรวจพบข้อขัดแย้งในไฟล์ %1$s</string>
+    <string name="team_git_checkpoint">Git Checkpoint</string>
+    <string name="team_rollback_checkpoint">ย้อนกลับไปยัง Checkpoint</string>
+
+    <!-- Agent Slots & Roles -->
+    <string name="agent_slot_1">Agent 01</string>
+    <string name="agent_slot_2">Agent 02</string>
+    <string name="agent_slot_3">Agent 03</string>
+    <string name="agent_slot_4">Agent 04</string>
+    <string name="role_team_leader">หัวหน้าทีม / สถาปนิก / QA Lead</string>
+    <string name="role_software_engineer">วิศวกรซอฟต์แวร์ / นักพัฒนา</string>
+    <string name="role_specialist">ผู้เชี่ยวชาญเฉพาะด้าน / แบ็กเอนด์</string>
+    <string name="role_tester">ผู้ทดสอบอิสระ / ตรวจทานโค้ด</string>
+    <string name="role_frontend_engineer">วิศวกรฟรอนต์เอนด์</string>
+    <string name="role_backend_engineer">วิศวกรแบ็กเอนด์</string>
+    <string name="role_security_engineer">วิศวกรความปลอดภัย</string>
+    <string name="role_devops_engineer">วิศวกร DevOps</string>
+    <string name="role_custom">บทบาทกำหนดเอง</string>
+
+    <!-- Real-time Agent Activities -->
+    <string name="activity_analyzing">กำลังวิเคราะห์</string>
+    <string name="activity_planning">กำลังวางแผน</string>
+    <string name="activity_reading_files">กำลังอ่านไฟล์</string>
+    <string name="activity_writing_code">กำลังเขียนโค้ด</string>
+    <string name="activity_fixing_bug">กำลังแก้บั๊ก</string>
+    <string name="activity_testing">กำลังทดสอบ</string>
+    <string name="activity_reviewing">กำลังตรวจทาน</string>
+    <string name="activity_building_apk">กำลังบิลด์ APK</string>
+    <string name="activity_installing_deps">กำลังติดตั้งส่วนประกอบ</string>
+    <string name="activity_committing">กำลังสร้าง Commit</string>
+    <string name="activity_pushing">กำลัง Push ขึ้น Git</string>
+    <string name="activity_merging">กำลัง Merge</string>
+    <string name="activity_waiting">กำลังรอ</string>
+    <string name="activity_paused">หยุดพักชั่วคราว</string>
+    <string name="activity_completed">เสร็จสมบูรณ์</string>
+    <string name="activity_error">เกิดข้อผิดพลาด</string>
+
+    <!-- Quota & Usage -->
+    <string name="quota_official_title">โควตาจริง (Official Quota)</string>
+    <string name="quota_estimated_title">ประมาณการการใช้งาน (Estimated Usage)</string>
+    <string name="quota_local_title">สถิติในแอป (Local Usage)</string>
+    <string name="quota_remaining">คงเหลือ: %1$s</string>
+    <string name="quota_used">ใช้ไปแล้ว: %1$s</string>
+    <string name="quota_reset">รีเซ็ตเมื่อ: %1$s</string>
+    <string name="quota_rate_limit">Rate Limit: %1$s</string>
+    <string name="quota_source">แหล่งข้อมูล: %1$s</string>
+    <string name="quota_unavailable">ไม่มีข้อมูลจริง (ผู้ให้บริการไม่มี API ตรวจสอบโควตาสาธารณะ)</string>
+    <string name="quota_est_tokens">ประมาณการโทเคน: %1$s</string>
+    <string name="quota_est_cost">ประมาณการค่าใช้จ่าย: %1$s</string>
+    <string name="quota_local_requests">จำนวนคำขอ: %1$d</string>
+    <string name="quota_local_tasks">จำนวนงาน: %1$d</string>
+    <string name="quota_local_active_agents">Agent ที่ทำงานอยู่: %1$d</string>
+    <string name="quota_status_normal">ปกติ</string>
+    <string name="quota_status_low">ต่ำกว่าเกณฑ์ (&lt; 20%)</string>
+    <string name="quota_status_depleted">โควตาหมด</string>
+
+    <!-- Multi-Provider Management -->
+    <string name="provider_mgmt_title">จัดการผู้ให้บริการ AI</string>
+    <string name="provider_mgmt_subtitle">กำหนดโมเดลและข้อมูลรับรองแยกอิสระสำหรับแต่ละ Agent</string>
+    <string name="provider_add_new">เพิ่มผู้ให้บริการ</string>
+    <string name="provider_type_select">ประเภทผู้ให้บริการ</string>
+    <string name="provider_type_openai">เข้ากันได้กับ OpenAI (OpenAI-Compatible)</string>
+    <string name="provider_type_anthropic">Anthropic API</string>
+    <string name="provider_type_gemini">Google Gemini Developer API</string>
+    <string name="provider_type_antigravity">Antigravity OAuth (บัญชี Google)</string>
+    <string name="provider_type_deepseek">DeepSeek API</string>
+    <string name="provider_type_openrouter">OpenRouter API</string>
+    <string name="provider_type_custom">Custom API Endpoint กำหนดเอง</string>
+    <string name="provider_protocol_completions">OpenAI Chat Completions (/v1/chat/completions)</string>
+    <string name="provider_protocol_messages">Anthropic Messages (/v1/messages)</string>
+    <string name="provider_protocol_gemini">Gemini generateContent</string>
+    <string name="provider_custom_headers">Custom Headers (JSON หรือ คีย์: ค่า)</string>
+    <string name="provider_connection_test_btn">ทดสอบการเชื่อมต่อ</string>
+    <string name="provider_connection_testing">กำลังทดสอบการเชื่อมต่อ…</string>
+    <string name="provider_connection_success">ยืนยันการเชื่อมต่อสำเร็จ (%1$d มิลลิวินาที)</string>
+    <string name="provider_connection_failed">การเชื่อมต่อล้มเหลว: %1$s</string>
+    <string name="provider_enter_model_manually">ระบุ Model ID ด้วยตนเอง</string>
+    <string name="provider_model_discovery_btn">ค้นหาโมเดลที่มี</string>
+
+    <!-- Continuous Execution -->
+    <string name="continuous_execution_title">การทำงานต่อเนื่องอัตโนมัติ</string>
+    <string name="continuous_auto_resume">ทำงานต่ออัตโนมัติ (Auto-Resume)</string>
+    <string name="continuous_auto_resume_desc">ทำงานต่อเนื่องโดยไม่ต้องกด Continue เองทุกครั้ง</string>
+    <string name="continuous_auto_retry">ลองใหม่อัตโนมัติเมื่อติด Rate Limit</string>
+    <string name="continuous_auto_retry_desc">เคารพ Retry-After พร้อมระบบ Exponential Backoff</string>
+    <string name="continuous_checkpoints">บันทึก Checkpoint อัตโนมัติ</string>
+    <string name="continuous_checkpoints_desc">บันทึกสถานะงานและ Workspace ในแต่ละช่วงสำคัญ</string>
+    <string name="continuous_model_fallback">สลับโมเดลสำรองอัตโนมัติ</string>
+    <string name="continuous_model_fallback_desc">สลับไปใช้โมเดลสำรองที่อนุญาตเมื่อโมเดลหลักขัดข้อง</string>
+    <string name="continuous_reason_timeout">เซสชันถึงรอบเวลาการทำงานต่อเนื่อง — ดำเนินงานต่ออัตโนมัติ</string>
+    <string name="continuous_reason_rate_limit">พบ Rate Limit กำลังรอรอบเวลาเพื่อเชื่อมต่อใหม่</string>
+    <string name="continuous_reason_checkpoint_saved">บันทึก Checkpoint สำเร็จ</string>
+
+    <!-- Central Group Chat -->
+    <string name="chat_type_task_assignment">การมอบหมายงาน</string>
+    <string name="chat_type_progress">ความคืบหน้า</string>
+    <string name="chat_type_completion">รายงานงานเสร็จสิ้น</string>
+    <string name="chat_type_bug">รายงานข้อผิดพลาด (Bug)</string>
+    <string name="chat_type_review">ขอให้ตรวจทานงาน</string>
+    <string name="chat_type_approval">การอนุมัติ</string>
+    <string name="chat_mention_agent">@ระบุ Agent</string>
+    <string name="chat_assign_to">มอบหมายให้ %1$s</string>
+    <string name="chat_send_to_team">ส่งเข้ากลุ่ม AI</string>
+</resources>

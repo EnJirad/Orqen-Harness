@@ -1,72 +1,51 @@
 <div align="center">
 
-  <img src="assets/readme/logo.svg" alt="Mobile Harness Logo" width="104" height="104" style="border-radius: 24px;" />
+  <img src="assets/readme/logo.svg" alt="ORQEN Logo" width="104" height="104" style="border-radius: 24px;" />
 
-  # Mobile Harness
+  # ORQEN
 
-  ### *The complete autonomous AI development workspace for Android.*
+  ### *Think Together. Build Anything.*
 
-  **Chat with coding agents, edit projects, execute real Linux commands, and preview live web servers — all directly on your phone.**
+  **A Premium AI Collaboration Workspace for Android.**
+
+  Chat with coding agents, manage workspaces, execute real Linux commands, and preview live web servers — directly on your mobile device.
 
   <br />
 
-  [![Latest release](https://img.shields.io/github/v/release/techjarves/Mobile-Harness?label=Release&color=F28C52&style=flat-square&logo=github&logoColor=white)](https://github.com/techjarves/Mobile-Harness/releases/latest)
   [![Android 9+](https://img.shields.io/badge/Android-9%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#system-requirements)
   [![ARM64](https://img.shields.io/badge/CPU-ARM64-5B8DEF?style=flat-square)](#system-requirements)
   [![MIT License](https://img.shields.io/badge/License-MIT-8B7CF6?style=flat-square&logo=opensourceinitiative&logoColor=white)](LICENSE)
-  [![Watch demo](https://img.shields.io/badge/Watch-Demo-FF0000?style=flat-square&logo=youtube&logoColor=white)](https://www.youtube.com/techjarves)
+  [![Brand Identity](https://img.shields.io/badge/Brand-ORQEN-F28C52?style=flat-square)](BRAND_IDENTITY.md)
 
   <br />
 
   [**Download Online APK**](https://github.com/techjarves/Mobile-Harness/releases/latest/download/mobile-harness-online.apk) &nbsp;•&nbsp;
-  [**Watch Walkthrough (3 min)**](https://youtu.be/QzAau52Z7yQ) &nbsp;•&nbsp;
   [**Quickstart Guide**](#quickstart) &nbsp;•&nbsp;
   [**Architecture**](#architecture) &nbsp;•&nbsp;
-  [**Build from Source**](#developer-guides)
+  [**Build from Source**](#developer-guides) &nbsp;•&nbsp;
+  [**Rebranding Report**](REBRANDING_REPORT.md)
 
 </div>
 
 <br />
 
 ---
-
-<p align="center">
-  <a href="https://youtu.be/x5T56timmQw" target="_blank" rel="noopener noreferrer">
-    <img src="https://img.youtube.com/vi/x5T56timmQw/maxresdefault.jpg" alt="Mobile Harness Walkthrough and Live Product Demo" width="920" />
-  </a>
-  <br />
-  <sub>Watch the product walkthrough and demo &nbsp;|&nbsp; <i>Setting up Ubuntu, connecting Claude Code, and building an app on Android</i></sub>
-</p>
-
----
-
-<br />
 
 > [!IMPORTANT]
 > **Environment Security Notice**  
-> Mobile Harness runs on **ARM64 Android devices** using a private userspace PRoot layer. While isolated from other apps via standard Android sandbox permissions, PRoot is not a virtualization boundary or hardened security jail. Only execute projects and dependencies you own or trust.
+> ORQEN runs on **ARM64 Android devices** using a private userspace PRoot layer. While isolated from other apps via standard Android sandbox permissions, PRoot is not a virtualization boundary or hardened security jail. Only execute projects and dependencies you own or trust.
 
 <br />
 
-## Download Mobile Harness
+## About ORQEN
 
-<div align="center">
-  <p><strong>89.1 MB</strong> · Core, Python, and Android runtime bundles are downloaded only when needed. Supports secure in-app updates.</p>
-  <a href="https://github.com/techjarves/Mobile-Harness/releases/latest/download/mobile-harness-online.apk">
-    <img src="https://img.shields.io/badge/Download-Online_APK-F28C52?style=for-the-badge&logo=android&logoColor=white" alt="Download Online APK" />
-  </a>
-</div>
+**ORQEN** is a premium, local-first AI collaboration workspace engineered for ARM64 Android devices. It unites a modern Jetpack Compose interface with a self-contained, rootless **Ubuntu 20.04 LTS subsystem** running via PRoot. ORQEN enables software engineering workflows on Android without requiring root access, unlocked bootloaders, or external applications like Termux.
 
-<p align="center">
-  <strong>ARM64 Android 9+</strong><br />
-  <sub>Direct APK installation · No root required · No USB or wireless ADB pairing</sub>
-</p>
+ORQEN is an independent product and fork originating from the open-source [Mobile Harness](https://github.com/techjarves/Mobile-Harness) project by TechJarves. See [Upstream Attribution & Open Source](#upstream-attribution--open-source) below.
 
 <br />
 
-## Capabilities
-
-Mobile Harness unites modern **Jetpack Compose UI** with a self-contained **Ubuntu 20.04 LTS subsystem**. It gives you a desktop-class software development environment in your pocket without requiring root access, unlocked bootloaders, or external applications like Termux.
+## Verified Capabilities
 
 <table>
   <tr>
@@ -146,16 +125,16 @@ Mobile Harness unites modern **Jetpack Compose UI** with a self-contained **Ubun
 Get up and running in 3 guided steps:
 
 ### 1. Download & Install
-Download the latest signed release APK from [GitHub Releases](https://github.com/techjarves/Mobile-Harness/releases/latest).
+Install the signed debug or release APK on your ARM64 Android phone.
 
 ```text
 Target Architecture : ARM64 (arm64-v8a)
-Package Version     : latest release
+Application ID      : com.orqen.app
 Minimum OS Level    : Android 9.0 (API 28)
 ```
 
 ### 2. Guided Bootstrap (~10 Minutes)
-Launch the application and follow the interactive setup wizard:
+Launch ORQEN and follow the interactive setup wizard:
 
 <table>
   <tr>
@@ -188,9 +167,9 @@ Launch the application and follow the interactive setup wizard:
 
 <br />
 
-## Model Providers
+## Model Providers & Agents
 
-Mobile Harness uses Claude Code's Anthropic-compatible API protocol. You can connect official endpoints or route requests through compatible translation proxies:
+ORQEN supports direct API keys, compatibility gateways, and CLI agent backends:
 
 | Provider | Integration Type | Streaming | Tool Calling | Status | Notes |
 | :--- | :---: | :---: | :---: | :---: | :--- |
@@ -201,9 +180,9 @@ Mobile Harness uses Claude Code's Anthropic-compatible API protocol. You can con
 | **Custom API** | Endpoint Override | Compatible | Compatible | `Experimental` | User-configured gateway |
 
 > [!NOTE]
-> API keys are stored with hardware-backed Android Keystore AES-256-GCM encryption. Antigravity Google OAuth credentials are created and retained only by the official `agy` CLI in its persistent Linux home; Mobile Harness never reads or copies its tokens.
+> API keys are stored with hardware-backed Android Keystore AES-256-GCM encryption. Antigravity Google OAuth credentials are created and retained only by the official `agy` CLI in its persistent Linux home; ORQEN never reads or copies its tokens.
 
-### Coding agents
+### Supported Coding Agents
 
 | Agent | Authentication | Installation | Isolation |
 | :--- | :--- | :--- | :--- |
@@ -211,18 +190,13 @@ Mobile Harness uses Claude Code's Anthropic-compatible API protocol. You can con
 | **DeepSeek Harness** | API-key providers | On demand | Existing DSH bridge and settings |
 | **Antigravity CLI** | Official Google OAuth flow | Version-pinned online download | Dedicated `agy` bridge, model, effort, and conversation IDs |
 
-For Antigravity, select **Antigravity CLI**, install it, and tap **Sign in with Google**. Mobile Harness starts the official CLI login, opens the freshly generated Google URL in the system browser, and sends the returned one-time code back to that waiting process. The app does not embed Google login in a WebView and does not construct its own OAuth request.
-
-> [!WARNING]
-> Antigravity tasks currently launch with `--dangerously-skip-permissions`. This gives the official agent permission to run tools without individual PocketDev approval prompts. Use it only with projects and prompts you trust. Account quotas and service limits still apply; signing in does not provide unlimited usage.
-
-When Android is selected during onboarding, Mobile Harness installs that complete toolchain into its private Ubuntu environment. Android projects can then be built with the workspace play button. The resulting debug APK is passed directly to Android's system package installer and launched after installation; USB debugging, wireless debugging, an ADB port, and a pairing code are not required. Android still requires the user to allow installs from Mobile Harness and confirm each installation.
+For Antigravity, select **Antigravity CLI**, install it, and tap **Sign in with Google**. ORQEN starts the official CLI login, opens the freshly generated Google URL in the system browser, and sends the returned one-time code back to that waiting process. The app does not embed Google login in a WebView and does not construct its own OAuth request.
 
 <br />
 
 ## Architecture
 
-Mobile Harness bridges native Android Jetpack Compose to an isolated PRoot Linux execution layer via an optimized C++ JNI bridge:
+ORQEN bridges native Android Jetpack Compose to an isolated PRoot Linux execution layer via an optimized C++ JNI bridge:
 
 ```mermaid
 flowchart TB
@@ -293,23 +267,18 @@ flowchart TB
 <br />
 
 ### Prerequisites
-* **Android Studio**: Ladybug / Hedgehog or newer
 * **Android SDK**: API Level 36 (`compileSdk 36`)
 * **Java Development Kit**: JDK 17 (Eclipse Temurin or OpenJDK)
-* **Android NDK**: `26.1.10909125`
+* **Android NDK**: `28.2.13676358` (or configured via `-PmhNdkVersion`)
 * **CMake**: `3.22.1`
 
-### Clone & Build Debug APK
+### Build Debug APK
 ```bash
-# Clone the repository
-git clone https://github.com/techjarves/Mobile-Harness.git
-cd Mobile-Harness
-
 # Build the standard ARM64 debug binary
 ./gradlew assembleDebug
 
 # Deploy directly to a connected test device
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/online/debug/ORQEN-online-debug.apk
 ```
 
 ### Quality Assurance & Testing
@@ -321,14 +290,6 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ./gradlew lintDebug
 ```
 
-### Target Profiles
-* **Direct Sideload APK** (Default): Targets API 28 to preserve proven userspace execution paths under Android 10-14.
-* **Google Play Compliance Build**:
-  ```bash
-  ./gradlew -PplayBuild=true assembleDebug
-  ```
-  Refer to the [Google Play Release Checklist](docs/PLAY_STORE_CHECKLIST.md) for signing and permission policies.
-
 </details>
 
 <details>
@@ -336,7 +297,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 <br />
 
-Mobile Harness allows downloading optional developer packs on demand to conserve space:
+ORQEN allows downloading optional developer packs on demand to conserve space:
 
 * **Python Suite**: Python 3.10+, pip, virtualenv, and essential scientific C-extensions.
 * **Android & JVM**: OpenJDK 17 headless runtime and Gradle build tools.
@@ -348,68 +309,37 @@ Mobile Harness allows downloading optional developer packs on demand to conserve
 </details>
 
 <details>
-<summary><b>Repository directory structure</b></summary>
-
-<br />
-
-```text
-Mobile-Harness/
-├── app/src/main/
-│   ├── java/com/jarves/mh/
-│   │   ├── data/       # Preferences, Keystore AES encryption, SQLite persistence
-│   │   ├── model/      # Data entities: Projects, Chats, Files, Tool calls
-│   │   ├── runtime/    # PRoot installer, C++ agent bridge, foreground services
-│   │   └── ui/         # Jetpack Compose screens, Material 3 theme, ViewModels
-│   ├── cpp/            # Native C++ launcher, pseudo-terminal pipe handler
-│   ├── assets/         # Verified rootfs checksums, licenses, base configuration
-│   └── res/            # Android icons, XML drawables, vector assets
-├── fastlane/           # Play Store metadata, graphics, and release automation
-└── docs/               # In-depth architectural notes & Play Store review guides
-```
-
-</details>
-
-<details>
 <summary><b>Security model and data privacy</b></summary>
 
 <br />
 
-* **Zero Cloud Intermediaries**: Mobile Harness connects your device directly to your chosen AI endpoint. No intermediate relays or telemetry servers collect your prompts or code.
+* **Zero Cloud Intermediaries**: ORQEN connects your device directly to your chosen AI endpoint. No intermediate relays or telemetry servers collect your prompts or code.
 * **Scoped Storage**: Project imports and exports utilize Android's official Storage Access Framework (SAF) instead of broad shared storage access.
 * **Cryptographic Checksums**: Root filesystem archives and Claude Code CLI packages are verified via SHA-256 checksums prior to extraction.
 * **Encrypted Secrets**: API tokens are encrypted in hardware-backed storage via Android Keystore.
-
-- ARM64 phones only
-- No hardened isolation for hostile code
-- Terminal input/output currently uses a process bridge rather than a complete PTY emulator; full-screen interactive programs may render incorrectly
-- Background tasks are subject to Android process and battery policies
-- Custom providers may lack Claude-compatible thinking, tool use, token counting, or streaming behavior
-- Large builds can be slow and memory-intensive under PRoot
-- Runtime installation requires a substantial download and free storage
-- Project-specific Android libraries may still be downloaded by Gradle when they are not already in the bundled Maven cache
 
 Read our complete [Privacy Policy](PRIVACY.md).
 
 </details>
 
-Mobile Harness is currently intended for signed direct APK distribution and private testing. Its Android-project workflow requests permission to submit user-built APKs to Android's package installer, which requires a dedicated Google Play policy declaration and approval if distributed through Play.
-
 <br />
 
-## Current Limitations
+## Upstream Attribution & Open Source
 
-* **Architecture**: Exclusively supports 64-bit ARM (`arm64-v8a`) hardware.
-* **Process Isolation**: PRoot maps file systems and IDs in user space; it is not a cryptographically hardened container or VM.
-* **Terminal Emulation**: The process bridge handles standard CLI workflows and REPLs; specialized ncurses applications may experience minor layout artifacts.
-* **OS Process Management**: Heavy compilation workloads may be throttled if Android applies aggressive battery optimization. It is recommended to exempt Mobile Harness from battery optimization in device settings.
+ORQEN is built upon the open-source foundation of **Mobile Harness**, originally developed and maintained by **TechJarves** ([github.com/techjarves/Mobile-Harness](https://github.com/techjarves/Mobile-Harness)).
 
-<br />
+We acknowledge and credit the original creators and contributors of Mobile Harness for their architectural work, PRoot Android port, and local-first AI development tools. ORQEN is an independent product and fork; it is not affiliated with, endorsed by, or sponsored by TechJarves.
+
+- Original Codebase: [https://github.com/techjarves/Mobile-Harness](https://github.com/techjarves/Mobile-Harness)
+- Original Copyright: Copyright (c) 2026 Mobile Harness Contributors / TechJarves
+- License: MIT License (see [LICENSE](LICENSE))
 
 ## Legal & Trademarks
 
-* Mobile Harness is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Anthropic.
 * **Claude** and **Claude Code** are trademarks of Anthropic, PBC. Claude Code CLI is downloaded directly from Anthropic's official distribution endpoints during setup and remains governed by Anthropic's license terms.
-* Ubuntu, Android, Kotlin, Node.js, Git, and other registered trademarks belong to their respective copyright holders.
+* **Antigravity CLI** and Android are trademarks of Google LLC.
+* **DeepSeek** and DeepSeek Harness are property of their respective owners.
+* Ubuntu, Linux, Kotlin, Node.js, Git, and other registered trademarks belong to their respective copyright holders.
 * Third-party open-source licenses are compiled in [`app/src/main/assets/licenses`](app/src/main/assets/licenses).
 
 <br />
@@ -418,12 +348,9 @@ Mobile Harness is currently intended for signed direct APK distribution and priv
 
 This project is licensed under the [MIT License](LICENSE). Third-party runtime binaries and packages remain governed by their respective upstream licenses.
 
-<br />
-
 ---
 
 <div align="center">
-  <sub>Crafted for developers who want a serious, uncompromised development environment wherever they go.</sub>
-  <br />
-  <sub>Copyright © 2026 Tech Jarves. All rights reserved.</sub>
+  <strong>ORQEN</strong> — <em>Think Together. Build Anything.</em><br />
+  <sub>Premium AI Collaboration Workspace for Android</sub>
 </div>

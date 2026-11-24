@@ -1,1 +1,1 @@
-# Mobile Harness alpha: release shrinking is intentionally disabled.
+# ORQEN alpha: release shrinking is intentionally disabled.

@@ -1,0 +1,128 @@
+<resources>
+    <!-- Multi-Agent AI Workspace -->
+    <string name="tab_team">AI Team</string>
+    <string name="team_workspace_title">Multi-Agent Workspace</string>
+    <string name="team_dashboard">Team Dashboard</string>
+    <string name="team_group_chat">Group Chat</string>
+    <string name="team_private_chat">Private Chat</string>
+    <string name="team_agents_count">%1$d / 4 Agents</string>
+    <string name="team_max_agents_exceeded">Maximum of 4 agents allowed in ORQEN</string>
+    <string name="team_start">Start Team</string>
+    <string name="team_pause">Pause All</string>
+    <string name="team_resume">Resume All</string>
+    <string name="team_stop">Stop Team</string>
+    <string name="team_create_group">Create AI Team</string>
+    <string name="team_group_name">Team Name</string>
+    <string name="team_member_count">Number of Agents (1–4)</string>
+    <string name="team_current_part">Current Part: %1$s</string>
+    <string name="team_task_queue">Task Queue</string>
+    <string name="team_active_tasks">%1$d active tasks</string>
+    <string name="team_completed_tasks">%1$d completed</string>
+    <string name="team_failed_tasks">%1$d failed</string>
+    <string name="team_file_locks">File Locks (%1$d)</string>
+    <string name="team_no_file_locks">No active file locks</string>
+    <string name="team_file_locked_by">Locked by %1$s (%2$s)</string>
+    <string name="team_conflict_warning">Conflict detected on %1$s</string>
+    <string name="team_git_checkpoint">Git Checkpoint</string>
+    <string name="team_rollback_checkpoint">Rollback to Checkpoint</string>
+
+    <!-- Agent Slots & Roles -->
+    <string name="agent_slot_1">Agent 01</string>
+    <string name="agent_slot_2">Agent 02</string>
+    <string name="agent_slot_3">Agent 03</string>
+    <string name="agent_slot_4">Agent 04</string>
+    <string name="role_team_leader">Team Leader / Architect / QA</string>
+    <string name="role_software_engineer">Software Engineer</string>
+    <string name="role_specialist">Specialist / Backend Developer</string>
+    <string name="role_tester">Independent Tester / Reviewer</string>
+    <string name="role_frontend_engineer">Frontend Engineer</string>
+    <string name="role_backend_engineer">Backend Engineer</string>
+    <string name="role_security_engineer">Security Engineer</string>
+    <string name="role_devops_engineer">DevOps Engineer</string>
+    <string name="role_custom">Custom Role</string>
+
+    <!-- Real-time Agent Activities -->
+    <string name="activity_analyzing">Analyzing</string>
+    <string name="activity_planning">Planning</string>
+    <string name="activity_reading_files">Reading Files</string>
+    <string name="activity_writing_code">Writing Code</string>
+    <string name="activity_fixing_bug">Fixing Bug</string>
+    <string name="activity_testing">Testing</string>
+    <string name="activity_reviewing">Reviewing</string>
+    <string name="activity_building_apk">Building APK</string>
+    <string name="activity_installing_deps">Installing Dependencies</string>
+    <string name="activity_committing">Committing</string>
+    <string name="activity_pushing">Pushing</string>
+    <string name="activity_merging">Merging</string>
+    <string name="activity_waiting">Waiting</string>
+    <string name="activity_paused">Paused</string>
+    <string name="activity_completed">Completed</string>
+    <string name="activity_error">Error</string>
+
+    <!-- Quota & Usage -->
+    <string name="quota_official_title">Official Quota</string>
+    <string name="quota_estimated_title">Estimated Usage</string>
+    <string name="quota_local_title">Local Usage</string>
+    <string name="quota_remaining">Remaining: %1$s</string>
+    <string name="quota_used">Used: %1$s</string>
+    <string name="quota_reset">Reset: %1$s</string>
+    <string name="quota_rate_limit">Rate Limit: %1$s</string>
+    <string name="quota_source">Source: %1$s</string>
+    <string name="quota_unavailable">Unavailable (Provider has no public quota API)</string>
+    <string name="quota_est_tokens">Est. Tokens: %1$s</string>
+    <string name="quota_est_cost">Est. Cost: %1$s</string>
+    <string name="quota_local_requests">Requests: %1$d</string>
+    <string name="quota_local_tasks">Tasks: %1$d</string>
+    <string name="quota_local_active_agents">Active Agents: %1$d</string>
+    <string name="quota_status_normal">Normal</string>
+    <string name="quota_status_low">Low (&lt; 20%)</string>
+    <string name="quota_status_depleted">Depleted</string>
+
+    <!-- Multi-Provider Management -->
+    <string name="provider_mgmt_title">AI Provider Management</string>
+    <string name="provider_mgmt_subtitle">Configure models &amp; credentials independently for each agent</string>
+    <string name="provider_add_new">Add Provider</string>
+    <string name="provider_type_select">Provider Type</string>
+    <string name="provider_type_openai">OpenAI-Compatible</string>
+    <string name="provider_type_anthropic">Anthropic API</string>
+    <string name="provider_type_gemini">Google Gemini Developer API</string>
+    <string name="provider_type_antigravity">Antigravity OAuth (Google)</string>
+    <string name="provider_type_deepseek">DeepSeek API</string>
+    <string name="provider_type_openrouter">OpenRouter API</string>
+    <string name="provider_type_custom">Custom API Endpoint</string>
+    <string name="provider_protocol_completions">OpenAI Chat Completions (/v1/chat/completions)</string>
+    <string name="provider_protocol_messages">Anthropic Messages (/v1/messages)</string>
+    <string name="provider_protocol_gemini">Gemini generateContent</string>
+    <string name="provider_custom_headers">Custom Headers (JSON or Key: Value)</string>
+    <string name="provider_connection_test_btn">Test Connection</string>
+    <string name="provider_connection_testing">Connecting to endpoint…</string>
+    <string name="provider_connection_success">Connection verified (%1$d ms)</string>
+    <string name="provider_connection_failed">Connection failed: %1$s</string>
+    <string name="provider_enter_model_manually">Enter Model ID manually</string>
+    <string name="provider_model_discovery_btn">Discover Models</string>
+
+    <!-- Continuous Execution -->
+    <string name="continuous_execution_title">Continuous Execution</string>
+    <string name="continuous_auto_resume">Auto-Resume Tasks</string>
+    <string name="continuous_auto_resume_desc">Automatically continue long-running tasks without requiring manual clicks</string>
+    <string name="continuous_auto_retry">Auto-Retry on Rate Limits</string>
+    <string name="continuous_auto_retry_desc">Respect Retry-After headers with exponential backoff</string>
+    <string name="continuous_checkpoints">Automatic Checkpoints</string>
+    <string name="continuous_checkpoints_desc">Save task and workspace state at every milestone</string>
+    <string name="continuous_model_fallback">Smart Model Fallback</string>
+    <string name="continuous_model_fallback_desc">Fall back to authorized alternative models when rate limited</string>
+    <string name="continuous_reason_timeout">Session reached continuous execution boundary; auto-resumed</string>
+    <string name="continuous_reason_rate_limit">Rate limit encountered; waiting for reset window</string>
+    <string name="continuous_reason_checkpoint_saved">Milestone checkpoint successfully saved</string>
+
+    <!-- Central Group Chat -->
+    <string name="chat_type_task_assignment">Task Assignment</string>
+    <string name="chat_type_progress">Progress Update</string>
+    <string name="chat_type_completion">Completion Report</string>
+    <string name="chat_type_bug">Bug Found</string>
+    <string name="chat_type_review">Review Request</string>
+    <string name="chat_type_approval">Approval</string>
+    <string name="chat_mention_agent">@Mention Agent</string>
+    <string name="chat_assign_to">Assign to %1$s</string>
+    <string name="chat_send_to_team">Send to AI Team</string>
+</resources>

@@ -77,7 +77,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.jarves.mh"
+        applicationId = "com.orqen.app"
         minSdk = 28
         // The direct APK retains the proven target-28 PRoot execution path. The
         // Play build targets current Android while its runtime path is validated.
@@ -149,7 +149,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions.jvmTarget = "17"
+    // kotlinOptions.jvmTarget = "17"
     buildFeatures {
         compose = true
         buildConfig = true
@@ -179,14 +179,14 @@ tasks.matching { it.name.contains("Offline") && it.name.contains("lint", ignoreC
 
 tasks.register("playReadinessCheck") {
     group = "verification"
-    description = "Checks configuration required before uploading a Mobile Harness Play bundle."
+    description = "Checks configuration required before uploading an ORQEN Play bundle."
     doLast {
         check(playBuild) { "Run with -PplayBuild=true." }
         check(privacyPolicyUrl.startsWith("https://")) {
             "privacyPolicyUrl must be a public HTTPS URL."
         }
         check(hasUploadSigning) {
-            "Set MH_UPLOAD_STORE_FILE, MH_UPLOAD_STORE_PASSWORD, MH_UPLOAD_KEY_ALIAS, and MH_UPLOAD_KEY_PASSWORD."
+            "Set ORQEN_UPLOAD_STORE_FILE (or MH_UPLOAD_STORE_FILE), STORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD."
         }
     }
 }

@@ -281,10 +281,18 @@ import com.jarves.mh.ui.theme.AppLanguage
 import com.jarves.mh.ui.theme.AppThemeMode
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Groups
+import com.jarves.mh.multiagent.model.AgentSlot
+import com.jarves.mh.multiagent.chat.GroupMessageType
+import com.jarves.mh.multiagent.ui.TeamDashboardScreen
+import com.jarves.mh.multiagent.ui.CentralGroupChatScreen
+import com.jarves.mh.multiagent.ui.PrivateAgentChatScreen
+import com.jarves.mh.multiagent.ui.ProviderManagementScreen
 import androidx.compose.material3.ExtendedFloatingActionButton
 
 private enum class RootScreen(@StringRes val labelRes: Int, val icon: ImageVector) {
     PROJECTS(R.string.tab_projects, Icons.Default.Folder),
+    TEAM(R.string.tab_team, Icons.Default.Groups),
     AGENT(R.string.tab_agent, Icons.Default.SmartToy),
     SETTINGS(R.string.tab_settings, Icons.Default.Settings),
 }
@@ -602,7 +610,7 @@ private fun InitialLanguageSetupScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BrandMark(compact = true)
                         Spacer(Modifier.width(9.dp))
-                        Text("Mobile Harness", fontWeight = FontWeight.Bold)
+                        Text("ORQEN", fontWeight = FontWeight.Bold)
                     }
                 },
                 actions = {
@@ -894,7 +902,7 @@ private fun BackgroundTaskSetupScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BrandMark(compact = true)
                         Spacer(Modifier.width(9.dp))
-                        Text("Mobile Harness", fontWeight = FontWeight.Bold)
+                        Text("ORQEN", fontWeight = FontWeight.Bold)
                     }
                 },
                 actions = {
@@ -1170,7 +1178,7 @@ private fun RuntimeSetupPromptScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BrandMark(compact = true)
                         Spacer(Modifier.width(9.dp))
-                        Text("Mobile Harness", fontWeight = FontWeight.Bold)
+                        Text("ORQEN", fontWeight = FontWeight.Bold)
                     }
                 },
                 navigationIcon = {
@@ -1884,7 +1892,7 @@ private fun localizeRuntimeMessage(message: String): String {
         trimmed.equals("Setup complete", ignoreCase = true) -> {
             stringResource(R.string.runtime_msg_setup_complete)
         }
-        trimmed.contains("Resuming Mobile Harness setup", ignoreCase = true) -> {
+        trimmed.contains("Resuming ORQEN setup", ignoreCase = true) || trimmed.contains("Resuming Mobile Harness setup", ignoreCase = true) -> {
             stringResource(R.string.runtime_msg_resuming_setup)
         }
         trimmed.startsWith("Downloading ") && !trimmed.startsWith("Downloading: ") -> {
@@ -2389,7 +2397,7 @@ private fun StartupErrorScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         BrandMark(compact = true)
                         Spacer(Modifier.width(9.dp))
-                        Text("Mobile Harness", fontWeight = FontWeight.Bold)
+                        Text("ORQEN", fontWeight = FontWeight.Bold)
                     }
                 },
                 actions = {
@@ -2550,6 +2558,64 @@ private fun RootScreenHost(
                     onToggleTheme = viewModel::toggleTheme,
                     onInstallUpdate = viewModel::installAppUpdate,
                 )
+                RootScreen.TEAM -> {
+                    when (state.teamScreenMode) {
+                        TeamScreenMode.DASHBOARD -> TeamDashboardScreen(
+                            teamName = state.activeProject?.name ?: "ORQEN Workspace",
+                            workspacePath = state.activeProject?.slug?.let { "/workspace/$it" } ?: "/workspace/shared",
+                            agents = state.teamAgents,
+                            tasks = state.teamTasks,
+                            parts = state.teamParts,
+                            currentPartNumber = state.teamCurrentPartNumber,
+                            fileLocks = state.teamFileLocks,
+                            officialQuota = state.teamOfficialQuota,
+                            estimatedUsage = state.teamEstimatedUsage,
+                            localUsage = state.teamLocalUsage,
+                            isTeamRunning = state.teamIsRunning,
+                            onStartTeam = viewModel::startTeamWork,
+                            onPauseTeam = viewModel::pauseTeamWork,
+                            onResumeTeam = viewModel::resumeTeamWork,
+                            onStopTeam = viewModel::stopTeamWork,
+                            onOpenAgentChat = { slot ->
+                                viewModel.setActivePrivateSlot(slot)
+                                viewModel.setTeamScreenMode(TeamScreenMode.PRIVATE_CHAT)
+                            },
+                            onOpenGroupChat = { viewModel.setTeamScreenMode(TeamScreenMode.GROUP_CHAT) },
+                            onOpenProviderSettings = { viewModel.setTeamScreenMode(TeamScreenMode.PROVIDER_SETTINGS) },
+                            onNextPart = viewModel::advanceTeamPart,
+                        )
+                        TeamScreenMode.GROUP_CHAT -> CentralGroupChatScreen(
+                            teamName = state.activeProject?.name ?: "ORQEN Workspace",
+                            messages = state.teamGroupMessages,
+                            onSendMessage = { text, type, targetSlot ->
+                                viewModel.postTeamChatMessage(text, type, targetSlot)
+                            },
+                            onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
+                        )
+                        TeamScreenMode.PRIVATE_CHAT -> {
+                            val slot = state.activePrivateSlot ?: AgentSlot.AGENT_1
+                            val agentState = state.teamAgents.firstOrNull { it.config.slot == slot }
+                                ?: state.teamAgents.first()
+                            PrivateAgentChatScreen(
+                                agentState = agentState,
+                                messages = state.teamGroupMessages.filter { it.senderSlot == slot || it.text.contains("@${slot.defaultName}") },
+                                onSendMessage = { text ->
+                                    viewModel.postTeamChatMessage(text, GroupMessageType.NORMAL, slot)
+                                },
+                                onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
+                            )
+                        }
+                        TeamScreenMode.PROVIDER_SETTINGS -> ProviderManagementScreen(
+                            configs = state.providerConfigs,
+                            onSaveConfig = viewModel::saveProviderConfig,
+                            onDeleteConfig = viewModel::deleteProviderConfig,
+                            onTestConnection = viewModel::testProviderConnection,
+                            onDiscoverModels = viewModel::discoverProviderModels,
+                            getSavedApiKey = viewModel::getProviderApiKey,
+                            onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
+                        )
+                    }
+                }
                 RootScreen.AGENT -> AgentScreen(
                     state = state,
                     onSaveProvider = { profile, key ->
@@ -3634,7 +3700,7 @@ private fun ProjectsScreen(
         topBar = {
             TopAppBar(
                 modifier = Modifier.padding(top = 8.dp),
-                title = { Row(verticalAlignment = Alignment.CenterVertically) { BrandMark(compact = true); Spacer(Modifier.width(9.dp)); Text("Mobile Harness", fontWeight = FontWeight.Bold) } },
+                title = { Row(verticalAlignment = Alignment.CenterVertically) { BrandMark(compact = true); Spacer(Modifier.width(9.dp)); Text("ORQEN", fontWeight = FontWeight.Bold) } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
@@ -3800,7 +3866,7 @@ private fun ProjectsScreen(
                             }
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text("Mobile Harness ${update.versionName}", fontWeight = FontWeight.Bold)
+                                Text("ORQEN ${update.versionName}", fontWeight = FontWeight.Bold)
                                 Text(stringResource(R.string.ws_update_ready), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Text(stringResource(R.string.ws_update), color = PocketOrange, fontWeight = FontWeight.Bold, fontSize = 13.sp)
@@ -7477,7 +7543,7 @@ private fun BrandMark(modifier: Modifier = Modifier, compact: Boolean = false) {
     ) {
         Icon(
             imageVector = Icons.Default.Terminal,
-            contentDescription = "Mobile Harness",
+            contentDescription = "ORQEN",
             modifier = Modifier.size(iconSize),
             tint = primary,
         )

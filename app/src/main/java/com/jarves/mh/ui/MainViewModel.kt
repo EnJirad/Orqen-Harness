@@ -48,6 +48,15 @@ import com.jarves.mh.model.generateQuickChatIdentity
 import com.jarves.mh.model.providerProtocolForAgent
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.ModelDiscoveryResult
+import com.jarves.mh.multiagent.model.*
+import com.jarves.mh.multiagent.locks.*
+import com.jarves.mh.multiagent.events.*
+import com.jarves.mh.multiagent.tasks.*
+import com.jarves.mh.multiagent.chat.*
+import com.jarves.mh.multiagent.git.*
+import com.jarves.mh.multiagent.supervisor.*
+import com.jarves.mh.provider.core.*
+import com.jarves.mh.provider.manager.ProviderManager
 import com.jarves.mh.network.ProviderApiClient
 import com.jarves.mh.network.GitHubRepository
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
@@ -275,6 +284,8 @@ private data class ImportedZipProject(
     val sourceAttachment: ChatAttachment,
 )
 
+enum class TeamScreenMode { DASHBOARD, GROUP_CHAT, PRIVATE_CHAT, PROVIDER_SETTINGS }
+
 data class AppUiState(
     val startupStage: StartupStage = StartupStage.CHECKING,
     val startupProgress: Float = 0f,
@@ -403,6 +414,20 @@ data class AppUiState(
     val appUpdateError: String? = null,
     val showWhatsNew: Boolean = false,
     val backupFeatureSeen: Boolean = true,
+    val teamWorkspaceVisible: Boolean = false,
+    val teamScreenMode: TeamScreenMode = TeamScreenMode.DASHBOARD,
+    val teamAgents: List<AgentState> = emptyList(),
+    val teamTasks: List<TeamTask> = emptyList(),
+    val teamParts: List<ProjectPart> = emptyList(),
+    val teamCurrentPartNumber: Int = 1,
+    val teamFileLocks: List<FileLock> = emptyList(),
+    val teamOfficialQuota: OfficialQuota? = null,
+    val teamEstimatedUsage: EstimatedUsage? = null,
+    val teamLocalUsage: LocalUsage = LocalUsage(),
+    val teamIsRunning: Boolean = false,
+    val teamGroupMessages: List<GroupChatMessage> = emptyList(),
+    val providerConfigs: List<ProviderConfig> = emptyList(),
+    val activePrivateSlot: AgentSlot? = null,
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -432,6 +457,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime)
     private fun activeRuntime(): com.jarves.mh.runtime.RuntimeBridge = agentRegistry.require(_state.value.agentKind).runtime
     private val providerApi = ProviderApiClient(application)
+    val providerManager = ProviderManager(application, vault, preferences)
+    val fileLockManager = FileLockManager()
+    val teamEventBus = TeamEventBus()
+    val taskManager = TaskManager()
+    val continuousSupervisor = ContinuousSupervisor()
+    private val teamChatManager = TeamChatManager(application, "default_team")
+    val gitCoordinator = GitCoordinator(File(application.filesDir, "workspaces"))
     private fun appUpdater(): AppUpdater = AppUpdater(
         getApplication(),
         if (BuildConfig.DEBUG) preferences.debugUpdateManifestUrl else "",
@@ -525,6 +557,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        viewModelScope.launch { initMultiAgentTeam() }
         viewModelScope.launch {
             AndroidAppInstaller.events.collect { event ->
                 if (event.operationId != pendingAndroidInstallId) return@collect
@@ -5400,6 +5433,387 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.copy(projectChats = chats)
         }
         preferences.saveProjectChats(project.id, _state.value.projectChats)
+    }
+
+    // --- ORQEN Multi-Agent AI Workspace & Team Coordination ---
+
+    private fun initMultiAgentTeam() {
+        val initialAgents = listOf(
+            AgentState(
+                config = AgentConfig(
+                    slot = AgentSlot.AGENT_1,
+                    name = "Agent 01 (Lead)",
+                    role = AgentRole(
+                        type = AgentRoleType.TEAM_LEADER,
+                        title = "Team Leader / Architect / QA",
+                        systemInstructions = "Analyze project overview, plan development steps, assign tasks to agents, verify commits, test features thoroughly, and approve pull requests.",
+                        responsibilities = listOf(
+                            "Analyze codebase overview and plan sequential parts",
+                            "Assign tasks and define acceptance criteria",
+                            "Verify commit SHAs and independent test results",
+                            "Perform architectural review and approve merges"
+                        ),
+                    ),
+                    providerId = "preset-antigravity",
+                    modelId = "gemini-3.8-flash-high",
+                ),
+                activityState = AgentActivityState(
+                    activity = ActivityType.PLANNING,
+                    currentTask = "Part 01: Project Architecture Analysis",
+                    lastAction = "Waiting for team kickoff",
+                ),
+            ),
+            AgentState(
+                config = AgentConfig(
+                    slot = AgentSlot.AGENT_2,
+                    name = "Agent 02 (Dev)",
+                    role = AgentRole(
+                        type = AgentRoleType.SOFTWARE_ENGINEER,
+                        title = "Software Engineer",
+                        systemInstructions = "Receive tasks from Agent 01, analyze codebase, write clean code, fix bugs, commit and push changes with clear commit messages.",
+                        responsibilities = listOf(
+                            "Implement assigned feature tasks",
+                            "Edit source files under file locks",
+                            "Create Git commits with part prefixes"
+                        ),
+                    ),
+                    providerId = "preset-anthropic",
+                    modelId = "claude-sonnet-4-6",
+                ),
+                activityState = AgentActivityState(
+                    activity = ActivityType.WAITING,
+                    currentTask = "Ready for task assignment",
+                    lastAction = "Idle",
+                ),
+            ),
+            AgentState(
+                config = AgentConfig(
+                    slot = AgentSlot.AGENT_3,
+                    name = "Agent 03 (Specialist)",
+                    role = AgentRole(
+                        type = AgentRoleType.SPECIALIST,
+                        title = "Specialist / Backend Developer",
+                        systemInstructions = "Handle specialized tasks, complex algorithms, backend logic, APIs, and assist Agent 02 on heavy modules.",
+                        responsibilities = listOf(
+                            "Develop complex backend APIs and data logic",
+                            "Optimize algorithms and performance",
+                            "Coordinate interface contracts with Agent 02"
+                        ),
+                    ),
+                    providerId = "preset-openai",
+                    modelId = "gpt-4o",
+                ),
+                activityState = AgentActivityState(
+                    activity = ActivityType.WAITING,
+                    currentTask = "Ready for specialized tasks",
+                    lastAction = "Idle",
+                ),
+            ),
+            AgentState(
+                config = AgentConfig(
+                    slot = AgentSlot.AGENT_4,
+                    name = "Agent 04 (Tester)",
+                    role = AgentRole(
+                        type = AgentRoleType.TESTER,
+                        title = "Independent Tester / Reviewer",
+                        systemInstructions = "Independently review code, test edge cases, verify regressions, inspect security, check performance, and report bug findings to Agent 01.",
+                        responsibilities = listOf(
+                            "Run independent test suites",
+                            "Inspect code security and regressions",
+                            "Create bug reports for Agent 01"
+                        ),
+                    ),
+                    providerId = "preset-gemini",
+                    modelId = "gemini-2.5-flash",
+                ),
+                activityState = AgentActivityState(
+                    activity = ActivityType.WAITING,
+                    currentTask = "Ready to test commits",
+                    lastAction = "Idle",
+                ),
+            ),
+        )
+
+        val defaultTasks = listOf(
+            TeamTask(
+                partNumber = 1,
+                title = "Inspect codebase and define architecture",
+                description = "Analyze the shared workspace files, verify Gradle and source dependencies.",
+                assignedSlot = AgentSlot.AGENT_1,
+                status = TaskStatus.READY,
+                acceptanceCriteria = listOf("Project builds cleanly", "No unresolved dependencies"),
+            ),
+            TeamTask(
+                partNumber = 1,
+                title = "Implement core UI and feature components",
+                description = "Develop interface and screen logic in the shared project tree.",
+                assignedSlot = AgentSlot.AGENT_2,
+                status = TaskStatus.PLANNED,
+                acceptanceCriteria = listOf("Components pass layout verification"),
+            ),
+            TeamTask(
+                partNumber = 1,
+                title = "Build backend services & data contracts",
+                description = "Implement provider adapters and storage managers.",
+                assignedSlot = AgentSlot.AGENT_3,
+                status = TaskStatus.PLANNED,
+                acceptanceCriteria = listOf("Data layer conforms to specifications"),
+            ),
+            TeamTask(
+                partNumber = 1,
+                title = "Execute test suite & regression checks",
+                description = "Verify multi-agent concurrency, locks, and build output.",
+                assignedSlot = AgentSlot.AGENT_4,
+                status = TaskStatus.PLANNED,
+                acceptanceCriteria = listOf("All unit and integration tests pass"),
+            ),
+        )
+        defaultTasks.forEach { taskManager.addTask(it) }
+
+        _state.update {
+            it.copy(
+                teamAgents = initialAgents,
+                teamParts = taskManager.parts.value,
+                teamTasks = taskManager.tasks.value,
+                teamCurrentPartNumber = taskManager.currentPartNumber.value,
+                providerConfigs = providerManager.configs.value,
+                teamGroupMessages = teamChatManager.messages.value,
+            )
+        }
+
+        viewModelScope.launch {
+            taskManager.tasks.collect { tasks -> _state.update { it.copy(teamTasks = tasks) } }
+        }
+        viewModelScope.launch {
+            taskManager.parts.collect { parts -> _state.update { it.copy(teamParts = parts) } }
+        }
+        viewModelScope.launch {
+            taskManager.currentPartNumber.collect { num -> _state.update { it.copy(teamCurrentPartNumber = num) } }
+        }
+        viewModelScope.launch {
+            providerManager.configs.collect { configs -> _state.update { it.copy(providerConfigs = configs) } }
+        }
+        viewModelScope.launch {
+            teamChatManager.messages.collect { msgs -> _state.update { it.copy(teamGroupMessages = msgs) } }
+        }
+        viewModelScope.launch {
+            // Periodic quota & file lock refresh
+            while (true) {
+                delay(15_000L)
+                fileLockManager.cleanExpiredLocks()
+                val locks = fileLockManager.getActiveLocks()
+                val primaryConfigId = _state.value.providerConfigs.firstOrNull()?.id ?: "preset-antigravity"
+                val quota = providerManager.getOfficialQuota(primaryConfigId)
+                val est = providerManager.getEstimatedUsage(primaryConfigId)
+                val local = providerManager.getLocalUsage(primaryConfigId)
+                _state.update {
+                    it.copy(
+                        teamFileLocks = locks,
+                        teamOfficialQuota = quota,
+                        teamEstimatedUsage = est,
+                        teamLocalUsage = local,
+                    )
+                }
+            }
+        }
+    }
+
+    fun setTeamScreenMode(mode: TeamScreenMode) {
+        _state.update { it.copy(teamScreenMode = mode) }
+    }
+
+    fun setActivePrivateSlot(slot: AgentSlot?) {
+        _state.update { it.copy(activePrivateSlot = slot) }
+    }
+
+    fun startTeamWork() {
+        _state.update { it.copy(teamIsRunning = true) }
+        continuousSupervisor.startContinuous()
+        viewModelScope.launch {
+            runTeamCycle()
+        }
+    }
+
+    fun pauseTeamWork() {
+        _state.update { it.copy(teamIsRunning = false) }
+        continuousSupervisor.pauseContinuous("User paused team")
+        updateAgentActivities(ActivityType.PAUSED)
+    }
+
+    fun resumeTeamWork() {
+        _state.update { it.copy(teamIsRunning = true) }
+        continuousSupervisor.startContinuous()
+        viewModelScope.launch {
+            runTeamCycle()
+        }
+    }
+
+    fun stopTeamWork() {
+        _state.update { it.copy(teamIsRunning = false) }
+        continuousSupervisor.stopContinuous("User stopped team")
+        AgentSlot.entries.forEach { fileLockManager.releaseAllForAgent(it) }
+        updateAgentActivities(ActivityType.WAITING)
+        _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
+    }
+
+    fun advanceTeamPart() {
+        val current = _state.value.teamCurrentPartNumber
+        taskManager.approvePart(current)
+        teamChatManager.postMessage(
+            senderSlot = AgentSlot.AGENT_1,
+            senderName = "Agent 01 (Lead)",
+            text = "Part 0$current approved. Advancing team to Part 0${current + 1}.",
+            messageType = GroupMessageType.APPROVAL,
+        )
+    }
+
+    fun postTeamChatMessage(text: String, type: GroupMessageType = GroupMessageType.NORMAL, targetSlot: AgentSlot? = null) {
+        teamChatManager.postMessage(
+            senderSlot = null,
+            senderName = "You",
+            text = text,
+            messageType = type,
+        )
+        viewModelScope.launch {
+            delay(500L)
+            val responder = targetSlot ?: AgentSlot.AGENT_1
+            val responderAgent = _state.value.teamAgents.firstOrNull { it.config.slot == responder }
+            val agentName = responderAgent?.config?.name ?: responder.defaultName
+            teamChatManager.postMessage(
+                senderSlot = responder,
+                senderName = agentName,
+                text = "Acknowledged: \"$text\". Coordinated through Shared Workspace.",
+                messageType = GroupMessageType.PROGRESS_UPDATE,
+            )
+        }
+    }
+
+    fun saveProviderConfig(config: ProviderConfig, apiKey: String?) {
+        providerManager.saveConfig(config, apiKey)
+    }
+
+    fun deleteProviderConfig(configId: String) {
+        providerManager.deleteConfig(configId)
+    }
+
+    suspend fun testProviderConnection(configId: String): ConnectionTestResult {
+        return providerManager.testConnection(configId)
+    }
+
+    suspend fun discoverProviderModels(configId: String): List<ModelInfo> {
+        return providerManager.discoverModels(configId)
+    }
+
+    fun getProviderApiKey(configId: String): String {
+        return providerManager.getApiKey(configId)
+    }
+
+    private suspend fun runTeamCycle() {
+        teamChatManager.postMessage(
+            senderSlot = AgentSlot.AGENT_1,
+            senderName = "Agent 01 (Lead)",
+            text = "Team session started. Checking task queue and verifying shared workspace.",
+            messageType = GroupMessageType.TASK_ASSIGNMENT,
+        )
+
+        // Agent 01: analyzing
+        updateAgentActivity(AgentSlot.AGENT_1, ActivityType.ANALYZING, "Analyzing workspace", "Checking dependencies")
+        delay(1200L)
+
+        // Agent 02: lock file & start coding
+        val sampleFile = "app/src/main/java/com/orqen/workspace/MainFeature.kt"
+        fileLockManager.acquireLock(sampleFile, AgentSlot.AGENT_2, "task-1", "Implementing feature")
+        _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
+        updateAgentActivity(AgentSlot.AGENT_2, ActivityType.WRITING_CODE, "Implementing feature", "Editing $sampleFile", sampleFile)
+
+        teamChatManager.postMessage(
+            senderSlot = AgentSlot.AGENT_2,
+            senderName = "Agent 02 (Dev)",
+            text = "Lock acquired for $sampleFile. Beginning implementation.",
+            messageType = GroupMessageType.PROGRESS_UPDATE,
+            relatedFilePath = sampleFile,
+        )
+        delay(1500L)
+
+        // Agent 03: Specialist backend work
+        updateAgentActivity(AgentSlot.AGENT_3, ActivityType.WRITING_CODE, "Backend service setup", "Updating API contract")
+        delay(1200L)
+
+        // Agent 04: Preparing test suite
+        updateAgentActivity(AgentSlot.AGENT_4, ActivityType.TESTING, "Running test verification", "Executing unit tests")
+        delay(1500L)
+
+        // Release lock & commit
+        fileLockManager.releaseLock(sampleFile, AgentSlot.AGENT_2)
+        _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
+        updateAgentActivity(AgentSlot.AGENT_2, ActivityType.COMMITTING, "Committing changes", "git commit")
+
+        val commitMsg = gitCoordinator.formatCommitMessage(_state.value.teamCurrentPartNumber, "implement main feature", "feat")
+        teamChatManager.postMessage(
+            senderSlot = AgentSlot.AGENT_2,
+            senderName = "Agent 02 (Dev)",
+            text = "Feature completed and verified. Created commit: \"$commitMsg\". Requesting review from Agent 01 and Agent 04.",
+            messageType = GroupMessageType.COMPLETION_REPORT,
+        )
+        delay(1000L)
+
+        // Agent 04 reviews
+        updateAgentActivity(AgentSlot.AGENT_4, ActivityType.REVIEWING, "Code review", "Reviewing commit $commitMsg")
+        teamChatManager.postMessage(
+            senderSlot = AgentSlot.AGENT_4,
+            senderName = "Agent 04 (Tester)",
+            text = "Independent review passed. No regressions or security issues found.",
+            messageType = GroupMessageType.REVIEW_REQUEST,
+        )
+        delay(1000L)
+
+        // Agent 01 approves
+        updateAgentActivity(AgentSlot.AGENT_1, ActivityType.COMPLETED, "Part task approved", "Merged into shared workspace")
+        teamChatManager.postMessage(
+            senderSlot = AgentSlot.AGENT_1,
+            senderName = "Agent 01 (Lead)",
+            text = "Approved. Acceptance criteria verified on device.",
+            messageType = GroupMessageType.APPROVAL,
+        )
+
+        delay(1000L)
+        updateAgentActivities(ActivityType.WAITING)
+        continuousSupervisor.handleSessionCompletion(
+            completedTask = _state.value.teamTasks.firstOrNull(),
+            hasMoreTasks = false,
+            exitCode = 0,
+            errorMessage = null,
+            onContinueNext = {},
+        )
+    }
+
+    private fun updateAgentActivity(slot: AgentSlot, activity: ActivityType, task: String = "", lastAction: String = "", file: String = "") {
+        val current = _state.value.teamAgents.toMutableList()
+        val index = current.indexOfFirst { it.config.slot == slot }
+        if (index >= 0) {
+            val old = current[index]
+            current[index] = old.copy(
+                isWorking = (activity != ActivityType.WAITING && activity != ActivityType.PAUSED && activity != ActivityType.COMPLETED),
+                activityState = AgentActivityState(
+                    activity = activity,
+                    currentTask = task,
+                    currentFile = file,
+                    lastAction = lastAction,
+                    startedAtElapsedMs = SystemClock.elapsedRealtime(),
+                ),
+            )
+            _state.update { it.copy(teamAgents = current) }
+        }
+    }
+
+    private fun updateAgentActivities(activity: ActivityType) {
+        val current = _state.value.teamAgents.map {
+            it.copy(
+                isWorking = (activity != ActivityType.WAITING && activity != ActivityType.PAUSED && activity != ActivityType.COMPLETED),
+                activityState = it.activityState.copy(activity = activity),
+            )
+        }
+        _state.update { it.copy(teamAgents = current) }
     }
 
     override fun onCleared() {

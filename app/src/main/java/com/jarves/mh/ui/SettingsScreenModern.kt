@@ -510,7 +510,7 @@ fun SettingsScreen(
                         Icon(Icons.Default.Settings, null, Modifier.size(20.dp), tint = PocketOrange)
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Mobile Harness", fontWeight = FontWeight.SemiBold)
+                            Text("ORQEN", fontWeight = FontWeight.SemiBold)
                             Text(stringResource(R.string.settings_app_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text("v${BuildConfig.VERSION_NAME}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1115,7 +1115,7 @@ private fun DebugUpdateChannelSection(
             value = url,
             onValueChange = { url = it },
             label = { Text(stringResource(R.string.st_manifest_url)) },
-            placeholder = { Text("https://your-tunnel.example/mobile-harness-update.json") },
+            placeholder = { Text("https://your-tunnel.example/orqen-update.json") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             modifier = Modifier.fillMaxWidth(),
