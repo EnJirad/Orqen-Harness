@@ -136,12 +136,38 @@ class OpenAiCompatibleAdapter : ProviderAdapter {
             config.customHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
         }
 
+        val isOpenRouter = base.contains("openrouter.ai", ignoreCase = true)
         val messagesArray = JSONArray()
         if (systemInstruction.isNotBlank()) {
-            messagesArray.put(JSONObject().put("role", "system").put("content", systemInstruction))
+            if (isOpenRouter) {
+                val sysBlock = JSONObject()
+                    .put("type", "text")
+                    .put("text", systemInstruction)
+                    .put("cache_control", JSONObject().put("type", "ephemeral"))
+                messagesArray.put(JSONObject().put("role", "system").put("content", JSONArray().put(sysBlock)))
+            } else {
+                messagesArray.put(JSONObject().put("role", "system").put("content", systemInstruction))
+            }
         }
         for (m in messages) {
-            val obj = JSONObject().put("role", m.role).put("content", m.content)
+            val obj = JSONObject().put("role", m.role)
+            if (m.images.isNotEmpty()) {
+                val parts = JSONArray()
+                parts.put(JSONObject().put("type", "text").put("text", m.content))
+                for (img in m.images) {
+                    parts.put(
+                        JSONObject()
+                            .put("type", "image_url")
+                            .put(
+                                "image_url",
+                                JSONObject().put("url", "data:${img.mimeType};base64,${img.base64Data}"),
+                            ),
+                    )
+                }
+                obj.put("content", parts)
+            } else {
+                obj.put("content", m.content)
+            }
             if (m.name != null) obj.put("name", m.name)
             messagesArray.put(obj)
         }

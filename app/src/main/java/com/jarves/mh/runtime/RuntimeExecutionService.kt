@@ -5,8 +5,11 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.jarves.mh.MainActivity
 import com.jarves.mh.R
@@ -31,6 +34,41 @@ class RuntimeExecutionService : Service() {
         get() = notificationTitleOverride ?: AppStrings.get(this, R.string.rt_exec_default_title)
     private var canStop: Boolean = true
     private var taskRunning: Boolean = false
+    private var startedAtElapsedMs: Long = 0L
+    private var currentDetailText: String = ""
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val liveTimerRunnable = object : Runnable {
+        override fun run() {
+            if (!taskRunning) return
+            val detail = currentDetailText.ifBlank { AppStrings.get(this@RuntimeExecutionService, R.string.rt_exec_working_in, projectName) }
+            getSystemService(NotificationManager::class.java).notify(
+                RUNNING_NOTIFICATION_ID,
+                runningNotification(detail, includeStop = canStop),
+            )
+            mainHandler.postDelayed(this, 1_000L)
+        }
+    }
+
+    private fun formatElapsedDuration(elapsedMs: Long): String {
+        val totalSeconds = (elapsedMs / 1_000L).coerceAtLeast(0L)
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) {
+            String.format("%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format("%d:%02d", minutes, seconds)
+        }
+    }
+
+    private fun startLiveTimer() {
+        mainHandler.removeCallbacks(liveTimerRunnable)
+        mainHandler.postDelayed(liveTimerRunnable, 1_000L)
+    }
+
+    private fun stopLiveTimer() {
+        mainHandler.removeCallbacks(liveTimerRunnable)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -43,6 +81,7 @@ class RuntimeExecutionService : Service() {
         if (intent?.hasExtra(EXTRA_CAN_STOP) == true) canStop = intent.getBooleanExtra(EXTRA_CAN_STOP, true)
         when (intent?.action ?: ACTION_START) {
             ACTION_STOP -> {
+                stopLiveTimer()
                 RuntimeTaskController.requestStop()
                 getSystemService(NotificationManager::class.java).notify(
                     RUNNING_NOTIFICATION_ID,
@@ -54,46 +93,75 @@ class RuntimeExecutionService : Service() {
                 if (!taskRunning) return START_NOT_STICKY
                 val detail = intent?.getStringExtra(EXTRA_DETAIL)?.takeIf { it.isNotBlank() }
                     ?: AppStrings.get(this, R.string.rt_exec_working_in, projectName)
+                currentDetailText = detail
                 getSystemService(NotificationManager::class.java).notify(
                     RUNNING_NOTIFICATION_ID,
                     runningNotification(detail, includeStop = canStop),
                 )
             }
             ACTION_COMPLETE -> finishTask(
-                title = AppStrings.get(this, R.string.rt_exec_task_completed),
+                title = intent?.getStringExtra(EXTRA_TITLE)?.takeIf { it.isNotBlank() }
+                    ?: AppStrings.get(this, R.string.rt_exec_task_completed),
                 detail = intent?.getStringExtra(EXTRA_DETAIL) ?: AppStrings.get(this, R.string.rt_exec_finished_in, projectName),
                 failed = false,
             )
+            ACTION_NOTIFY_RESULT -> {
+                val title = intent?.getStringExtra(EXTRA_TITLE)?.takeIf { it.isNotBlank() }
+                    ?: AppStrings.get(this, R.string.rt_exec_task_completed)
+                val detail = intent?.getStringExtra(EXTRA_DETAIL)?.takeIf { it.isNotBlank() }
+                    ?: AppStrings.get(this, R.string.rt_exec_finished_in, projectName)
+                val notification = NotificationCompat.Builder(this, RESULT_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle(title)
+                    .setContentText(detail)
+                    .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+                    .setContentIntent(openAppIntent())
+                    .setAutoCancel(true)
+                    .setCategory(NotificationCompat.CATEGORY_STATUS)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .build()
+                getSystemService(NotificationManager::class.java).notify(RESULT_NOTIFICATION_ID, notification)
+            }
             ACTION_FAILED -> finishTask(
-                title = AppStrings.get(this, R.string.rt_exec_task_attention),
+                title = intent?.getStringExtra(EXTRA_TITLE)?.takeIf { it.isNotBlank() }
+                    ?: AppStrings.get(this, R.string.rt_exec_task_attention),
                 detail = intent?.getStringExtra(EXTRA_DETAIL) ?: AppStrings.get(this, R.string.rt_exec_could_not_finish),
                 failed = true,
             )
             ACTION_CANCELLED -> {
                 taskRunning = false
+                stopLiveTimer()
                 releaseWakeLock()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
             else -> {
                 taskRunning = true
+                startedAtElapsedMs = SystemClock.elapsedRealtime()
                 val detail = intent?.getStringExtra(EXTRA_DETAIL)?.takeIf(String::isNotBlank)
                     ?: AppStrings.get(this, R.string.rt_exec_working_in, projectName)
+                currentDetailText = detail
                 startForeground(
                     RUNNING_NOTIFICATION_ID,
                     runningNotification(detail, includeStop = canStop),
                 )
                 acquireWakeLock()
+                startLiveTimer()
             }
         }
         return START_NOT_STICKY
     }
 
     private fun runningNotification(detail: String, includeStop: Boolean): android.app.Notification {
+        val elapsedStr = if (startedAtElapsedMs > 0L) {
+            formatElapsedDuration(SystemClock.elapsedRealtime() - startedAtElapsedMs)
+        } else "0:00"
+        val formattedLine = "$elapsedStr | $detail"
         val builder = NotificationCompat.Builder(this, RUNNING_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(notificationTitle)
-            .setContentText(detail)
+            .setContentText(formattedLine)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(formattedLine))
             .setContentIntent(openAppIntent())
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setOnlyAlertOnce(true)
@@ -114,6 +182,7 @@ class RuntimeExecutionService : Service() {
 
     private fun finishTask(title: String, detail: String, failed: Boolean) {
         taskRunning = false
+        stopLiveTimer()
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         val notification = NotificationCompat.Builder(this, RESULT_CHANNEL_ID)
@@ -152,6 +221,7 @@ class RuntimeExecutionService : Service() {
     }
 
     override fun onDestroy() {
+        stopLiveTimer()
         releaseWakeLock()
         super.onDestroy()
     }
@@ -163,6 +233,7 @@ class RuntimeExecutionService : Service() {
         const val ACTION_STOP = "com.jarves.mh.STOP_RUNTIME"
         const val ACTION_PROGRESS = "com.jarves.mh.PROGRESS_RUNTIME"
         const val ACTION_COMPLETE = "com.jarves.mh.COMPLETE_RUNTIME"
+        const val ACTION_NOTIFY_RESULT = "com.jarves.mh.NOTIFY_RESULT_RUNTIME"
         const val ACTION_FAILED = "com.jarves.mh.FAIL_RUNTIME"
         const val ACTION_CANCELLED = "com.jarves.mh.CANCEL_RUNTIME"
         const val EXTRA_PROJECT_NAME = "project_name"

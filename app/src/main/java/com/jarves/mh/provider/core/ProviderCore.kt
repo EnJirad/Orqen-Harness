@@ -64,12 +64,18 @@ data class ToolCallInfo(
     val argumentsJson: String,
 )
 
+data class AiImageAttachment(
+    val mimeType: String = "image/jpeg",
+    val base64Data: String,
+)
+
 data class AiMessage(
     val role: String, // "system", "user", "assistant", "tool"
     val content: String,
     val name: String? = null,
     val toolCalls: List<ToolCallInfo> = emptyList(),
     val toolCallId: String? = null,
+    val images: List<AiImageAttachment> = emptyList(),
 )
 
 data class TokenUsage(

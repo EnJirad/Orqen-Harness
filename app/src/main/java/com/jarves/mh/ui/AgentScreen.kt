@@ -350,18 +350,42 @@ fun AgentScreen(
         }
     }
 
-    // ── Antigravity Model Modal Bottom Sheet ──
+    // ── Antigravity Model Sheet (Pinned Dialog: never dragged down when scrolling; closes only on tap outside!) ──
     if (showAntigravityModelSheet) {
-        ModalBottomSheet(
+        androidx.compose.ui.window.Dialog(
             onDismissRequest = { showAntigravityModelSheet = false },
-            sheetState = antigravitySheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnClickOutside = true,
+            ),
         ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = { showAntigravityModelSheet = false },
+                    ),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 6.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.82f)
+                        .clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null,
+                            onClick = {},
+                        ),
+                ) {
             Column(
                 Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.82f)
-                    .padding(horizontal = 20.dp)
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp, vertical = 18.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -458,22 +482,81 @@ fun AgentScreen(
                     }
                 }
             }
+                }
+            }
         }
     }
 
-    // ── Provider Models Modal Bottom Sheet ──
+    // ── Provider Models Sheet (Pinned Dialog: never dragged down when scrolling; closes only on tap outside!) ──
     if (showModels) {
-        ModalBottomSheet(
+        val matchingRealQuota = state.teamAllProviderQuotas.values.firstOrNull { q ->
+            q.isAvailable && q.remainingPercent != null && (
+                q.providerId.contains(selectedKind.name, ignoreCase = true) ||
+                    q.source.contains(selectedKind.name, ignoreCase = true)
+                )
+        }
+        androidx.compose.ui.window.Dialog(
             onDismissRequest = { showModels = false },
-            sheetState = providerSheetState,
-            containerColor = MaterialTheme.colorScheme.surface,
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnClickOutside = true,
+            ),
         ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = { showModels = false },
+                    ),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 6.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.82f)
+                        .clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null,
+                            onClick = {},
+                        ),
+                ) {
             Column(
                 Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.82f)
-                    .padding(horizontal = 20.dp)
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp, vertical = 18.dp)
             ) {
+                if (matchingRealQuota != null && matchingRealQuota.remainingPercent != null) {
+                    val rem = matchingRealQuota.remainingPercent.coerceIn(0f, 1f)
+                    val qColor = when {
+                        rem > 0.25f -> Color(0xFF16A34A)
+                        rem > 0.12f -> Color(0xFFD97706)
+                        else -> Color(0xFFDC2626)
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = qColor.copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, qColor.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(stringResource(R.string.model_picker_real_quota_label), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = qColor)
+                                Text("${(rem * 100).toInt()}% left", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = qColor)
+                            }
+                            LinearProgressIndicator(
+                                progress = { rem },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = qColor,
+                                trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                            )
+                        }
+                    }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(stringResource(R.string.provider_available_models), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -752,6 +835,8 @@ fun AgentScreen(
                             }
                         }
                     }
+                }
+            }
                 }
             }
         }
@@ -1058,6 +1143,15 @@ fun AgentScreen(
                                     shape = RoundedCornerShape(12.dp),
                                 ) {
                                     Text(stringResource(R.string.agent_install_action, viewedAgentTitle), fontWeight = FontWeight.Bold)
+                                }
+                                if (state.agentInstallErrorKind == viewedAgent && !state.agentInstallError.isNullOrBlank()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        text = state.agentInstallError,
+                                        fontSize = 11.sp,
+                                        lineHeight = 15.sp,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
                                 }
                             }
                         }

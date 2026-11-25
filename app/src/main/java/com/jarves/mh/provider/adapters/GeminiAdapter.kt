@@ -151,7 +151,19 @@ class GeminiAdapter : ProviderAdapter {
         val contentsArray = JSONArray()
         for (m in messages) {
             val role = if (m.role == "assistant") "model" else "user"
-            contentsArray.put(JSONObject().put("role", role).put("parts", JSONArray().put(JSONObject().put("text", m.content))))
+            val parts = JSONArray()
+            for (img in m.images) {
+                parts.put(
+                    JSONObject().put(
+                        "inlineData",
+                        JSONObject()
+                            .put("mimeType", img.mimeType)
+                            .put("data", img.base64Data),
+                    ),
+                )
+            }
+            parts.put(JSONObject().put("text", m.content))
+            contentsArray.put(JSONObject().put("role", role).put("parts", parts))
         }
 
         val requestJson = JSONObject()

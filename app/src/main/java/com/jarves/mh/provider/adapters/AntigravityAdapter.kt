@@ -58,15 +58,17 @@ class AntigravityAdapter(private val preferences: AppPreferences? = null) : Prov
         val signedIn = preferences?.antigravitySignedIn == true
         val email = preferences?.antigravityAccountEmail.orEmpty()
         return if (signedIn) {
+            // Never fake a hardcoded percentage — only report real official remaining % when API provides it
             OfficialQuota(
                 providerId = config.id,
-                remainingPercent = 0.85f,
-                quotaUsed = "Active",
-                quotaLimit = "Standard Plan",
-                resetTime = "Daily",
-                rateLimit = "Standard Antigravity Quota",
+                remainingPercent = null,
+                quotaUsed = "Connected",
+                quotaLimit = "Google Account",
+                resetTime = null,
+                rateLimit = null,
                 source = if (email.isNotBlank()) "Google Account ($email)" else "Google Account",
-                isAvailable = true,
+                isAvailable = false,
+                unavailableReason = "Antigravity OAuth does not expose remaining % via API",
             )
         } else {
             OfficialQuota(

@@ -32,6 +32,11 @@ fun ProviderManagementScreen(
     configs: List<ProviderConfig>,
     antigravityCliInstalled: Boolean = true,
     antigravityInstalling: Boolean = false,
+    antigravityInstallProgress: Float = 0f,
+    antigravityInstallMessage: String? = null,
+    antigravityInstallError: String? = null,
+    antigravityDownloadedBytes: Long? = null,
+    antigravityTotalBytes: Long? = null,
     antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
     onInstallAntigravityCli: () -> Unit = {},
     onStartAntigravityLogin: () -> Unit = {},
@@ -42,9 +47,10 @@ fun ProviderManagementScreen(
     onTestConnection: suspend (String) -> ConnectionTestResult,
     onDiscoverModels: suspend (String) -> List<ModelInfo>,
     getSavedApiKey: (String) -> String,
+    embedded: Boolean = false,
     onBack: () -> Unit,
 ) {
-    BackHandler(onBack = onBack)
+    if (!embedded) BackHandler(onBack = onBack)
 
     var showAddDialog by remember { mutableStateOf(false) }
     var editingConfig by remember { mutableStateOf<ProviderConfig?>(null) }
@@ -57,22 +63,25 @@ fun ProviderManagementScreen(
     val scope = rememberCoroutineScope()
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            TopAppBar(
-                modifier = Modifier.padding(top = 4.dp),
-                title = {
-                    Column {
-                        Text(stringResource(R.string.provider_mgmt_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text(stringResource(R.string.provider_mgmt_subtitle), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-            )
+            if (!embedded) {
+                TopAppBar(
+                    modifier = Modifier.padding(top = 4.dp),
+                    title = {
+                        Column {
+                            Text(stringResource(R.string.provider_mgmt_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(stringResource(R.string.provider_mgmt_subtitle), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                )
+            }
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
@@ -88,10 +97,9 @@ fun ProviderManagementScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(MaterialTheme.colorScheme.background)
-                .padding(16.dp),
-            contentPadding = PaddingValues(bottom = 84.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .background(MaterialTheme.colorScheme.background),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 92.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             item {
                 Surface(
@@ -174,19 +182,56 @@ fun ProviderManagementScreen(
                             ) {
                                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     if (!antigravityCliInstalled) {
-                                        Text(
-                                            text = stringResource(R.string.agent_antigravity_cli_needed),
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.error,
-                                            fontWeight = FontWeight.SemiBold,
-                                        )
-                                        Button(
-                                            onClick = onInstallAntigravityCli,
-                                            enabled = !antigravityInstalling,
-                                            modifier = Modifier.fillMaxWidth(),
-                                            shape = RoundedCornerShape(10.dp),
-                                        ) {
-                                            Text(stringResource(R.string.agent_antigravity_install_cli), fontSize = 12.sp)
+                                        if (antigravityInstalling) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                                                Spacer(Modifier.width(8.dp))
+                                                Text(
+                                                    text = antigravityInstallMessage ?: stringResource(R.string.agent_installing_binary),
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                )
+                                            }
+                                            LinearProgressIndicator(
+                                                progress = { antigravityInstallProgress.coerceIn(0f, 1f) },
+                                                modifier = Modifier.fillMaxWidth(),
+                                            )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                            ) {
+                                                val mbLabel = if (antigravityDownloadedBytes != null || antigravityTotalBytes != null) {
+                                                    val dl = (antigravityDownloadedBytes ?: 0L) / (1024f * 1024f)
+                                                    val tot = antigravityTotalBytes?.let { " / %.1f MB".format(it / (1024f * 1024f)) }.orEmpty()
+                                                    "%.1f MB%s".format(dl, tot)
+                                                } else {
+                                                    stringResource(R.string.st_processing_files)
+                                                }
+                                                Text(mbLabel, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Text("${(antigravityInstallProgress * 100).toInt()}%", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
+                                        } else {
+                                            Text(
+                                                text = stringResource(R.string.agent_antigravity_cli_needed),
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.error,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                            if (!antigravityInstallError.isNullOrBlank()) {
+                                                Text(
+                                                    text = antigravityInstallError,
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.error,
+                                                )
+                                            }
+                                            Button(
+                                                onClick = onInstallAntigravityCli,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                shape = RoundedCornerShape(10.dp),
+                                            ) {
+                                                Text(stringResource(R.string.agent_antigravity_install_cli), fontSize = 12.sp)
+                                            }
                                         }
                                     } else if (antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN) {
                                         Row(
@@ -194,18 +239,37 @@ fun ProviderManagementScreen(
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically,
                                         ) {
-                                            Text(
-                                                text = "${stringResource(R.string.agent_antigravity_connected)} ${antigravityAuth.accountEmail?.let { "($it)" } ?: ""}",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF2E7D32),
-                                                modifier = Modifier.weight(1f),
-                                            )
+                                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF16A34A), modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(6.dp))
+                                                Text(
+                                                    text = "${stringResource(R.string.agent_antigravity_connected)} ${antigravityAuth.accountEmail?.let { "($it)" } ?: ""}",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF16A34A),
+                                                )
+                                            }
                                             TextButton(onClick = onLogoutAntigravity) {
                                                 Text("Sign Out", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
                                             }
                                         }
+                                    } else if (antigravityAuth.status == AntigravityAuthStatus.STARTING || antigravityAuth.status == AntigravityAuthStatus.COMPLETING) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.padding(vertical = 4.dp),
+                                        ) {
+                                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color(0xFFD97706))
+                                            Text(
+                                                text = antigravityAuth.message?.takeIf { it.isNotBlank() } ?: stringResource(R.string.conn_status_connecting),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                            )
+                                        }
                                     } else {
+                                        if (antigravityAuth.status == AntigravityAuthStatus.ERROR && !antigravityAuth.message.isNullOrBlank()) {
+                                            Text(antigravityAuth.message, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                                        }
                                         Button(
                                             onClick = onStartAntigravityLogin,
                                             modifier = Modifier.fillMaxWidth(),
@@ -337,13 +401,14 @@ fun ProviderManagementScreen(
                             }
                         }
 
+                        val currentDiscovered = discoveredMessage
                         if (discoveringConfigId == config.id) {
                             Spacer(Modifier.height(6.dp))
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        } else if (discoveredMessage?.first == config.id) {
+                        } else if (currentDiscovered != null && currentDiscovered.first == config.id) {
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                text = discoveredMessage!!.second,
+                                text = currentDiscovered.second,
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Medium,

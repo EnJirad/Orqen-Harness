@@ -589,14 +589,59 @@ class RuntimeInstaller(private val context: Context) {
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ) {
         if (isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) return
-        installRuntimeOverlay(
-            bundle = AGY_BUNDLE,
-            message = str(R.string.rt_install_installing_version, "Antigravity CLI", AGY_VERSION),
-            from = fraction,
-            to = 0.995f,
-            onProgress = onProgress,
-            forceEmbedded = true,
-        )
+        val overlayResult = runCatching {
+            installRuntimeOverlay(
+                bundle = AGY_BUNDLE,
+                message = str(R.string.rt_install_installing_version, "Antigravity CLI", AGY_VERSION),
+                from = fraction,
+                to = 0.995f,
+                onProgress = onProgress,
+            )
+        }
+        if (overlayResult.isFailure) {
+            // Fallback: download the official Antigravity CLI tarball directly from GCS
+            // if the GitHub release bundle is unreachable or unavailable.
+            val downloaded = File(downloads, "antigravity-$AGY_VERSION-linux-arm64.tar.gz")
+            val agyDownloadLabel = str(R.string.rt_install_downloading_version, "Antigravity CLI", AGY_VERSION)
+            downloadVerified(AGY_RELEASE_URL, downloaded, AGY_RELEASE_SHA512, algorithm = "SHA-512") { bytes, total ->
+                val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+                onProgress(
+                    RuntimeInstallProgress(
+                        message = agyDownloadLabel,
+                        fraction = fraction + ratio * (0.90f - fraction),
+                        downloadedBytes = bytes,
+                        totalBytes = total.takeIf { it > 0L },
+                        event = RuntimeInstallEvent.DOWNLOAD,
+                    ),
+                )
+            }
+            onProgress(
+                RuntimeInstallProgress(
+                    message = str(R.string.rt_install_installing_version, "Antigravity CLI", AGY_VERSION),
+                    fraction = 0.92f,
+                    indeterminate = true,
+                ),
+            )
+            val destination = File(rootfs, AGY_GUEST_PATH.removePrefix("/"))
+            destination.parentFile?.mkdirs()
+            var found = false
+            TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(downloaded.inputStream()))).use { archive ->
+                var entry = archive.nextEntry
+                while (entry != null) {
+                    if (entry.isFile && entry.name.removePrefix("./") == "antigravity") {
+                        val staged = File(destination.parentFile, ".agy-$AGY_VERSION.installing")
+                        FileOutputStream(staged).use { archive.copyTo(it) }
+                        Os.chmod(staged.absolutePath, 0b111101101)
+                        Os.rename(staged.absolutePath, destination.absolutePath)
+                        found = true
+                        break
+                    }
+                    entry = archive.nextEntry
+                }
+            }
+            downloaded.delete()
+            check(found) { "Antigravity CLI archive is incomplete" }
+        }
         verifyGuest(proot, "$AGY_GUEST_PATH --version", str(R.string.rt_install_verify_failed, "Antigravity CLI"))
         agyMarker.writeText(AGY_VERSION)
         require(isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) {
@@ -997,6 +1042,9 @@ class RuntimeInstaller(private val context: Context) {
         }
     }
 
+    private fun hasEmbeddedBundle(bundle: RuntimeBundle): Boolean =
+        runCatching { context.assets.open("runtime/${bundle.fileName}").use { true } }.getOrDefault(false)
+
     private suspend fun obtainRuntimeBundle(
         bundle: RuntimeBundle,
         preferEmbedded: Boolean,
@@ -1006,7 +1054,7 @@ class RuntimeInstaller(private val context: Context) {
     ): File {
         downloads.mkdirs()
         val destination = File(downloads, bundle.fileName)
-        val useEmbedded = preferEmbedded || BuildConfig.OFFLINE_RUNTIME_BUNDLES
+        val useEmbedded = (preferEmbedded || BuildConfig.OFFLINE_RUNTIME_BUNDLES) && hasEmbeddedBundle(bundle)
         if (useEmbedded) {
             val loadingLabel = str(R.string.rt_install_loading_bundle, bundle.label)
             onProgress(RuntimeInstallProgress(loadingLabel, from, 0, bundle.compressedBytes))

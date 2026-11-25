@@ -11,9 +11,10 @@ import org.junit.Test
 class Part03FrontendStateTest {
 
     @Test
-    fun `team screen mode supports all 7 dashboard navigation states`() {
+    fun `team screen mode supports all 8 dashboard navigation states`() {
         val modes = TeamScreenMode.entries
-        assertEquals(7, modes.size)
+        assertEquals(8, modes.size)
+        assertTrue(modes.contains(TeamScreenMode.PROJECT_LIST))
         assertTrue(modes.contains(TeamScreenMode.DASHBOARD))
         assertTrue(modes.contains(TeamScreenMode.AGENT_DETAIL))
         assertTrue(modes.contains(TeamScreenMode.QUOTA_DASHBOARD))

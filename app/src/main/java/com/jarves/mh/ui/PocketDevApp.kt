@@ -64,6 +64,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.horizontalScroll
@@ -115,6 +116,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Memory
@@ -2075,13 +2077,22 @@ private fun StartupLoadingScreen(
     }
     val logoTransition = rememberInfiniteTransition(label = "startup logo")
     val logoPulse by logoTransition.animateFloat(
-        initialValue = 0.96f,
-        targetValue = 1.04f,
+        initialValue = 0.94f,
+        targetValue = 1.06f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1_400),
             repeatMode = RepeatMode.Reverse,
         ),
         label = "startup logo pulse",
+    )
+    val orbitAngle by logoTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2_800, easing = androidx.compose.animation.core.LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "orqen orbit",
     )
 
     Box(
@@ -2091,14 +2102,42 @@ private fun StartupLoadingScreen(
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            BrandMark(
-                Modifier.graphicsLayer {
-                    scaleX = logoPulse
-                    scaleY = logoPulse
-                    alpha = 0.82f + ((logoPulse - 0.96f) / 0.08f) * 0.18f
-                },
+            Box(contentAlignment = Alignment.Center) {
+                // Mint-Cyan Orbital Ring
+                Box(
+                    modifier = Modifier
+                        .size(88.dp)
+                        .graphicsLayer { rotationZ = orbitAngle }
+                        .border(
+                            width = 2.dp,
+                            brush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                                listOf(
+                                    Color.Transparent,
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
+                                    MaterialTheme.colorScheme.primary,
+                                    Color.Transparent,
+                                ),
+                            ),
+                            shape = CircleShape,
+                        ),
+                )
+                BrandMark(
+                    Modifier.graphicsLayer {
+                        scaleX = logoPulse
+                        scaleY = logoPulse
+                        alpha = 0.85f + ((logoPulse - 0.94f) / 0.12f) * 0.15f
+                    },
+                )
+            }
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "ORQEN",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 4.sp,
             )
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(10.dp))
             AnimatedContent(
                 targetState = messages[messageIndex],
                 label = "startup message",
@@ -2488,10 +2527,13 @@ private fun RootScreenHost(
     var openBackup by rememberSaveable { mutableStateOf(false) }
 
     // System Back Button handling across all root tabs & AI Team sub-screens
-    BackHandler(enabled = showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.DASHBOARD) || screen != RootScreen.PROJECTS) {
+    BackHandler(enabled = showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST) || screen != RootScreen.PROJECTS) {
         when {
             showQuickTerminal -> showQuickTerminal = false
-            screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.DASHBOARD -> {
+            screen == RootScreen.TEAM && state.teamScreenMode == TeamScreenMode.DASHBOARD -> {
+                viewModel.setTeamScreenMode(TeamScreenMode.PROJECT_LIST)
+            }
+            screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST -> {
                 viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD)
             }
             screen != RootScreen.PROJECTS -> {
@@ -2516,10 +2558,14 @@ private fun RootScreenHost(
     val terminalLiveOutput by viewModel.terminalLiveOutput.collectAsStateWithLifecycle()
     val terminalCurrentCommand by viewModel.terminalCurrentCommand.collectAsStateWithLifecycle()
 
+    val insideTeamWorkspace = screen == RootScreen.TEAM &&
+        state.teamScreenMode == TeamScreenMode.DASHBOARD &&
+        state.activeTeamProject != null
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            if (!keyboardVisible && !insideTeamWorkspace) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 RootScreen.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = screen == tab,
@@ -2577,77 +2623,152 @@ private fun RootScreenHost(
                 )
                 RootScreen.TEAM -> {
                     when (state.teamScreenMode) {
-                        TeamScreenMode.DASHBOARD -> TeamDashboardScreen(
-                            teamName = state.activeProject?.name ?: "ORQEN Workspace",
-                            workspacePath = state.activeProject?.slug?.let { "/workspace/$it" } ?: "/workspace/shared",
-                            projects = state.projects,
-                            activeProject = state.activeProject,
+                        TeamScreenMode.PROJECT_LIST -> com.jarves.mh.multiagent.ui.TeamProjectsHomeScreen(
+                            teamProjects = state.teamProjects,
+                            soloProjects = state.projects,
+                            runningTeamProjectId = state.runningTeamProjectId,
                             githubAuthStatus = state.githubAuthStatus,
                             githubLogin = state.githubLogin,
+                            githubUserCode = state.githubUserCode,
+                            githubMessage = state.githubMessage,
                             githubRepositories = state.githubRepositories,
+                            githubRepositoriesLoading = state.githubRepositoriesLoading,
                             gitCloneRunning = state.gitCloneRunning,
                             projectImporting = state.projectImporting,
-                            agents = state.teamAgents,
-                            tasks = state.teamTasks,
-                            parts = state.teamParts,
-                            currentPartNumber = state.teamCurrentPartNumber,
-                            fileLocks = state.teamFileLocks,
-                            officialQuota = state.teamOfficialQuota,
-                            estimatedUsage = state.teamEstimatedUsage,
-                            localUsage = state.teamLocalUsage,
-                            providerConfigs = state.providerConfigs,
-                            allProviderQuotas = state.teamAllProviderQuotas,
-                            allProviderEstimated = state.teamAllProviderEstimated,
-                            continuousConfig = state.teamContinuousConfig,
-                            isTeamRunning = state.teamIsRunning,
-                            onSelectProject = viewModel::openProject,
-                            onCreateProject = viewModel::createProject,
-                            onImportZip = viewModel::importZipProject,
-                            onCloneGit = viewModel::clonePublicGitRepository,
+                            onOpenTeamProject = viewModel::openTeamProject,
+                            onCreateTeamProject = { name ->
+                                viewModel.createTeamProject(name)
+                                viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD)
+                            },
+                            onRenameTeamProject = viewModel::renameTeamProject,
+                            onCloneFromSolo = { solo ->
+                                viewModel.cloneSoloProjectToTeam(solo)
+                            },
+                            onDeleteTeamProject = viewModel::deleteTeamProject,
+                            onImportZip = viewModel::importZipToTeamProject,
+                            onCloneGit = viewModel::clonePublicGitToTeam,
                             onStartGitHubLogin = viewModel::startGitHubLogin,
+                            onGenerateNewGitHubCode = viewModel::generateNewGitHubCode,
                             onRefreshGitHub = viewModel::refreshGitHubRepositories,
-                            onCloneGitHub = viewModel::cloneGitHubRepository,
-                            onAddAgent = viewModel::addTeamAgent,
-                            onRemoveAgent = viewModel::removeTeamAgent,
-                            onUpdateContinuousConfig = viewModel::updateTeamContinuousConfig,
-                            onStartTeam = viewModel::startTeamWork,
-                            onPauseTeam = viewModel::pauseTeamWork,
-                            onResumeTeam = viewModel::resumeTeamWork,
-                            onStopTeam = viewModel::stopTeamWork,
-                            onOpenAgentChat = { slot ->
-                                viewModel.setActivePrivateSlot(slot)
-                                viewModel.setTeamScreenMode(TeamScreenMode.PRIVATE_CHAT)
-                            },
-                            onOpenAgentDetail = { slot ->
-                                viewModel.setActivePrivateSlot(slot)
-                                viewModel.setTeamScreenMode(TeamScreenMode.AGENT_DETAIL)
-                            },
-                            onToggleAgentEnabled = viewModel::toggleAgentEnabled,
-                            onOpenQuotaDashboard = { viewModel.setTeamScreenMode(TeamScreenMode.QUOTA_DASHBOARD) },
-                            onOpenActivityFeed = { viewModel.setTeamScreenMode(TeamScreenMode.ACTIVITY_FEED) },
-                            onReleaseFileLock = viewModel::releaseFileLock,
-                            onOpenGroupChat = { viewModel.setTeamScreenMode(TeamScreenMode.GROUP_CHAT) },
-                            onOpenProviderSettings = { viewModel.setTeamScreenMode(TeamScreenMode.PROVIDER_SETTINGS) },
-                            onNextPart = viewModel::advanceTeamPart,
+                            onDisconnectGitHub = viewModel::disconnectGitHub,
+                            onCloneGitHub = viewModel::cloneGitHubToTeam,
                         )
+                        TeamScreenMode.DASHBOARD -> {
+                            val activeTeamProj = state.activeTeamProject
+                            if (activeTeamProj == null) {
+                                LaunchedEffect(Unit) { viewModel.setTeamScreenMode(TeamScreenMode.PROJECT_LIST) }
+                            } else com.jarves.mh.multiagent.ui.TeamWorkspaceScreen(
+                                project = activeTeamProj,
+                                projects = state.teamProjects,
+                                soloProjects = state.projects,
+                                agents = state.teamAgents,
+                                tasks = state.teamTasks,
+                                parts = state.teamParts,
+                                currentPartNumber = state.teamCurrentPartNumber,
+                                fileLocks = state.teamFileLocks,
+                                messages = state.teamGroupMessages,
+                                agentLiveLogs = state.teamAgentLiveLogs,
+                                teamTerminalOutput = state.teamTerminalOutput,
+                                teamTerminalRunning = state.teamTerminalRunning,
+                                isTeamRunning = state.teamIsRunning,
+                                teamBannerHealth = state.teamBannerHealth,
+                                teamBannerMessage = state.teamBannerMessage,
+                                teamBannerDetail = state.teamBannerDetail,
+                                ownerName = state.ownerDisplayName,
+                                typingAgentName = state.teamTypingAgentName,
+                                runningTeamProjectId = state.runningTeamProjectId,
+                                runningTeamProjectName = state.teamProjects.firstOrNull { it.id == state.runningTeamProjectId }?.name,
+                                pendingDirectivesCount = state.teamPriorityDirectivesCount,
+                                officialQuota = state.teamOfficialQuota,
+                                estimatedUsage = state.teamEstimatedUsage,
+                                localUsage = state.teamLocalUsage,
+                                providerConfigs = state.providerConfigs,
+                                teamAgentAntigravityAuth = state.teamAgentAntigravityAuth,
+                                defaultAntigravityAuth = state.antigravityAuth,
+                                hasProviderApiKey = { id -> viewModel.getProviderApiKey(id).isNotBlank() },
+                                allProviderQuotas = state.teamAllProviderQuotas,
+                                allProviderEstimated = state.teamAllProviderEstimated,
+                                continuousConfig = state.teamContinuousConfig,
+                                githubAuthStatus = state.githubAuthStatus,
+                                githubLogin = state.githubLogin,
+                                githubUserCode = state.githubUserCode,
+                                githubMessage = state.githubMessage,
+                                githubRepositories = state.githubRepositories,
+                                githubRepositoriesLoading = state.githubRepositoriesLoading,
+                                gitCloneRunning = state.gitCloneRunning,
+                                projectImporting = state.projectImporting,
+                                onBackToFolders = { viewModel.setTeamScreenMode(TeamScreenMode.PROJECT_LIST) },
+                                onSendGroupMessage = { text, type, targetSlot ->
+                                    viewModel.postTeamChatMessage(text, type, targetSlot)
+                                },
+                                onSendGroupMessageWithImages = { text, type, targetSlot, uris ->
+                                    viewModel.postTeamChatMessageWithImages(text, type, targetSlot, uris)
+                                },
+                                onClearGroupChat = viewModel::clearTeamChat,
+                                onRunTeamTerminalCommand = viewModel::runTeamTerminalCommand,
+                                onClearTeamTerminal = viewModel::clearTeamTerminal,
+                                onJumpToRunningProject = {
+                                    state.teamProjects.firstOrNull { it.id == state.runningTeamProjectId }?.let { viewModel.openTeamProject(it) }
+                                },
+                                onSelectProject = viewModel::selectTeamProject,
+                                onCreateProject = viewModel::createTeamProject,
+                                onCloneFromSolo = viewModel::cloneSoloProjectToTeam,
+                                onDeleteTeamProject = viewModel::deleteTeamProject,
+                                onImportZip = viewModel::importZipToTeamProject,
+                                onCloneGit = viewModel::clonePublicGitToTeam,
+                                onStartGitHubLogin = viewModel::startGitHubLogin,
+                                onGenerateNewGitHubCode = viewModel::generateNewGitHubCode,
+                                onRefreshGitHub = viewModel::refreshGitHubRepositories,
+                                onDisconnectGitHub = viewModel::disconnectGitHub,
+                                onCloneGitHub = viewModel::cloneGitHubToTeam,
+                                onAddAgent = viewModel::addTeamAgent,
+                                onRemoveAgent = viewModel::removeTeamAgent,
+                                onUpdateContinuousConfig = viewModel::updateTeamContinuousConfig,
+                                onStartTeam = viewModel::startTeamWork,
+                                onPauseTeam = viewModel::pauseTeamWork,
+                                onResumeTeam = viewModel::resumeTeamWork,
+                                onStopTeam = viewModel::stopTeamWork,
+                                onOpenAgentDetail = { slot ->
+                                    viewModel.setActivePrivateSlot(slot)
+                                    viewModel.setTeamScreenMode(TeamScreenMode.AGENT_DETAIL)
+                                },
+                                onToggleAgentEnabled = viewModel::toggleAgentEnabled,
+                                onOpenQuotaDashboard = { viewModel.setTeamScreenMode(TeamScreenMode.QUOTA_DASHBOARD) },
+                                onOpenActivityFeed = { viewModel.setTeamScreenMode(TeamScreenMode.ACTIVITY_FEED) },
+                                onReleaseFileLock = viewModel::releaseFileLock,
+                                onNextPart = viewModel::advanceTeamPart,
+                            )
+                        }
                         TeamScreenMode.AGENT_DETAIL -> {
                             val slot = state.activePrivateSlot ?: AgentSlot.AGENT_1
                             val agentState = state.teamAgents.firstOrNull { it.config.slot == slot }
-                                ?: state.teamAgents.first()
-                            AgentDetailScreen(
+                                ?: state.teamAgents.firstOrNull()
+                            if (agentState == null) {
+                                LaunchedEffect(Unit) { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) }
+                            } else AgentDetailScreen(
                                 agentState = agentState,
                                 allAgents = state.teamAgents,
                                 fileLocks = state.teamFileLocks,
                                 providerConfigs = state.providerConfigs,
+                                allProviderQuotas = state.teamAllProviderQuotas,
                                 antigravityCliInstalled = state.installedAgentVersions.containsKey(AgentKind.ANTIGRAVITY),
                                 antigravityInstalling = state.agentInstalling == AgentKind.ANTIGRAVITY,
-                                antigravityAuth = state.antigravityAuth,
+                                antigravityInstallProgress = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentProgress else 0f,
+                                antigravityInstallMessage = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentMessage else null,
+                                antigravityInstallError = if (state.agentInstallErrorKind == AgentKind.ANTIGRAVITY) state.agentInstallError else null,
+                                antigravityDownloadedBytes = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentDownloadedBytes else null,
+                                antigravityTotalBytes = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentTotalBytes else null,
+                                antigravityModels = state.antigravityModels,
+                                antigravityModelsLoading = state.antigravityModelsLoading,
+                                antigravityAuth = state.teamAgentAntigravityAuth[slot] ?: com.jarves.mh.runtime.AntigravityAuthState(),
                                 canRemoveAgent = state.teamAgents.size > 1,
                                 onDiscoverProviderModels = viewModel::discoverProviderModels,
+                                onTestProviderConnection = viewModel::testProviderConnection,
+                                onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
                                 onInstallAntigravityCli = { viewModel.installAgent(AgentKind.ANTIGRAVITY) },
-                                onStartAntigravityLogin = viewModel::startAntigravityLogin,
-                                onSubmitAntigravityCode = viewModel::submitAntigravityCode,
-                                onLogoutAntigravity = viewModel::logoutAntigravity,
+                                onStartAntigravityLogin = { viewModel.startTeamAgentAntigravityLogin(slot) },
+                                onSubmitAntigravityCode = { code -> viewModel.submitTeamAgentAntigravityCode(slot, code) },
+                                onLogoutAntigravity = { viewModel.logoutTeamAgentAntigravity(slot) },
                                 onSaveConfig = { config -> viewModel.updateAgentConfig(slot, config) },
                                 onRemoveAgent = viewModel::removeTeamAgent,
                                 onReleaseFileLock = viewModel::releaseFileLock,
@@ -2669,6 +2790,8 @@ private fun RootScreenHost(
                             allProviderLocal = state.teamAllProviderLocal,
                             budgetLimitUsd = state.budgetLimitUsd,
                             isAutoPauseEnabled = state.budgetAutoPauseEnabled,
+                            continuousConfig = state.teamContinuousConfig,
+                            onUpdateContinuousConfig = viewModel::updateTeamContinuousConfig,
                             onRefreshQuotas = { viewModel.refreshAllQuotas(forceRefresh = true) },
                             onUpdateBudget = viewModel::updateBudget,
                             onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
@@ -2679,8 +2802,21 @@ private fun RootScreenHost(
                             onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
                         )
                         TeamScreenMode.GROUP_CHAT -> CentralGroupChatScreen(
-                            teamName = state.activeProject?.name ?: "ORQEN Workspace",
+                            teamName = state.activeTeamProject?.name ?: "ORQEN AI Team",
                             messages = state.teamGroupMessages,
+                            agents = state.teamAgents,
+                            agentLiveLogs = state.teamAgentLiveLogs,
+                            isTeamRunning = state.teamIsRunning,
+                            teamBannerHealth = state.teamBannerHealth,
+                            teamBannerMessage = state.teamBannerMessage,
+                            teamBannerDetail = state.teamBannerDetail,
+                            ownerName = state.ownerDisplayName,
+                            typingAgentName = state.teamTypingAgentName,
+                            pendingDirectivesCount = state.teamPriorityDirectivesCount,
+                            onClearChat = viewModel::clearTeamChat,
+                            onSendMessageWithImages = { text, type, targetSlot, uris ->
+                                viewModel.postTeamChatMessageWithImages(text, type, targetSlot, uris)
+                            },
                             onSendMessage = { text, type, targetSlot ->
                                 viewModel.postTeamChatMessage(text, type, targetSlot)
                             },
@@ -2689,8 +2825,10 @@ private fun RootScreenHost(
                         TeamScreenMode.PRIVATE_CHAT -> {
                             val slot = state.activePrivateSlot ?: AgentSlot.AGENT_1
                             val agentState = state.teamAgents.firstOrNull { it.config.slot == slot }
-                                ?: state.teamAgents.first()
-                            PrivateAgentChatScreen(
+                                ?: state.teamAgents.firstOrNull()
+                            if (agentState == null) {
+                                LaunchedEffect(Unit) { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) }
+                            } else PrivateAgentChatScreen(
                                 agentState = agentState,
                                 messages = state.teamGroupMessages.filter { it.senderSlot == slot || it.text.contains("@${slot.defaultName}") || it.text.contains("@${agentState.config.name}") },
                                 onSendMessage = { text ->
@@ -2703,6 +2841,11 @@ private fun RootScreenHost(
                             configs = state.providerConfigs,
                             antigravityCliInstalled = state.installedAgentVersions.containsKey(AgentKind.ANTIGRAVITY),
                             antigravityInstalling = state.agentInstalling == AgentKind.ANTIGRAVITY,
+                            antigravityInstallProgress = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentProgress else 0f,
+                            antigravityInstallMessage = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentMessage else null,
+                            antigravityInstallError = if (state.agentInstallErrorKind == AgentKind.ANTIGRAVITY) state.agentInstallError else null,
+                            antigravityDownloadedBytes = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentDownloadedBytes else null,
+                            antigravityTotalBytes = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentTotalBytes else null,
                             antigravityAuth = state.antigravityAuth,
                             onInstallAntigravityCli = { viewModel.installAgent(AgentKind.ANTIGRAVITY) },
                             onStartAntigravityLogin = viewModel::startAntigravityLogin,
@@ -2717,30 +2860,132 @@ private fun RootScreenHost(
                         )
                     }
                 }
-                RootScreen.AGENT -> AgentScreen(
-                    state = state,
-                    onSaveProvider = { profile, key ->
-                        viewModel.updateProvider(profile, key)
-                    },
-                    onDiscoverModels = viewModel::discoverModels,
-                    onValidateProvider = viewModel::validateProvider,
-                    onPing = viewModel::pingApi,
-                    getSavedApiKey = viewModel::getSavedApiKey,
-                    getSavedApiKeys = viewModel::getSavedApiKeys,
-                    onAddApiKey = viewModel::addApiKey,
-                    onActivateApiKey = viewModel::activateApiKey,
-                    onRemoveApiKey = viewModel::removeApiKey,
-                    onSelectAgent = viewModel::selectAgent,
-                    onInstallAgent = viewModel::installAgent,
-                    onCheckAgentUpdates = viewModel::checkAgentUpdates,
-                    onUpdateAgent = viewModel::updateAgent,
-                    onStartAntigravityLogin = viewModel::startAntigravityLogin,
-                    onSubmitAntigravityCode = viewModel::submitAntigravityCode,
-                    onLogoutAntigravity = viewModel::logoutAntigravity,
-                    onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
-                    onSetAntigravityModel = viewModel::setAntigravityModel,
-                    onSetAntigravityEffort = viewModel::setAntigravityEffort,
-                )
+                RootScreen.AGENT -> {
+                    var providersSubTab by rememberSaveable { mutableStateOf(0) }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background)
+                            .statusBarsPadding(),
+                    ) {
+                        // Clean, spacious ORQEN Providers Header (never overlaps status bar!)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surface)
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                BrandMark(compact = true)
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = stringResource(R.string.provider_mgmt_title),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.provider_mgmt_subtitle),
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                            ) {
+                                Row(Modifier.padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    listOf(
+                                        0 to stringResource(R.string.providers_tab_default),
+                                        1 to stringResource(R.string.providers_tab_manage_all),
+                                    ).forEach { (idx, label) ->
+                                        val selected = providersSubTab == idx
+                                        Surface(
+                                            shape = RoundedCornerShape(9.dp),
+                                            color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent,
+                                            border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)) else null,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clickable { providersSubTab = idx },
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                fontSize = 12.sp,
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                textAlign = TextAlign.Center,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        Box(Modifier.weight(1f)) {
+                            if (providersSubTab == 0) {
+                                AgentScreen(
+                                    state = state,
+                                    onSaveProvider = { profile, key ->
+                                        viewModel.updateProvider(profile, key)
+                                    },
+                                    onDiscoverModels = viewModel::discoverModels,
+                                    onValidateProvider = viewModel::validateProvider,
+                                    onPing = viewModel::pingApi,
+                                    getSavedApiKey = viewModel::getSavedApiKey,
+                                    getSavedApiKeys = viewModel::getSavedApiKeys,
+                                    onAddApiKey = viewModel::addApiKey,
+                                    onActivateApiKey = viewModel::activateApiKey,
+                                    onRemoveApiKey = viewModel::removeApiKey,
+                                    onSelectAgent = viewModel::selectAgent,
+                                    onInstallAgent = viewModel::installAgent,
+                                    onCheckAgentUpdates = viewModel::checkAgentUpdates,
+                                    onUpdateAgent = viewModel::updateAgent,
+                                    onStartAntigravityLogin = viewModel::startAntigravityLogin,
+                                    onSubmitAntigravityCode = viewModel::submitAntigravityCode,
+                                    onLogoutAntigravity = viewModel::logoutAntigravity,
+                                    onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
+                                    onSetAntigravityModel = viewModel::setAntigravityModel,
+                                    onSetAntigravityEffort = viewModel::setAntigravityEffort,
+                                )
+                            } else {
+                                ProviderManagementScreen(
+                                    configs = state.providerConfigs,
+                                    antigravityCliInstalled = state.installedAgentVersions.containsKey(AgentKind.ANTIGRAVITY),
+                                    antigravityInstalling = state.agentInstalling == AgentKind.ANTIGRAVITY,
+                                    antigravityInstallProgress = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentProgress else 0f,
+                                    antigravityInstallMessage = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentMessage else null,
+                                    antigravityInstallError = if (state.agentInstallErrorKind == AgentKind.ANTIGRAVITY) state.agentInstallError else null,
+                                    antigravityDownloadedBytes = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentDownloadedBytes else null,
+                                    antigravityTotalBytes = if (state.agentInstalling == AgentKind.ANTIGRAVITY) state.agentTotalBytes else null,
+                                    antigravityAuth = state.antigravityAuth,
+                                    onInstallAntigravityCli = { viewModel.installAgent(AgentKind.ANTIGRAVITY) },
+                                    onStartAntigravityLogin = viewModel::startAntigravityLogin,
+                                    onSubmitAntigravityCode = viewModel::submitAntigravityCode,
+                                    onLogoutAntigravity = viewModel::logoutAntigravity,
+                                    onSaveConfig = viewModel::saveProviderConfig,
+                                    onDeleteConfig = viewModel::deleteProviderConfig,
+                                    onTestConnection = viewModel::testProviderConnection,
+                                    onDiscoverModels = viewModel::discoverProviderModels,
+                                    getSavedApiKey = viewModel::getProviderApiKey,
+                                    embedded = true,
+                                    onBack = { providersSubTab = 0 },
+                                )
+                            }
+                        }
+                    }
+                }
                 RootScreen.SETTINGS -> SettingsScreen(
                     state = state,
                     showBackupDot = !state.backupFeatureSeen,
@@ -2756,6 +3001,7 @@ private fun RootScreenHost(
                     onValidateProvider = viewModel::validateProvider,
                     onSetThemeMode = viewModel::setThemeMode,
                     onSetLanguage = viewModel::setLanguage,
+                    onSetOwnerDisplayName = viewModel::setOwnerDisplayName,
                     onPing = viewModel::pingApi,
                     onClearTerminal = viewModel::clearTerminal,
                     getSavedApiKey = viewModel::getSavedApiKey,
@@ -4133,7 +4379,13 @@ private fun ProjectsScreen(
         title = { Text(stringResource(R.string.an_create_project)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(name, { name = it }, label = { Text(stringResource(R.string.ws_project_name)) }, singleLine = true)
+                OutlinedTextField(
+                    name,
+                    { name = it },
+                    label = { Text(stringResource(R.string.ws_project_name)) },
+                    placeholder = { Text(stringResource(R.string.project_auto_name_hint), fontSize = 11.sp) },
+                    singleLine = true,
+                )
                 Text(stringResource(R.string.project_type), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     AssistChip(
@@ -4183,12 +4435,12 @@ private fun ProjectsScreen(
         confirmButton = {
             TextButton(
                 onClick = {
-                    androidTemplate?.let { onCreateAndroid(name, it) } ?: onCreate(name)
+                    val resolvedName = name.trim().ifBlank { generateAutoProjectName(projects.map { it.name }) }
+                    androidTemplate?.let { onCreateAndroid(resolvedName, it) } ?: onCreate(resolvedName)
                     showCreate = false
                     name = ""
                     androidTemplate = null
                 },
-                enabled = name.isNotBlank(),
             ) { Text(stringResource(R.string.ws_create)) }
         },
         dismissButton = { TextButton(onClick = { showCreate = false }) { Text(stringResource(R.string.action_cancel)) } },
@@ -4557,12 +4809,13 @@ private fun ProjectCard(
         )
     }
     if (showDelete) {
-        AlertDialog(
-            onDismissRequest = { showDelete = false },
-            title = { Text(stringResource(R.string.ws_delete_project_title)) },
-            text = { Text(stringResource(R.string.ws_delete_project_desc)) },
-            confirmButton = { TextButton(onClick = { onDelete(); showDelete = false }) { Text(stringResource(R.string.action_delete), color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { showDelete = false }) { Text(stringResource(R.string.action_cancel)) } },
+        SafeDeleteProjectDialog(
+            projectName = project.name,
+            onConfirmDelete = {
+                showDelete = false
+                onDelete()
+            },
+            onDismiss = { showDelete = false },
         )
     }
 }
@@ -5136,7 +5389,13 @@ private fun WorkspaceScreen(
                     onUndoFileChange,
                     onKeepFileChange,
                 )
-                WorkspaceTab.PREVIEW -> PreviewTab(state.previewReady, state.previewUrl)
+                WorkspaceTab.PREVIEW -> {
+                    val ctx = LocalContext.current
+                    val soloProjectDir = remember(state.activeProject?.id) {
+                        state.activeProject?.id?.let { java.io.File(ctx.filesDir, "workspaces/$it") }
+                    }
+                    PreviewTab(state.previewReady, state.previewUrl, soloProjectDir)
+                }
             }
         }
     }
@@ -6318,8 +6577,8 @@ private fun FilesTab(
                             onOpenFile(entry)
                         }
                     }
-                    .padding(start = (entry.depth * 20).dp)
-                    .padding(vertical = 10.dp),
+                    .padding(start = (entry.depth * 18).dp)
+                    .padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (selectionMode) {
@@ -6350,10 +6609,11 @@ private fun FilesTab(
                     )
                     Spacer(Modifier.width(5.dp))
                 }
-                Icon(
-                    if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
-                    null,
-                    tint = if (entry.isDirectory) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                FileTypeIcon(
+                    fileName = entry.name,
+                    isDirectory = entry.isDirectory,
+                    isExpanded = entry.path in expandedSet,
+                    size = 18.dp,
                 )
                 Spacer(Modifier.width(11.dp))
                 Text(
@@ -7405,10 +7665,10 @@ private fun FilesTab(files: List<WorkspaceEntry>, loading: Boolean, onRefresh: (
                 Modifier.fillMaxWidth().padding(start = (entry.depth * 20).dp).padding(vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    if (entry.isDirectory) Icons.Default.Folder else Icons.Default.Description,
-                    null,
-                    tint = if (entry.isDirectory) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                FileTypeIcon(
+                    fileName = entry.name,
+                    isDirectory = entry.isDirectory,
+                    size = 18.dp,
                 )
                 Spacer(Modifier.width(11.dp))
                 Text(entry.name, Modifier.weight(1f))
@@ -7544,15 +7804,73 @@ private fun DiffLineRow(line: DiffLine) {
     )
 }
 
+@android.annotation.SuppressLint("SetJavaScriptEnabled")
+@Suppress("DEPRECATION")
 @Composable
-private fun PreviewTab(ready: Boolean, url: String?) {
+private fun PreviewTab(ready: Boolean, url: String?, projectDir: java.io.File? = null) {
     var address by rememberSaveable(url) { mutableStateOf(if (ready) url.orEmpty() else "") }
     var activeUrl by rememberSaveable(url) { mutableStateOf(if (ready) url else null) }
     var addressError by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var webView by remember { mutableStateOf<WebView?>(null) }
+    var phoneMode by rememberSaveable { mutableStateOf(false) }
+    var reloadNonce by remember { mutableIntStateOf(0) }
+    var workspaceFp by remember { mutableStateOf(0L) }
     val localUrlError = stringResource(R.string.ws_preview_use_local_url)
     val externalBlockedError = stringResource(R.string.ws_preview_external_blocked)
+
+    // Real-time 600ms file watcher for Solo Preview hot-reload
+    LaunchedEffect(projectDir) {
+        val dir = projectDir ?: return@LaunchedEffect
+        fun scanFp(): Long {
+            if (!dir.exists()) return 0L
+            var h = 1125899906842597L
+            var c = 0
+            val seq = dir.walkTopDown()
+                .maxDepth(6)
+                .onEnter { d -> d.name !in setOf(".git", "node_modules", "build", ".gradle") }
+            for (f in seq) {
+                if (!f.isFile) continue
+                h = 31L * h + f.relativeTo(dir).path.hashCode()
+                h = 31L * h + f.length()
+                h = 31L * h + f.lastModified()
+                c++
+                if (c >= 400) break
+            }
+            return h xor c.toLong()
+        }
+        var lastFp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { scanFp() }
+        workspaceFp = lastFp
+        while (true) {
+            delay(600L)
+            val nextFp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { scanFp() }
+            if (nextFp != lastFp) {
+                lastFp = nextFp
+                workspaceFp = nextFp
+                reloadNonce++
+                if (!activeUrl.isNullOrBlank()) {
+                    webView?.reload()
+                }
+            }
+        }
+    }
+
+    val localHtmlFile = remember(projectDir, reloadNonce, workspaceFp) {
+        val dir = projectDir ?: return@remember null
+        if (!dir.exists()) return@remember null
+        listOf(
+            java.io.File(dir, "index.html"),
+            java.io.File(dir, "public/index.html"),
+            java.io.File(dir, "dist/index.html"),
+            java.io.File(dir, "build/index.html"),
+            java.io.File(dir, "web/index.html"),
+            java.io.File(dir, "src/index.html"),
+        ).firstOrNull { it.isFile }
+            ?: dir.walkTopDown()
+                .maxDepth(4)
+                .onEnter { d -> d.name !in setOf(".git", "node_modules", ".gradle") }
+                .firstOrNull { it.isFile && it.extension.equals("html", ignoreCase = true) }
+    }
 
     val navigate = {
         val normalized = normalizePreviewUrl(address)
@@ -7562,6 +7880,7 @@ private fun PreviewTab(ready: Boolean, url: String?) {
             addressError = null
             address = normalized
             activeUrl = normalized
+            reloadNonce++
         }
     }
 
@@ -7590,17 +7909,22 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         label = { Text(stringResource(R.string.workspace_preview_url)) },
-                        placeholder = { Text("localhost:3000") },
+                        placeholder = {
+                            Text(
+                                if (localHtmlFile != null) "Auto: ${localHtmlFile.name} (LIVE)" else "localhost:3000",
+                                fontSize = 11.sp,
+                            )
+                        },
                         leadingIcon = {
                             Box(
                                 Modifier.size(8.dp).background(
-                                    if (activeUrl != null) PocketGreen else MaterialTheme.colorScheme.outline,
+                                    if (activeUrl != null || localHtmlFile != null) PocketGreen else MaterialTheme.colorScheme.outline,
                                     CircleShape,
                                 ),
                             )
                         },
                         trailingIcon = {
-                            IconButton(onClick = navigate) {
+                            IconButton(onClick = { navigate() }) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = stringResource(R.string.ws_open_url))
                             }
                         },
@@ -7611,9 +7935,19 @@ private fun PreviewTab(ready: Boolean, url: String?) {
                         ),
                         keyboardActions = KeyboardActions(onGo = { navigate() }),
                     )
+                    IconButton(onClick = { phoneMode = !phoneMode }) {
+                        Icon(
+                            if (phoneMode) Icons.Default.Language else Icons.Default.Smartphone,
+                            contentDescription = "Toggle Phone/Web View",
+                            tint = if (phoneMode) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     IconButton(
-                        onClick = { webView?.reload() ?: navigate() },
-                        enabled = address.isNotBlank(),
+                        onClick = {
+                            reloadNonce++
+                            webView?.reload() ?: if (address.isNotBlank()) navigate() else Unit
+                        },
+                        enabled = address.isNotBlank() || localHtmlFile != null,
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.ws_refresh_preview))
                     }
@@ -7631,45 +7965,84 @@ private fun PreviewTab(ready: Boolean, url: String?) {
             }
         }
         val targetUrl = activeUrl
-        if (targetUrl == null) {
+        if (targetUrl == null && localHtmlFile == null) {
             EmptyState(Icons.Default.PlayArrow, stringResource(R.string.workspace_preview_not_running), stringResource(R.string.workspace_preview_not_running_description))
         } else {
-            AndroidView(
-                factory = { context ->
-                    WebView(context).apply {
-                        webView = this
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        webChromeClient = object : WebChromeClient() {
-                            override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                loading = newProgress < 100
+            val renderKey = "solo|$phoneMode|$reloadNonce|$workspaceFp|$targetUrl|${localHtmlFile?.absolutePath}|${localHtmlFile?.lastModified()}"
+            val webViewContent: @Composable (Modifier) -> Unit = { mod ->
+                AndroidView(
+                    factory = { context ->
+                        WebView(context).apply {
+                            webView = this
+                            // Standard browser WHITE canvas so dark text / unstyled pages are always crystal clear!
+                            setBackgroundColor(android.graphics.Color.WHITE)
+                            settings.javaScriptEnabled = true
+                            settings.domStorageEnabled = true
+                            settings.allowFileAccess = true
+                            settings.allowContentAccess = true
+                            settings.allowFileAccessFromFileURLs = true
+                            settings.allowUniversalAccessFromFileURLs = true
+                            settings.loadWithOverviewMode = true
+                            settings.useWideViewPort = true
+                            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                            settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                                    loading = newProgress < 100
+                                }
                             }
-                        }
-                        webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                                val target = request?.url ?: return true
-                                if (!target.isLoopbackPreviewUrl()) {
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                    val target = request?.url ?: return true
+                                    if (target.scheme == "file" || target.isLoopbackPreviewUrl()) {
+                                        if (target.isLoopbackPreviewUrl()) address = target.toString()
+                                        return false
+                                    }
                                     addressError = externalBlockedError
                                     return true
                                 }
-                                address = target.toString()
-                                return false
-                            }
-
-                            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
-                                val target = request?.url ?: return blockedPreviewResponse()
-                                return if (target.isLoopbackPreviewUrl()) null else blockedPreviewResponse()
                             }
                         }
-                        loadUrl(targetUrl)
+                    },
+                    update = { current ->
+                        webView = current
+                        if (current.tag != renderKey) {
+                            current.tag = renderKey
+                            current.clearCache(true)
+                            if (targetUrl != null) {
+                                current.loadUrl(targetUrl)
+                            } else if (localHtmlFile != null && localHtmlFile.isFile) {
+                                val baseDirUrl = "file://${localHtmlFile.parentFile?.absolutePath ?: ""}/"
+                                val rawHtml = runCatching { localHtmlFile.readText() }.getOrDefault("")
+                                val htmlWithBase = if (rawHtml.contains("<base ", ignoreCase = true)) {
+                                    rawHtml
+                                } else if (rawHtml.contains("<head>", ignoreCase = true)) {
+                                    rawHtml.replaceFirst(Regex("<head>", RegexOption.IGNORE_CASE), "<head><base href=\"$baseDirUrl\">")
+                                } else {
+                                    "<base href=\"$baseDirUrl\">$rawHtml"
+                                }
+                                current.loadDataWithBaseURL(baseDirUrl, htmlWithBase, "text/html", "UTF-8", null)
+                            }
+                        }
+                    },
+                    modifier = mod,
+                )
+            }
+
+            if (phoneMode) {
+                Box(Modifier.fillMaxSize().padding(14.dp), contentAlignment = Alignment.Center) {
+                    Surface(
+                        shape = RoundedCornerShape(28.dp),
+                        color = Color(0xFF070A0D),
+                        border = androidx.compose.foundation.BorderStroke(2.dp, PocketOrange.copy(alpha = 0.65f)),
+                        modifier = Modifier.widthIn(max = 360.dp).fillMaxSize(),
+                    ) {
+                        webViewContent(Modifier.fillMaxSize().padding(4.dp))
                     }
-                },
-                update = { current ->
-                    webView = current
-                    if (current.url != targetUrl) current.loadUrl(targetUrl)
-                },
-                modifier = Modifier.fillMaxSize(),
-            )
+                }
+            } else {
+                webViewContent(Modifier.fillMaxSize())
+            }
         }
     }
 }
@@ -7713,27 +8086,27 @@ private fun EmptyState(icon: ImageVector, title: String, body: String) {
 
 @Composable
 private fun BrandMark(modifier: Modifier = Modifier, compact: Boolean = false) {
-    val size = if (compact) 32.dp else 50.dp
-    val iconSize = if (compact) 17.dp else 24.dp
-    val cornerRadius = if (compact) 9.dp else 14.dp
+    val size = if (compact) 34.dp else 56.dp
+    val iconSize = if (compact) 20.dp else 32.dp
+    val cornerRadius = if (compact) 10.dp else 16.dp
     val primary = MaterialTheme.colorScheme.primary
 
     Box(
         modifier = modifier
             .size(size)
             .background(
-                color = primary.copy(alpha = 0.12f),
+                color = Color(0xFF070A0D),
                 shape = RoundedCornerShape(cornerRadius),
             )
             .border(
-                width = 1.dp,
-                color = primary.copy(alpha = 0.32f),
+                width = 1.2.dp,
+                color = primary.copy(alpha = 0.55f),
                 shape = RoundedCornerShape(cornerRadius),
             ),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = Icons.Default.Terminal,
+            painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_orqen_mark),
             contentDescription = "ORQEN",
             modifier = Modifier.size(iconSize),
             tint = primary,

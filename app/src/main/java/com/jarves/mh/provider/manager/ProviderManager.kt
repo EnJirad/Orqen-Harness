@@ -185,7 +185,7 @@ class ProviderManager(
     }
 
     fun getAdapter(type: ProviderType): ProviderAdapter {
-        return adapters[type] ?: adapters[ProviderType.CUSTOM_API]!!
+        return adapters[type] ?: adapters[ProviderType.CUSTOM_API] ?: CustomProviderAdapter()
     }
 
     suspend fun testConnection(configId: String): ConnectionTestResult = withContext(Dispatchers.IO) {

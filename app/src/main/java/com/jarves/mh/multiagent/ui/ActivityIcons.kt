@@ -8,22 +8,22 @@ import com.jarves.mh.multiagent.model.ActivityType
 
 object ActivityVisuals {
     fun iconFor(type: ActivityType): ImageVector = when (type) {
-        ActivityType.ANALYZING -> Icons.Default.Search
-        ActivityType.PLANNING -> Icons.Default.Description
-        ActivityType.READING_FILES -> Icons.Default.Folder
-        ActivityType.WRITING_CODE -> Icons.Default.Edit
+        ActivityType.ANALYZING -> Icons.Default.AutoAwesome
+        ActivityType.PLANNING -> Icons.Default.EditNote
+        ActivityType.READING_FILES -> Icons.Default.MenuBook
+        ActivityType.WRITING_CODE -> Icons.Default.Description
         ActivityType.FIXING_BUG -> Icons.Default.Build
-        ActivityType.TESTING -> Icons.Default.HealthAndSafety
-        ActivityType.REVIEWING -> Icons.Default.Visibility
+        ActivityType.TESTING -> Icons.Default.Science
+        ActivityType.REVIEWING -> Icons.Default.FactCheck
         ActivityType.BUILDING_APK -> Icons.Default.Android
         ActivityType.INSTALLING_DEPS -> Icons.Default.Download
-        ActivityType.COMMITTING -> Icons.Default.Code
-        ActivityType.PUSHING -> Icons.Default.Upload
-        ActivityType.MERGING -> Icons.Default.Share
+        ActivityType.COMMITTING -> Icons.Default.Save
+        ActivityType.PUSHING -> Icons.Default.CloudUpload
+        ActivityType.MERGING -> Icons.Default.CallMerge
         ActivityType.WAITING -> Icons.Default.HourglassEmpty
-        ActivityType.PAUSED -> Icons.Default.Pause
+        ActivityType.PAUSED -> Icons.Default.PauseCircle
         ActivityType.COMPLETED -> Icons.Default.CheckCircle
-        ActivityType.ERROR -> Icons.Default.Warning
+        ActivityType.ERROR -> Icons.Default.ErrorOutline
     }
 
     fun colorFor(type: ActivityType): Color = when (type) {

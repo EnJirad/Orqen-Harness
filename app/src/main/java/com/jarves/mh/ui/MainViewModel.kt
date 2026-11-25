@@ -285,6 +285,7 @@ private data class ImportedZipProject(
 )
 
 enum class TeamScreenMode {
+    PROJECT_LIST,
     DASHBOARD,
     AGENT_DETAIL,
     QUOTA_DASHBOARD,
@@ -311,9 +312,21 @@ data class AppUiState(
     val activeApiKeyName: String? = null,
     val themeMode: com.jarves.mh.ui.theme.AppThemeMode = com.jarves.mh.ui.theme.AppThemeMode.DARK,
     val languageCode: String = "system",
+    val ownerDisplayName: String = "",
+    val teamTypingAgentName: String? = null,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
+    val teamProjects: List<Project> = emptyList(),
+    val activeTeamProject: Project? = null,
+    val runningTeamProjectId: String? = null,
+    val teamPriorityDirectivesCount: Int = 0,
+    val teamAgentLiveLogs: Map<AgentSlot, List<String>> = emptyMap(),
+    val teamBannerHealth: com.jarves.mh.multiagent.ui.TeamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.RUNNING,
+    val teamBannerMessage: String? = null,
+    val teamBannerDetail: String? = null,
+    val teamTerminalOutput: String = "",
+    val teamTerminalRunning: Boolean = false,
     val projectImporting: Boolean = false,
     val projectImportMessage: String? = null,
     val gitCloneRunning: Boolean = false,
@@ -381,6 +394,8 @@ data class AppUiState(
     val installedAgentVersions: Map<AgentKind, String> = emptyMap(),
     val agentInstalling: AgentKind? = null,
     val agentMessage: String? = null,
+    val agentInstallError: String? = null,
+    val agentInstallErrorKind: AgentKind? = null,
     val agentProgress: Float = 0f,
     val agentDownloadedBytes: Long? = null,
     val agentTotalBytes: Long? = null,
@@ -395,6 +410,7 @@ data class AppUiState(
     val agentUpdateTotalBytes: Long? = null,
     val agentUpdateBytesPerSecond: Long? = null,
     val antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
+    val teamAgentAntigravityAuth: Map<AgentSlot, AntigravityAuthState> = emptyMap(),
     val antigravityModel: String = "",
     val antigravityEffort: String = "high",
     val antigravityModels: List<String> = emptyList(),
@@ -423,7 +439,7 @@ data class AppUiState(
     val showWhatsNew: Boolean = false,
     val backupFeatureSeen: Boolean = true,
     val teamWorkspaceVisible: Boolean = false,
-    val teamScreenMode: TeamScreenMode = TeamScreenMode.DASHBOARD,
+    val teamScreenMode: TeamScreenMode = TeamScreenMode.PROJECT_LIST,
     val teamAgents: List<AgentState> = emptyList(),
     val teamTasks: List<TeamTask> = emptyList(),
     val teamParts: List<ProjectPart> = emptyList(),
@@ -508,6 +524,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var setupCompletionHandled: Boolean = false
     @Volatile private var githubAuthProcess: Process? = null
     private var githubAuthJob: kotlinx.coroutines.Job? = null
+    private var teamCycleJob: kotlinx.coroutines.Job? = null
+    private val pendingTeamDirectives = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    private val teamProjectChats = mutableMapOf<String, MutableList<GroupChatMessage>>()
+    private val teamAgentRunner by lazy {
+        com.jarves.mh.runtime.TeamAgentRunner(getApplication(), installer, providerManager)
+    }
     @Volatile private var lastOpenedAntigravityAuthUrl: String? = null
     private var activeRuntimeRequest: RuntimeRetryRequest? = null
     private val pendingFollowUps = java.util.ArrayDeque<QueuedFollowUp>()
@@ -532,6 +554,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.antigravityAccountEmail = email.orEmpty()
         if (!signedIn) preferences.clearAgentConversations(AgentKind.ANTIGRAVITY)
     }
+    private val teamAntigravityControllers: Map<AgentSlot, AntigravityAuthController> = AgentSlot.entries.associateWith { slot ->
+        val slotKey = slot.name.lowercase()
+        AntigravityAuthController(
+            context = application,
+            initiallySignedIn = preferences.isTeamAgentAntigravitySignedIn(slotKey),
+            initialAccountEmail = preferences.getTeamAgentAntigravityEmail(slotKey),
+            profileId = slotKey,
+        ) { signedIn, email ->
+            preferences.setTeamAgentAntigravitySignedIn(slotKey, signedIn)
+            preferences.setTeamAgentAntigravityEmail(slotKey, email.orEmpty())
+        }
+    }
     private val _state = MutableStateFlow(
         AppUiState(
             startupMessage = str(R.string.vm_checking_device),
@@ -548,12 +582,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 message = preferences.antigravityAccountEmail.takeIf(String::isNotBlank)?.let { str(R.string.vm_connected_as, it) },
                 accountEmail = preferences.antigravityAccountEmail.takeIf(String::isNotBlank),
             ),
+            teamAgentAntigravityAuth = AgentSlot.entries.associateWith { slot ->
+                val slotKey = slot.name.lowercase()
+                val signedIn = preferences.isTeamAgentAntigravitySignedIn(slotKey)
+                val email = preferences.getTeamAgentAntigravityEmail(slotKey)
+                AntigravityAuthState(
+                    status = if (signedIn) AntigravityAuthStatus.SIGNED_IN else AntigravityAuthStatus.SIGNED_OUT,
+                    message = email.takeIf(String::isNotBlank)?.let { str(R.string.vm_connected_as, it) },
+                    accountEmail = email.takeIf(String::isNotBlank),
+                )
+            },
             antigravityModel = preferences.antigravityModel,
             antigravityEffort = preferences.antigravityEffort,
             themeMode = runCatching { com.jarves.mh.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
                 .getOrDefault(com.jarves.mh.ui.theme.AppThemeMode.DARK),
             languageCode = preferences.languageCode,
+            ownerDisplayName = preferences.ownerDisplayName,
             projects = preferences.loadProjects(),
+            teamProjects = preferences.loadTeamProjects(),
+            activeTeamProject = preferences.loadTeamProjects().let { list ->
+                val savedId = preferences.activeTeamProjectId
+                list.firstOrNull { it.id == savedId } ?: list.firstOrNull()
+            },
             githubAuthStatus = GitHubAuthStatus.DISCONNECTED,
             githubLogin = preferences.githubLogin.takeIf(String::isNotBlank),
             selectedDevStacks = preferences.selectedDevStacks.mapNotNull { name ->
@@ -654,6 +704,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }.onFailure {
                         _state.update { state -> state.copy(toastMessage = str(R.string.vm_browser_open_failed_signin)) }
+                    }
+                }
+            }
+        }
+        teamAntigravityControllers.forEach { (slot, controller) ->
+            viewModelScope.launch {
+                controller.state.collect { auth ->
+                    _state.update { current ->
+                        current.copy(teamAgentAntigravityAuth = current.teamAgentAntigravityAuth + (slot to auth))
+                    }
+                    auth.authorizationUrl?.takeIf { it != lastOpenedAntigravityAuthUrl }?.let { url ->
+                        lastOpenedAntigravityAuthUrl = url
+                        runCatching {
+                            getApplication<Application>().startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }.onFailure {
+                            _state.update { state -> state.copy(toastMessage = str(R.string.vm_browser_open_failed_signin)) }
+                        }
                     }
                 }
             }
@@ -2069,6 +2138,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(languageCode = code) }
     }
 
+    fun setOwnerDisplayName(name: String) {
+        val cleaned = name.trim()
+        preferences.ownerDisplayName = cleaned
+        _state.update { it.copy(ownerDisplayName = cleaned) }
+    }
+
+    private fun effectiveOwnerName(): String =
+        _state.value.ownerDisplayName.trim().ifBlank { "เจ้าของบริษัท" }
+
     fun finishInitialLanguageSetup() {
         preferences.initialLanguageSelected = true
         _state.update { it.copy(initialLanguageSelected = true) }
@@ -2512,6 +2590,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 agentInstalling = kind,
                 agentMessage = str(R.string.vm_preparing_named, kind.localizedTitle(getApplication())),
+                agentInstallError = null,
+                agentInstallErrorKind = null,
                 agentProgress = 0f,
                 agentDownloadedBytes = null,
                 agentTotalBytes = null,
@@ -2549,6 +2629,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (kind == AgentKind.DEEPSEEK_HARNESS) preferences.dshVersion = installer.dshVersion
                 selectAgent(kind)
             }
+            val failureMessage = result.exceptionOrNull()?.let { err ->
+                err.message?.take(200)?.takeIf { it.isNotBlank() }
+                    ?: str(R.string.vm_install_failed_named, kind.localizedTitle(getApplication()))
+            }
             _state.update { current ->
                 current.copy(
                     installedAgentVersions = installer.installedAgentVersions(),
@@ -2557,9 +2641,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     agentDownloadedBytes = null,
                     agentTotalBytes = null,
                     agentBytesPerSecond = null,
+                    agentInstallError = failureMessage,
+                    agentInstallErrorKind = if (failureMessage != null) kind else null,
+                    toastMessage = failureMessage ?: current.toastMessage,
                     agentMessage = result.fold(
                         onSuccess = { str(R.string.vm_agent_ready, kind.localizedTitle(getApplication())) },
-                        onFailure = { _ -> result.exceptionOrNull()?.message?.take(200) ?: str(R.string.vm_install_failed_named, kind.localizedTitle(getApplication())) },
+                        onFailure = { failureMessage },
                     ),
                 )
             }
@@ -2659,6 +2746,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun logoutAntigravity() {
         viewModelScope.launch {
             runCatching { antigravityAuthController.logout() }
+                .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: str(R.string.vm_sign_out_failed)) } }
+        }
+    }
+
+    fun startTeamAgentAntigravityLogin(slot: AgentSlot) {
+        if (_state.value.agentInstalling != null) return
+        val controller = teamAntigravityControllers[slot] ?: return
+        lastOpenedAntigravityAuthUrl = null
+        viewModelScope.launch { controller.beginLogin() }
+    }
+
+    fun submitTeamAgentAntigravityCode(slot: AgentSlot, code: String) {
+        val controller = teamAntigravityControllers[slot] ?: return
+        runCatching { controller.submitCode(code) }
+            .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: str(R.string.vm_submit_code_failed)) } }
+    }
+
+    fun logoutTeamAgentAntigravity(slot: AgentSlot) {
+        val controller = teamAntigravityControllers[slot] ?: return
+        viewModelScope.launch {
+            runCatching { controller.logout() }
                 .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: str(R.string.vm_sign_out_failed)) } }
         }
     }
@@ -3220,18 +3328,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun consumeToast() = _state.update { it.copy(toastMessage = null) }
 
     fun createProject(name: String) {
-        if (name.isBlank()) return
+        val resolvedName = name.trim().ifBlank {
+            generateAutoProjectName(_state.value.projects.map { it.name })
+        }
         if (_state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) {
             _state.update { it.copy(toastMessage = str(R.string.vm_stop_before_new_project)) }
             return
         }
-        val baseSlug = projectSlug(name)
+        val baseSlug = projectSlug(resolvedName)
         val usedSlugs = _state.value.projects.mapTo(mutableSetOf()) { it.slug }
         val slug = generateSequence(1) { it + 1 }
             .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
             .first { it !in usedSlugs }
         val project = Project(
-            name = name.trim(),
+            name = resolvedName,
             description = str(R.string.vm_starter_web_project),
             language = "TypeScript",
             slug = slug,
@@ -3329,6 +3439,184 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         openProject(project)
     }
 
+    fun selectTeamProject(project: Project) {
+        preferences.activeTeamProjectId = project.id
+        val projectHistory = teamProjectChats.getOrPut(project.id) { mutableListOf() }
+        _state.update {
+            it.copy(
+                activeTeamProject = project,
+                teamGroupMessages = projectHistory.toList(),
+            )
+        }
+    }
+
+    fun openTeamProject(project: Project) {
+        selectTeamProject(project)
+        _state.update { it.copy(teamScreenMode = TeamScreenMode.DASHBOARD) }
+    }
+
+    fun createTeamProject(name: String) {
+        val resolvedName = name.trim().ifBlank {
+            generateAutoProjectName(_state.value.teamProjects.map { it.name })
+        }
+        val baseSlug = projectSlug(resolvedName)
+        val usedSlugs = _state.value.teamProjects.mapTo(mutableSetOf()) { it.slug }
+        val slug = generateSequence(1) { it + 1 }
+            .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
+            .first { it !in usedSlugs }
+        val project = Project(
+            name = resolvedName,
+            description = "AI Squad Isolated Workspace",
+            language = "General",
+            slug = slug,
+        )
+        File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").mkdirs()
+        val updated = listOf(project) + _state.value.teamProjects
+        preferences.saveTeamProjects(updated)
+        preferences.activeTeamProjectId = project.id
+        _state.update {
+            it.copy(
+                teamProjects = updated,
+                activeTeamProject = project,
+                toastMessage = "Created AI Squad workspace: ${project.name}",
+            )
+        }
+    }
+
+    fun renameTeamProject(projectId: String, newName: String) {
+        val cleanName = newName.trim()
+        if (cleanName.isBlank()) return
+        val updated = _state.value.teamProjects.map { proj ->
+            if (proj.id == projectId) proj.copy(name = cleanName) else proj
+        }
+        preferences.saveTeamProjects(updated)
+        _state.update { state ->
+            state.copy(
+                teamProjects = updated,
+                activeTeamProject = if (state.activeTeamProject?.id == projectId) {
+                    state.activeTeamProject.copy(name = cleanName)
+                } else state.activeTeamProject,
+            )
+        }
+    }
+
+    fun cloneSoloProjectToTeam(soloProject: Project) {
+        if (_state.value.projectImporting || _state.value.gitCloneRunning) return
+        _state.update { it.copy(projectImporting = true, projectImportMessage = "Cloning ${soloProject.name} to AI Squad…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val app = getApplication<Application>()
+                    val sourceDir = File(app.filesDir, "workspaces/${soloProject.id}")
+                    val baseSlug = projectSlug("${soloProject.slug}-squad")
+                    val usedSlugs = _state.value.teamProjects.mapTo(mutableSetOf()) { it.slug }
+                    val slug = generateSequence(1) { it + 1 }
+                        .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
+                        .first { it !in usedSlugs }
+                    val cloned = Project(
+                        name = "${soloProject.name} (Squad)",
+                        description = "Cloned from Solo · ${soloProject.description}",
+                        language = soloProject.language,
+                        slug = slug,
+                        rootPath = soloProject.rootPath,
+                        kind = soloProject.kind,
+                        type = soloProject.type,
+                        androidTemplate = soloProject.androidTemplate,
+                    )
+                    val targetDir = File(app.filesDir, "team_workspaces/${cloned.id}").apply { mkdirs() }
+                    if (sourceDir.isDirectory) {
+                        sourceDir.copyRecursively(targetDir, overwrite = true)
+                    }
+                    cloned
+                }
+            }
+            result.onSuccess { cloned ->
+                val updated = listOf(cloned) + _state.value.teamProjects
+                preferences.saveTeamProjects(updated)
+                preferences.activeTeamProjectId = cloned.id
+                _state.update {
+                    it.copy(
+                        teamProjects = updated,
+                        activeTeamProject = cloned,
+                        projectImporting = false,
+                        projectImportMessage = null,
+                        toastMessage = "Cloned '${soloProject.name}' to AI Squad workspace",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        projectImporting = false,
+                        projectImportMessage = null,
+                        toastMessage = error.message?.take(180) ?: "Failed to clone Solo project",
+                    )
+                }
+            }
+        }
+    }
+
+    fun deleteTeamProject(project: Project) {
+        viewModelScope.launch(Dispatchers.IO) {
+            File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").deleteRecursively()
+        }
+        val updated = _state.value.teamProjects.filterNot { it.id == project.id }
+        val nextActive = if (_state.value.activeTeamProject?.id == project.id) updated.firstOrNull() else _state.value.activeTeamProject
+        preferences.saveTeamProjects(updated)
+        preferences.activeTeamProjectId = nextActive?.id
+        _state.update { it.copy(teamProjects = updated, activeTeamProject = nextActive) }
+    }
+
+    fun importZipToTeamProject(uri: Uri) {
+        if (_state.value.projectImporting || _state.value.gitCloneRunning) return
+        _state.update { it.copy(projectImporting = true, projectImportMessage = str(R.string.vm_reading_archive)) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    extractImportedProject(
+                        uri = uri,
+                        workspaceRootDir = "team_workspaces",
+                        usedSlugs = _state.value.teamProjects.mapTo(mutableSetOf()) { it.slug },
+                    )
+                }
+            }
+            result.onSuccess { imported ->
+                val project = imported.project
+                val updated = listOf(project) + _state.value.teamProjects
+                preferences.saveTeamProjects(updated)
+                preferences.activeTeamProjectId = project.id
+                _state.update {
+                    it.copy(
+                        teamProjects = updated,
+                        activeTeamProject = project,
+                        projectImporting = false,
+                        projectImportMessage = null,
+                        toastMessage = str(R.string.vm_project_imported, project.name),
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        projectImporting = false,
+                        projectImportMessage = null,
+                        toastMessage = str(R.string.vm_import_failed, error.message?.take(180) ?: str(R.string.vm_invalid_zip)),
+                    )
+                }
+            }
+        }
+    }
+
+    fun clonePublicGitToTeam(url: String) {
+        cloneGitRepository(url = url, repositoryName = null, branch = null, useGitHubCli = false, forTeam = true)
+    }
+
+    fun cloneGitHubToTeam(repository: GitHubRepository) {
+        if (_state.value.githubAuthStatus != GitHubAuthStatus.CONNECTED) {
+            _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.DISCONNECTED, githubMessage = str(R.string.vm_github_connect_again)) }
+            return
+        }
+        cloneGitRepository(repository.cloneUrl, repository.fullName, repository.defaultBranch, useGitHubCli = true, forTeam = true)
+    }
+
     fun importZipProject(uri: Uri) {
         if (_state.value.projectImporting || _state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) return
         _state.update { it.copy(projectImporting = true, projectImportMessage = str(R.string.vm_reading_archive)) }
@@ -3361,7 +3649,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun extractImportedProject(uri: Uri): ImportedZipProject {
+    private fun extractImportedProject(
+        uri: Uri,
+        workspaceRootDir: String = "workspaces",
+        usedSlugs: MutableSet<String> = _state.value.projects.mapTo(mutableSetOf()) { it.slug },
+    ): ImportedZipProject {
         val app = getApplication<Application>()
         val resolver = app.contentResolver
         var archiveName = "Imported project.zip"
@@ -3372,9 +3664,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+        val identity = generateQuickChatIdentity(usedSlugs)
         val projectId = UUID.randomUUID().toString()
-        val destination = File(app.filesDir, "workspaces/$projectId")
+        val destination = File(app.filesDir, "$workspaceRootDir/$projectId")
         destination.mkdirs()
         val destinationPath = destination.canonicalFile.toPath()
         val availableLimit = (destination.usableSpace * 8L / 10L).coerceAtMost(MAX_IMPORTED_PROJECT_BYTES)
@@ -3492,7 +3784,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cloneGitRepository(repository.cloneUrl, repository.fullName, repository.defaultBranch, useGitHubCli = true)
     }
 
-    private fun cloneGitRepository(url: String, repositoryName: String?, branch: String?, useGitHubCli: Boolean) {
+    private fun cloneGitRepository(
+        url: String,
+        repositoryName: String?,
+        branch: String?,
+        useGitHubCli: Boolean,
+        forTeam: Boolean = false,
+    ) {
         if (_state.value.gitCloneRunning || _state.value.projectImporting || _state.value.isRunning || _state.value.projectTerminalRunning || _state.value.androidBuildRunning) return
         val normalized = runCatching { validateGitUrl(url) }.getOrElse { error ->
             _state.update { it.copy(toastMessage = error.message ?: str(R.string.vm_invalid_git_url)) }
@@ -3502,9 +3800,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+                    val existingSlugs = (if (forTeam) _state.value.teamProjects else _state.value.projects).mapTo(mutableSetOf()) { it.slug }
+                    val identity = generateQuickChatIdentity(existingSlugs)
                     val projectId = UUID.randomUUID().toString()
-                    val workspace = File(getApplication<Application>().filesDir, "workspaces/$projectId").apply { mkdirs() }
+                    val rootFolder = if (forTeam) "team_workspaces" else "workspaces"
+                    val workspace = File(getApplication<Application>().filesDir, "$rootFolder/$projectId").apply { mkdirs() }
                     val output = File(getApplication<Application>().cacheDir, "git-clone-${System.nanoTime()}.log")
                     try {
                         val environment = mutableMapOf(
@@ -3558,12 +3858,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             result.onSuccess { project ->
-                val chat = ProjectChat(title = str(R.string.vm_new_chat))
-                preferences.saveProjectChats(project.id, listOf(chat))
-                _state.update { current -> current.copy(projects = listOf(project) + current.projects) }
-                preferences.saveProjects(_state.value.projects)
-                openProject(project)
-                _state.update { it.copy(gitCloneRunning = false, gitCloneMessage = null, toastMessage = str(R.string.vm_repository_cloned)) }
+                if (forTeam) {
+                    val updated = listOf(project) + _state.value.teamProjects
+                    preferences.saveTeamProjects(updated)
+                    preferences.activeTeamProjectId = project.id
+                    _state.update {
+                        it.copy(
+                            teamProjects = updated,
+                            activeTeamProject = project,
+                            gitCloneRunning = false,
+                            gitCloneMessage = null,
+                            toastMessage = str(R.string.vm_repository_cloned),
+                        )
+                    }
+                } else {
+                    val chat = ProjectChat(title = str(R.string.vm_new_chat))
+                    preferences.saveProjectChats(project.id, listOf(chat))
+                    _state.update { current -> current.copy(projects = listOf(project) + current.projects) }
+                    preferences.saveProjects(_state.value.projects)
+                    openProject(project)
+                    _state.update { it.copy(gitCloneRunning = false, gitCloneMessage = null, toastMessage = str(R.string.vm_repository_cloned)) }
+                }
             }.onFailure { error ->
                 _state.update {
                     it.copy(
@@ -4845,7 +5160,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         touchProject(project.id)
         persistMessages()
         val history = state.value.messages // includes all messages up to now
-        val runtimePrompt = if (attachments.isEmpty()) requestText else buildString {
+        val ownerTag = _state.value.ownerDisplayName.trim().takeIf { it.isNotBlank() }
+            ?.let { "[User Profile: Address the user as \"$it\" in your replies.]\n" }
+            .orEmpty()
+        val runtimePrompt = ownerTag + if (attachments.isEmpty()) requestText else buildString {
             appendLine(requestText)
             appendLine()
             appendLine("<attached_files>")
@@ -5796,33 +6114,118 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startTeamWork() {
-        _state.update { it.copy(teamIsRunning = true) }
+        val activeProj = _state.value.activeTeamProject
+        if (activeProj == null) {
+            _state.update { it.copy(toastMessage = str(R.string.team_no_projects_yet)) }
+            return
+        }
+        val runningId = _state.value.runningTeamProjectId
+        if (runningId != null && runningId != activeProj.id) {
+            val runningName = _state.value.teamProjects.firstOrNull { it.id == runningId }?.name ?: "another project"
+            _state.update { it.copy(toastMessage = str(R.string.team_locked_by_other_project, runningName)) }
+            return
+        }
+        teamCycleJob?.cancel()
+        _state.update { it.copy(teamIsRunning = true, runningTeamProjectId = activeProj.id) }
         continuousSupervisor.startContinuous()
-        viewModelScope.launch {
+        startTeamForegroundService(activeProj.name, "${activeProj.name} · กำลังรอรับคำสั่งจากเจ้าของบริษัท")
+        teamCycleJob = viewModelScope.launch {
             runTeamCycle()
         }
     }
 
     fun pauseTeamWork() {
+        teamCycleJob?.cancel()
+        teamCycleJob = null
         _state.update { it.copy(teamIsRunning = false) }
         continuousSupervisor.pauseContinuous("User paused team")
+        stopTeamForegroundService()
         updateAgentActivities(ActivityType.PAUSED)
     }
 
     fun resumeTeamWork() {
-        _state.update { it.copy(teamIsRunning = true) }
-        continuousSupervisor.startContinuous()
-        viewModelScope.launch {
-            runTeamCycle()
-        }
+        startTeamWork()
     }
 
     fun stopTeamWork() {
-        _state.update { it.copy(teamIsRunning = false) }
+        teamCycleJob?.cancel()
+        teamCycleJob = null
+        pendingTeamDirectives.clear()
+        _state.update {
+            it.copy(
+                teamIsRunning = false,
+                runningTeamProjectId = null,
+                teamPriorityDirectivesCount = 0,
+            )
+        }
         continuousSupervisor.stopContinuous("User stopped team")
+        stopTeamForegroundService()
         AgentSlot.entries.forEach { fileLockManager.releaseAllForAgent(it) }
         updateAgentActivities(ActivityType.WAITING)
         _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
+    }
+
+    fun clearTeamChat() {
+        val projectId = _state.value.activeTeamProject?.id
+        if (projectId != null) {
+            teamProjectChats[projectId]?.clear()
+        }
+        teamChatManager.clearHistory()
+        _state.update { it.copy(teamGroupMessages = emptyList()) }
+    }
+
+    private fun startTeamForegroundService(projectName: String, statusDetail: String) {
+        val app = getApplication<Application>()
+        com.jarves.mh.runtime.RuntimeTaskController.stopAction = { stopTeamWork() }
+        runCatching {
+            androidx.core.content.ContextCompat.startForegroundService(
+                app,
+                Intent(app, RuntimeExecutionService::class.java)
+                    .setAction(RuntimeExecutionService.ACTION_START)
+                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
+                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, str(R.string.app_name))
+                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, statusDetail)
+                    .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, true),
+            )
+        }
+    }
+
+    private fun updateTeamForegroundNotification(projectName: String, statusDetail: String) {
+        if (!_state.value.teamIsRunning) return
+        val app = getApplication<Application>()
+        runCatching {
+            app.startService(
+                Intent(app, RuntimeExecutionService::class.java)
+                    .setAction(RuntimeExecutionService.ACTION_PROGRESS)
+                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
+                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, str(R.string.app_name))
+                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, statusDetail)
+                    .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, true),
+            )
+        }
+    }
+
+    private fun notifyTeamTaskCompleted(projectName: String, summary: String) {
+        val app = getApplication<Application>()
+        runCatching {
+            app.startService(
+                Intent(app, RuntimeExecutionService::class.java)
+                    .setAction(RuntimeExecutionService.ACTION_NOTIFY_RESULT)
+                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
+                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, str(R.string.team_notif_completed_title))
+                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, summary),
+            )
+        }
+    }
+
+    private fun stopTeamForegroundService() {
+        val app = getApplication<Application>()
+        runCatching {
+            app.startService(
+                Intent(app, RuntimeExecutionService::class.java)
+                    .setAction(RuntimeExecutionService.ACTION_CANCELLED),
+            )
+        }
     }
 
     fun advanceTeamPart() {
@@ -5830,30 +6233,310 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         taskManager.approvePart(current)
         teamChatManager.postMessage(
             senderSlot = AgentSlot.AGENT_1,
-            senderName = "Agent 01 (Lead)",
+            senderName = agentNameFor(AgentSlot.AGENT_1),
             text = "Part 0$current approved. Advancing team to Part 0${current + 1}.",
             messageType = GroupMessageType.APPROVAL,
         )
     }
 
-    fun postTeamChatMessage(text: String, type: GroupMessageType = GroupMessageType.NORMAL, targetSlot: AgentSlot? = null) {
+    private fun appendProjectTeamMessage(
+        projectId: String?,
+        senderSlot: AgentSlot?,
+        senderName: String,
+        text: String,
+        messageType: GroupMessageType,
+        relatedFilePath: String? = null,
+        workStatus: String? = null,
+        workDetails: List<String> = emptyList(),
+        imagePaths: List<String> = emptyList(),
+        suggestedTaskPrompt: String? = null,
+    ) {
+        val msg = GroupChatMessage(
+            senderSlot = senderSlot,
+            senderName = senderName,
+            text = text,
+            messageType = messageType,
+            relatedFilePath = relatedFilePath,
+            workStatus = workStatus,
+            workDetails = workDetails,
+            imagePaths = imagePaths,
+            suggestedTaskPrompt = suggestedTaskPrompt,
+        )
+        if (projectId != null) {
+            val list = teamProjectChats.getOrPut(projectId) { mutableListOf() }
+            list.add(msg)
+            if (_state.value.activeTeamProject?.id == projectId) {
+                _state.update { it.copy(teamGroupMessages = list.toList()) }
+            }
+        }
         teamChatManager.postMessage(
+            senderSlot = senderSlot,
+            senderName = senderName,
+            text = text,
+            messageType = messageType,
+            relatedFilePath = relatedFilePath,
+            workStatus = workStatus,
+            workDetails = workDetails,
+            imagePaths = imagePaths,
+        )
+    }
+
+    fun clearTeamTerminal() {
+        _state.update { it.copy(teamTerminalOutput = "") }
+    }
+
+    fun runTeamTerminalCommand(command: String) {
+        val project = _state.value.activeTeamProject ?: return
+        if (command.isBlank() || _state.value.teamTerminalRunning) return
+        _state.update {
+            it.copy(
+                teamTerminalRunning = true,
+                teamTerminalOutput = (it.teamTerminalOutput + "\n$ $command\n").takeLast(120_000),
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val out = runCatching {
+                val installed = installer.installedRuntime()
+                val workspace = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").apply { mkdirs() }
+                val outputFile = File(getApplication<Application>().cacheDir, "team-term-${System.nanoTime()}.log")
+                val proc = installer.process(
+                    installed.proot,
+                    installed.rootfs,
+                    workspace,
+                    emptyMap(),
+                    listOf("/usr/bin/bash", "-lc", command),
+                    guestWorkspacePath = "/workspace/${project.slug}",
+                    outputFile = outputFile,
+                )
+                try {
+                    proc.outputStream.close()
+                    val exit = proc.waitFor()
+                    val text = outputFile.readTailText(64 * 1024).trim()
+                    if (text.isBlank()) "[exit $exit]\n" else "$text\n[exit $exit]\n"
+                } finally {
+                    runCatching { proc.destroy() }
+                    outputFile.delete()
+                }
+            }.getOrElse { err ->
+                "Error: ${err.message}\n"
+            }
+            _state.update {
+                it.copy(
+                    teamTerminalRunning = false,
+                    teamTerminalOutput = (it.teamTerminalOutput + out).takeLast(120_000),
+                )
+            }
+        }
+    }
+
+    private val pendingTeamImageFiles = java.util.concurrent.ConcurrentLinkedQueue<File>()
+
+    fun postTeamChatMessageWithImages(
+        text: String,
+        type: GroupMessageType = GroupMessageType.NORMAL,
+        targetSlot: AgentSlot? = null,
+        imageUris: List<Uri>,
+    ) {
+        val projectId = _state.value.activeTeamProject?.id
+        if (projectId == null || imageUris.isEmpty()) {
+            postTeamChatMessage(text, type, targetSlot)
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val uploadsDir = File(app.filesDir, "team_workspaces/$projectId/.orqen_uploads").apply { mkdirs() }
+            val savedFiles = imageUris.take(3).mapIndexedNotNull { idx, uri ->
+                runCatching {
+                    val outFile = File(uploadsDir, "img_${System.currentTimeMillis()}_$idx.jpg")
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        val bmp = android.graphics.BitmapFactory.decodeStream(input)
+                        if (bmp != null) {
+                            val maxDim = 1280
+                            val scale = minOf(1f, maxDim.toFloat() / maxOf(bmp.width, bmp.height).coerceAtLeast(1))
+                            val resized = if (scale < 1f) {
+                                android.graphics.Bitmap.createScaledBitmap(
+                                    bmp,
+                                    (bmp.width * scale).toInt().coerceAtLeast(1),
+                                    (bmp.height * scale).toInt().coerceAtLeast(1),
+                                    true,
+                                )
+                            } else bmp
+                            outFile.outputStream().use { out ->
+                                resized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, out)
+                            }
+                            if (resized !== bmp) resized.recycle()
+                            bmp.recycle()
+                            outFile
+                        } else null
+                    }
+                }.getOrNull()
+            }
+            withContext(Dispatchers.Main) {
+                val effectiveType = if (type == GroupMessageType.NORMAL) GroupMessageType.TASK_ASSIGNMENT else type
+                appendProjectTeamMessage(
+                    projectId = projectId,
+                    senderSlot = null,
+                    senderName = effectiveOwnerName(),
+                    text = text,
+                    messageType = effectiveType,
+                    imagePaths = savedFiles.map { it.absolutePath },
+                )
+                savedFiles.forEach { pendingTeamImageFiles.add(it) }
+                pendingTeamDirectives.add(text)
+                _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
+                recordCollaborationEvent(
+                    type = TeamEventType.TASK_CREATED,
+                    senderSlot = targetSlot,
+                    message = "Owner directive (+${savedFiles.size} image): \"$text\"",
+                    priority = EventPriority.CRITICAL,
+                )
+                val runningId = _state.value.runningTeamProjectId
+                val canAutoStart = !_state.value.teamIsRunning && (runningId == null || runningId == projectId)
+                if (canAutoStart) {
+                    startTeamWork()
+                }
+            }
+        }
+    }
+
+    private fun isActionableTaskIntent(text: String): Boolean {
+        val lower = text.lowercase()
+        val keywords = listOf(
+            "สร้าง", "แก้", "เพิ่ม", "ทำ", "ปรับ", "ลบ", "เปลี่ยน", "เขียน", "อัปเดต", "ออกแบบ",
+            "build", "create", "fix", "add", "implement", "update", "change", "refactor", "delete", "make ",
+        )
+        return keywords.any { lower.contains(it) }
+    }
+
+    private fun handleIdleAgentChatReply(projectId: String, userMessage: String, targetSlot: AgentSlot?) {
+        val project = _state.value.teamProjects.firstOrNull { it.id == projectId } ?: _state.value.activeTeamProject ?: return
+        val enabledAgents = _state.value.teamAgents.filter { it.config.isEnabled }
+        if (enabledAgents.isEmpty()) return
+
+        // Prefer an IDLE / resting agent so busy agents keep working untouched!
+        val responder = targetSlot?.let { slot -> enabledAgents.firstOrNull { it.config.slot == slot && !it.isWorking } }
+            ?: enabledAgents.firstOrNull { !it.isWorking }
+            ?: enabledAgents.first()
+
+        val looksLikeTask = isActionableTaskIntent(userMessage)
+        val ownerName = effectiveOwnerName()
+        viewModelScope.launch {
+            _state.update { it.copy(teamTypingAgentName = responder.config.name) }
+            try {
+                val workspaceDir = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").apply { mkdirs() }
+                val teamStatusSummary = enabledAgents.joinToString("\n") { a ->
+                    "- ${a.config.name} (${a.config.role.title}): ${if (a.isWorking) "กำลังทำงาน (${a.activityState.lastAction})" else "พักรออยู่"}"
+                }
+                val chatPrompt = buildString {
+                    appendLine("You are ${responder.config.name} (${responder.config.role.title}) on this AI Team.")
+                    appendLine("Owner's name (address the user as): $ownerName")
+                    appendLine("Your employee personality & tone: ${responder.config.effectivePersonality()}")
+                    appendLine("IMPORTANT: The Owner ($ownerName) is currently in CHAT mode (conversational Q&A only). DO NOT modify, create, or delete any files.")
+                    appendLine("Current team status:")
+                    appendLine(teamStatusSummary)
+                    appendLine("Current workspace files:")
+                    appendLine(workspaceFileListingSummary(workspaceDir))
+                    appendLine()
+                    appendLine("$ownerName said: \"$userMessage\"")
+                    appendLine("Reply naturally in the same language as $ownerName, addressing them as $ownerName, clearly explaining the current project status or answering their question concisely.")
+                }
+                val providerCfg = _state.value.providerConfigs.firstOrNull { it.id == responder.config.providerId }
+                val res = teamAgentRunner.executeTurn(
+                    agent = responder,
+                    providerConfig = providerCfg,
+                    workspaceDir = workspaceDir,
+                    projectSlug = project.slug,
+                    prompt = chatPrompt,
+                    useIsolatedAgyHome = useIsolatedAgyHomeFor(responder.config.slot),
+                    enableCache = false,
+                    knownAgyModels = _state.value.antigravityModels,
+                    onProgress = {},
+                )
+                val replyBody = if (res.isError) {
+                    "ตอนนี้ทีมกำลังดูแลโปรเจกต์ ${project.name} อยู่ครับ $ownerName (สถานะทีม: ${enabledAgents.count { it.isWorking }}/${enabledAgents.size} กำลังทำงาน)"
+                } else {
+                    cleanChatSummary(res.responseText)
+                }
+                val finalReply = if (looksLikeTask) {
+                    "$replyBody\n\n💡 หากต้องการให้ทีมเริ่มวางแผนและลงมือทำตามคำสั่งนี้ กดปุ่ม \"ส่งเป็นงาน Task\" ด้านล่างได้เลยครับ"
+                } else {
+                    replyBody
+                }
+                appendProjectTeamMessage(
+                    projectId = project.id,
+                    senderSlot = responder.config.slot,
+                    senderName = responder.config.name,
+                    text = finalReply,
+                    messageType = GroupMessageType.NORMAL,
+                    suggestedTaskPrompt = if (looksLikeTask) userMessage else null,
+                )
+            } finally {
+                _state.update { it.copy(teamTypingAgentName = null) }
+            }
+        }
+    }
+
+    fun postTeamChatMessage(text: String, type: GroupMessageType = GroupMessageType.NORMAL, targetSlot: AgentSlot? = null) {
+        val projectId = _state.value.activeTeamProject?.id
+        val ownerName = effectiveOwnerName()
+        // CHAT mode (GroupMessageType.NORMAL): converse with an IDLE agent without interrupting working agents!
+        if (type == GroupMessageType.NORMAL) {
+            appendProjectTeamMessage(
+                projectId = projectId,
+                senderSlot = null,
+                senderName = ownerName,
+                text = text,
+                messageType = GroupMessageType.NORMAL,
+            )
+            if (projectId != null) {
+                handleIdleAgentChatReply(projectId, text, targetSlot)
+            }
+            return
+        }
+
+        // TASK / BUG / REVIEW / PROGRESS mode: dispatch real work to the AI Team!
+        appendProjectTeamMessage(
+            projectId = projectId,
             senderSlot = null,
-            senderName = "You",
+            senderName = ownerName,
             text = text,
             messageType = type,
         )
-        viewModelScope.launch {
-            delay(500L)
-            val responder = targetSlot ?: AgentSlot.AGENT_1
-            val responderAgent = _state.value.teamAgents.firstOrNull { it.config.slot == responder }
-            val agentName = responderAgent?.config?.name ?: responder.defaultName
-            teamChatManager.postMessage(
-                senderSlot = responder,
-                senderName = agentName,
-                text = "Acknowledged: \"$text\". Coordinated through Shared Workspace.",
-                messageType = GroupMessageType.PROGRESS_UPDATE,
+        pendingTeamDirectives.add(text)
+        _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
+        recordCollaborationEvent(
+            type = TeamEventType.TASK_CREATED,
+            senderSlot = targetSlot,
+            message = "Owner directive: \"$text\"",
+            priority = EventPriority.CRITICAL,
+        )
+
+        val runningId = _state.value.runningTeamProjectId
+        val canAutoStart = !_state.value.teamIsRunning && (runningId == null || runningId == projectId) && projectId != null
+        if (canAutoStart) {
+            startTeamWork()
+        } else if (_state.value.teamIsRunning && runningId == projectId) {
+            val ceoName = agentNameFor(AgentSlot.AGENT_1)
+            val coderName = _state.value.teamAgents.filter { it.config.isEnabled }.getOrNull(1)?.config?.name ?: ceoName
+            appendProjectTeamMessage(
+                projectId = projectId,
+                senderSlot = AgentSlot.AGENT_1,
+                senderName = ceoName,
+                text = "รับทราบครับ $ownerName! ผมอ่านคำสั่งใหม่ \"$text\" แล้ว กำลังส่งต่อให้ $coderName เพิ่มส่วนนี้ควบคู่กับงานที่ทำอยู่ทันที",
+                messageType = GroupMessageType.TASK_ASSIGNMENT,
             )
+        } else if (!_state.value.teamIsRunning) {
+            viewModelScope.launch {
+                delay(300L)
+                val responder = targetSlot ?: AgentSlot.AGENT_1
+                appendProjectTeamMessage(
+                    projectId = projectId,
+                    senderSlot = responder,
+                    senderName = agentNameFor(responder),
+                    text = "รับทราบคำสั่งด่วน: \"$text\" — จัดคิวเป็นอันดับ 1 แล้ว (รอโปรเจกต์ที่กำลังรันเสร็จหรือกดหยุดก่อน)",
+                    messageType = GroupMessageType.PROGRESS_UPDATE,
+                )
+            }
         }
     }
 
@@ -5923,7 +6606,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             type = TeamEventType.FILE_UNLOCKED,
             senderSlot = slot,
             filePath = filePath,
-            message = "Lock released for $filePath by ${slot.defaultName}",
+            message = "Lock released for $filePath by ${agentNameFor(slot)}",
             priority = EventPriority.NORMAL,
         )
     }
@@ -5959,137 +6642,664 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(teamCollaborationEvents = current.take(100)) }
     }
 
-    private suspend fun runTeamCycle() {
-        val activeAgents = _state.value.teamAgents.filter { it.config.isEnabled }
-        if (activeAgents.isEmpty()) {
-            pauseTeamWork()
-            return
+    private fun useIsolatedAgyHomeFor(slot: AgentSlot): Boolean {
+        val slotAuth = _state.value.teamAgentAntigravityAuth[slot]
+        return slotAuth?.status == AntigravityAuthStatus.SIGNED_IN
+    }
+
+    private fun workspaceFileListingSummary(workspaceDir: File): String {
+        val files = workspaceDir.walkTopDown()
+            .maxDepth(4)
+            .filter { it.isFile && !it.path.contains("/.git/") && !it.path.contains("/node_modules/") && !it.path.contains("/build/") }
+            .map { it.relativeTo(workspaceDir).path }
+            .take(60)
+            .toList()
+        return if (files.isEmpty()) "(empty workspace)" else files.joinToString("\n")
+    }
+
+    private fun appendAgentLiveLog(slot: AgentSlot, line: String) {
+        if (line.isBlank()) return
+        val currentMap = _state.value.teamAgentLiveLogs
+        val updatedList = ((currentMap[slot] ?: emptyList()) + line.trim()).takeLast(40)
+        _state.update { it.copy(teamAgentLiveLogs = currentMap + (slot to updatedList)) }
+    }
+
+    private fun clearAgentLiveLog(slot: AgentSlot) {
+        _state.update { it.copy(teamAgentLiveLogs = it.teamAgentLiveLogs + (slot to emptyList())) }
+    }
+
+    private fun cleanChatSummary(rawText: String, writtenFiles: List<String> = emptyList()): String {
+        val withoutCodeBlocks = rawText
+            .replace(Regex("```[\\s\\S]*?```"), "")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+        val base = when {
+            withoutCodeBlocks.isNotBlank() -> withoutCodeBlocks.take(1200)
+            writtenFiles.isNotEmpty() -> "อัปเดตไฟล์เรียบร้อยแล้ว (${writtenFiles.size} ไฟล์)"
+            else -> rawText.trim().take(600)
         }
-        val lead = activeAgents.first()
-        val dev = activeAgents.getOrNull(1) ?: lead
-        val specialist = activeAgents.getOrNull(2)
-        val reviewer = activeAgents.getOrNull(3) ?: lead
-
-        val currentSpend = _state.value.teamEstimatedUsage?.estimatedCostUsd ?: 0.0
-        if (autonomousEngine.isBudgetExceeded(currentSpend, _state.value.budgetLimitUsd, _state.value.budgetAutoPauseEnabled)) {
-            pauseTeamWork()
-            recordCollaborationEvent(
-                type = TeamEventType.TASK_BLOCKED,
-                senderSlot = lead.config.slot,
-                message = "Budget Guard triggered: paused team at $${String.format("%.2f", currentSpend)}",
-                priority = EventPriority.CRITICAL,
-            )
-            return
+        return if (writtenFiles.isNotEmpty()) {
+            "$base\n\n📁 ${writtenFiles.joinToString(", ")}"
+        } else {
+            base
         }
+    }
 
-        val rosterNames = activeAgents.joinToString(", ") { it.config.name }
-        teamChatManager.postMessage(
-            senderSlot = lead.config.slot,
-            senderName = lead.config.name,
-            text = "Team session started with [$rosterNames]. Checking task queue and shared workspace.",
-            messageType = GroupMessageType.TASK_ASSIGNMENT,
-        )
-        recordCollaborationEvent(
-            type = TeamEventType.TASK_STARTED,
-            senderSlot = lead.config.slot,
-            message = "${lead.config.name} kicked off autonomous cycle with [$rosterNames]",
-            priority = EventPriority.NORMAL,
-        )
+    private fun isQuotaOrRateLimitError(text: String): Boolean {
+        val lower = text.lowercase()
+        return lower.contains("429") ||
+            lower.contains("rate limit") ||
+            lower.contains("quota") ||
+            lower.contains("resource_exhausted") ||
+            lower.contains("limit exceeded") ||
+            lower.contains("too many requests")
+    }
 
-        // Lead: analyzing
-        updateAgentActivity(lead.config.slot, ActivityType.ANALYZING, "Analyzing workspace", "Checking dependencies")
-        delay(1000L)
-
-        // Dev: lock file & start coding
-        val sampleFile = "app/src/main/java/com/orqen/workspace/MainFeature.kt"
-        fileLockManager.acquireLock(sampleFile, dev.config.slot, "task-1", "Implementing feature")
-        _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
-        updateAgentActivity(dev.config.slot, ActivityType.WRITING_CODE, "Implementing feature", "Editing $sampleFile", sampleFile)
-        recordCollaborationEvent(
-            type = TeamEventType.FILE_LOCKED,
-            senderSlot = dev.config.slot,
-            filePath = sampleFile,
-            message = "${dev.config.name} acquired lock on $sampleFile",
-            priority = EventPriority.NORMAL,
-        )
-        teamChatManager.postMessage(
-            senderSlot = dev.config.slot,
-            senderName = dev.config.name,
-            text = "Lock acquired for $sampleFile. Beginning implementation (reporting to ${lead.config.name}).",
-            messageType = GroupMessageType.PROGRESS_UPDATE,
-            relatedFilePath = sampleFile,
-        )
-        delay(1200L)
-
-        // Specialist (if added)
-        if (specialist != null) {
-            updateAgentActivity(specialist.config.slot, ActivityType.WRITING_CODE, "Backend service setup", "Updating API contract")
-            delay(1000L)
-        }
-
-        // Release lock & commit
-        fileLockManager.releaseLock(sampleFile, dev.config.slot)
-        _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
-        updateAgentActivity(dev.config.slot, ActivityType.COMMITTING, "Committing changes", "git commit")
-
-        val commitMsg = gitCoordinator.formatCommitMessage(_state.value.teamCurrentPartNumber, "implement main feature", "feat")
-        recordCollaborationEvent(
-            type = TeamEventType.COMMIT_CREATED,
-            senderSlot = dev.config.slot,
-            filePath = sampleFile,
-            message = "${dev.config.name} committed: $commitMsg",
-            priority = EventPriority.HIGH,
-        )
-        teamChatManager.postMessage(
-            senderSlot = dev.config.slot,
-            senderName = dev.config.name,
-            text = "Feature completed and verified. Created commit: \"$commitMsg\". Requesting review from ${reviewer.config.name}.",
-            messageType = GroupMessageType.COMPLETION_REPORT,
-        )
-        delay(1000L)
-
-        // Reviewer reviews
-        updateAgentActivity(reviewer.config.slot, ActivityType.REVIEWING, "Code review", "Reviewing commit $commitMsg")
-        teamChatManager.postMessage(
-            senderSlot = reviewer.config.slot,
-            senderName = reviewer.config.name,
-            text = "Independent review passed for ${dev.config.name}'s changes. No regressions found.",
-            messageType = GroupMessageType.REVIEW_REQUEST,
-        )
-        delay(1000L)
-
-        // Lead approves
-        updateAgentActivity(lead.config.slot, ActivityType.COMPLETED, "Part task approved", "Merged into shared workspace")
-        teamChatManager.postMessage(
-            senderSlot = lead.config.slot,
-            senderName = lead.config.name,
-            text = "Approved. Acceptance criteria verified on device.",
-            messageType = GroupMessageType.APPROVAL,
-        )
-        recordCollaborationEvent(
-            type = TeamEventType.PART_APPROVED,
-            senderSlot = lead.config.slot,
-            message = "${lead.config.name} approved cycle milestone",
-            priority = EventPriority.HIGH,
-        )
-
-        delay(800L)
-        updateAgentActivities(ActivityType.WAITING)
-        continuousSupervisor.handleSessionCompletion(
-            completedTask = _state.value.teamTasks.firstOrNull(),
-            hasMoreTasks = false,
-            exitCode = 0,
-            errorMessage = null,
-            onSaveCheckpoint = { chk ->
-                recordCollaborationEvent(
-                    type = TeamEventType.CHECKPOINT_CREATED,
-                    senderSlot = lead.config.slot,
-                    message = "Auto-checkpoint saved: ${chk.reason}",
-                    priority = EventPriority.NORMAL,
+    private fun updateTeamBannerHealthFromError(errorText: String?, agentName: String? = null) {
+        if (errorText.isNullOrBlank()) {
+            _state.update {
+                it.copy(
+                    teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.RUNNING,
+                    teamBannerMessage = null,
+                    teamBannerDetail = null,
                 )
-            },
-            onContinueNext = {},
+            }
+            return
+        }
+        val lower = errorText.lowercase()
+        val detail = buildString {
+            if (!agentName.isNullOrBlank()) appendLine("AI ที่มีปัญหา: $agentName")
+            append("สาเหตุ: ${errorText.take(320)}")
+        }
+        val isDisconnected = lower.contains("401") ||
+            lower.contains("403") ||
+            lower.contains("unauthorized") ||
+            lower.contains("api key") ||
+            lower.contains("not installed") ||
+            lower.contains("sign in") ||
+            lower.contains("login") ||
+            lower.contains("auth")
+        if (isDisconnected) {
+            _state.update {
+                it.copy(
+                    teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.DISCONNECTED,
+                    teamBannerMessage = if (!agentName.isNullOrBlank()) "$agentName หลุดการเชื่อมต่อ · กรุณาเชื่อมต่อใหม่" else str(R.string.team_status_disconnected_agent),
+                    teamBannerDetail = detail,
+                )
+            }
+        } else {
+            _state.update {
+                it.copy(
+                    teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.WARNING,
+                    teamBannerMessage = if (!agentName.isNullOrBlank()) "$agentName พบปัญหาชั่วคราว (กดดูรายละเอียด)" else str(R.string.team_status_warning_network),
+                    teamBannerDetail = detail,
+                )
+            }
+        }
+    }
+
+    private fun maybeAutoSwitchAgentModel(
+        projectId: String,
+        agent: AgentState,
+        forceOnQuotaError: Boolean,
+    ): AgentState {
+        val contCfg = _state.value.teamContinuousConfig
+        if (!contCfg.autoSwitchOnLowQuota) return agent
+
+        val allQuotas = _state.value.teamAllProviderQuotas
+        val quota = allQuotas[agent.config.providerId] ?: _state.value.teamOfficialQuota
+        val threshold = (contCfg.quotaSwitchThresholdPercent.coerceIn(5, 50)) / 100f
+        val isLowQuota = quota?.isAvailable == true && (quota.remainingPercent ?: 1f) <= threshold
+        if (!forceOnQuotaError && !isLowQuota) return agent
+
+        // Check if current provider itself is exhausted -> try switching to another connected provider with remaining quota!
+        val currentModel = agent.config.modelId
+        val providerExhausted = quota?.isAvailable == true && (quota.remainingPercent ?: 1f) <= threshold
+        var targetProviderId = agent.config.providerId
+        if (providerExhausted) {
+            val altProvider = _state.value.providerConfigs.firstOrNull { cfg ->
+                if (cfg.id == agent.config.providerId) return@firstOrNull false
+                val hasCreds = cfg.type == com.jarves.mh.provider.core.ProviderType.ANTIGRAVITY ||
+                    getProviderApiKey(cfg.id).isNotBlank()
+                if (!hasCreds) return@firstOrNull false
+                val q = allQuotas[cfg.id]
+                // Verify candidate backup provider actually has quota remaining!
+                q == null || !q.isAvailable || (q.remainingPercent ?: 1f) > 0.15f
+            }
+            if (altProvider != null) {
+                targetProviderId = altProvider.id
+            }
+        }
+
+        val knownAgy = _state.value.antigravityModels
+        val isTargetAgy = targetProviderId == "preset-antigravity"
+        val targetCfg = _state.value.providerConfigs.firstOrNull { it.id == targetProviderId }
+        val codingFallbackPool = if (isTargetAgy) {
+            // Strictly use ONLY real models available in the user's actual Antigravity plan!
+            knownAgy.filter { it.isNotBlank() }
+        } else {
+            targetCfg?.availableModels?.filter { it.isNotBlank() }.orEmpty()
+        }
+        val chosenFallback = contCfg.fallbackModelId
+            .takeIf { it.isNotBlank() && !it.equals(currentModel, ignoreCase = true) && (codingFallbackPool.isEmpty() || it in codingFallbackPool) }
+            ?: codingFallbackPool.firstOrNull { !it.equals(currentModel, ignoreCase = true) }
+            ?: return agent
+
+        val updatedConfig = agent.config.copy(providerId = targetProviderId, modelId = chosenFallback)
+        updateAgentConfig(agent.config.slot, updatedConfig)
+        appendProjectTeamMessage(
+            projectId = projectId,
+            senderSlot = agent.config.slot,
+            senderName = agent.config.name,
+            text = "สลับโมเดลอัตโนมัติทันที: $currentModel → $chosenFallback (ตรวจสอบแล้วโควต้าสำรองพร้อมใช้งาน)",
+            messageType = GroupMessageType.SYSTEM,
+            workStatus = "สลับโมเดลสำรองอัตโนมัติ",
+            workDetails = listOf("เดิม: $currentModel", "ใหม่: $chosenFallback ($targetProviderId)"),
         )
+        return agent.copy(config = updatedConfig)
+    }
+
+    private fun recordRealtimeTeamTurnUsage(providerId: String, prompt: String, response: String) {
+        val estTokens = ((prompt.length + response.length) / 4L).coerceAtLeast(120L)
+        val estCostUsd = (estTokens / 1_000_000.0) * 1.50
+        val currentEstMap = _state.value.teamAllProviderEstimated.toMutableMap()
+        val prevEst = currentEstMap[providerId]
+        val nextTokens = (prevEst?.estimatedTokens ?: 0L) + estTokens
+        val nextUsd = (prevEst?.estimatedCostUsd ?: 0.0) + estCostUsd
+        currentEstMap[providerId] = EstimatedUsage(
+            estimatedTokens = nextTokens,
+            estimatedCostUsd = nextUsd,
+            estimatedCostThb = nextUsd * 35.0,
+        )
+
+        val currentLocalMap = _state.value.teamAllProviderLocal.toMutableMap()
+        val prevLocal = currentLocalMap[providerId] ?: LocalUsage()
+        currentLocalMap[providerId] = prevLocal.copy(
+            totalRequests = prevLocal.totalRequests + 1,
+            sessionTimeMillis = prevLocal.sessionTimeMillis + 15_000L,
+            lastActiveMillis = System.currentTimeMillis(),
+        )
+
+        val totalTokens = currentEstMap.values.sumOf { it.estimatedTokens }
+        val totalUsd = currentEstMap.values.sumOf { it.estimatedCostUsd }
+        val totalReqs = currentLocalMap.values.sumOf { it.totalRequests }
+        _state.update {
+            it.copy(
+                teamAllProviderEstimated = currentEstMap,
+                teamAllProviderLocal = currentLocalMap,
+                teamEstimatedUsage = EstimatedUsage(
+                    estimatedTokens = totalTokens,
+                    estimatedCostUsd = totalUsd,
+                    estimatedCostThb = totalUsd * 35.0,
+                ),
+                teamLocalUsage = it.teamLocalUsage.copy(
+                    totalRequests = totalReqs,
+                    lastActiveMillis = System.currentTimeMillis(),
+                ),
+            )
+        }
+        refreshAllQuotas(forceRefresh = false)
+    }
+
+    private suspend fun executeTeamTurnWithAutoSwitch(
+        projectId: String,
+        projectName: String,
+        agent: AgentState,
+        workspaceDir: File,
+        projectSlug: String,
+        prompt: String,
+        imageFiles: List<File> = emptyList(),
+        onProgress: suspend (String) -> Unit,
+    ): com.jarves.mh.runtime.TeamAgentExecutionResult {
+        var activeAgent = maybeAutoSwitchAgentModel(projectId, agent, forceOnQuotaError = false)
+        val accumulatedFiles = linkedSetOf<String>()
+        var currentPrompt = prompt
+        val maxSelfHealRetries = if (_state.value.teamContinuousConfig.autoResume) 3 else 0
+        var attempt = 0
+        var lastResult = com.jarves.mh.runtime.TeamAgentExecutionResult(responseText = "Cancelled", isError = true)
+
+        while (_state.value.teamIsRunning) {
+            val providerCfg = _state.value.providerConfigs.firstOrNull { it.id == activeAgent.config.providerId }
+            val result = teamAgentRunner.executeTurn(
+                agent = activeAgent,
+                providerConfig = providerCfg,
+                workspaceDir = workspaceDir,
+                projectSlug = projectSlug,
+                prompt = currentPrompt,
+                useIsolatedAgyHome = useIsolatedAgyHomeFor(activeAgent.config.slot),
+                enableCache = _state.value.teamContinuousConfig.tokenSaverCacheEnabled,
+                imageFiles = imageFiles,
+                knownAgyModels = _state.value.antigravityModels,
+                onProgress = onProgress,
+            )
+            accumulatedFiles.addAll(result.writtenFiles)
+            lastResult = result.copy(writtenFiles = accumulatedFiles.toList())
+
+            if (!result.isError) {
+                updateTeamBannerHealthFromError(null)
+                recordRealtimeTeamTurnUsage(activeAgent.config.providerId, currentPrompt, result.responseText)
+                return lastResult
+            }
+
+            // Decide if we can autonomously self-heal & resume!
+            val isQuotaErr = isQuotaOrRateLimitError(result.responseText)
+            val isTimeoutErr = result.responseText.contains("timed out", ignoreCase = true) ||
+                result.responseText.contains("timeout", ignoreCase = true)
+            val canRecover = (result.isRecoverable || isQuotaErr || isTimeoutErr) && attempt < maxSelfHealRetries && _state.value.teamIsRunning
+
+            if (!canRecover) {
+                updateTeamBannerHealthFromError(result.responseText, activeAgent.config.name)
+                return lastResult
+            }
+
+            // Instant switch on quota/rate-limit error without long delay!
+            if (isQuotaErr && _state.value.teamContinuousConfig.autoSwitchOnLowQuota) {
+                val switched = maybeAutoSwitchAgentModel(projectId, activeAgent, forceOnQuotaError = true)
+                if (switched.config.modelId != activeAgent.config.modelId || switched.config.providerId != activeAgent.config.providerId) {
+                    activeAgent = switched
+                    attempt++
+                    onProgress("Switched immediately to ${activeAgent.config.modelId}")
+                    continue
+                }
+            }
+
+            attempt++
+            val backoffMs = (2_000L * (1 shl (attempt - 1))).coerceAtMost(10_000L)
+            val healMsg = "${activeAgent.config.name} พบปัญหาชั่วคราว · กำลังทำต่ออัตโนมัติ (ครั้งที่ $attempt/$maxSelfHealRetries)"
+            val healDetail = "AI ที่มีปัญหา: ${activeAgent.config.name} (${activeAgent.config.modelId})\nสาเหตุ: ${result.responseText.take(320)}"
+            _state.update {
+                it.copy(
+                    teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.WARNING,
+                    teamBannerMessage = healMsg,
+                    teamBannerDetail = healDetail,
+                )
+            }
+            updateTeamForegroundNotification(projectName, "${activeAgent.config.name}: กำลังกู้คืนและทำต่ออัตโนมัติ ($attempt/$maxSelfHealRetries)…")
+            onProgress("Auto-recovery ($attempt/$maxSelfHealRetries): ${result.responseText.take(100)}")
+
+            // Auto-switch to backup coding model on quota error or repeated timeout
+            if ((isQuotaErr || (isTimeoutErr && attempt >= 2)) && _state.value.teamContinuousConfig.autoSwitchOnLowQuota) {
+                val switched = maybeAutoSwitchAgentModel(projectId, activeAgent, forceOnQuotaError = true)
+                if (switched.config.modelId != activeAgent.config.modelId) {
+                    activeAgent = switched
+                    onProgress("Switched to backup model: ${activeAgent.config.modelId}")
+                }
+            }
+
+            delay(backoffMs)
+
+            // Build autonomous self-healing continuation prompt with live workspace snapshot
+            currentPrompt = buildString {
+                appendLine("AUTONOMOUS SELF-RECOVERY (Attempt $attempt/$maxSelfHealRetries):")
+                appendLine("The previous attempt was interrupted by: ${result.responseText.take(220)}")
+                if (accumulatedFiles.isNotEmpty()) {
+                    appendLine("Files already created/updated before interruption: ${accumulatedFiles.joinToString(", ")}")
+                }
+                appendLine("Current actual workspace files:")
+                appendLine(workspaceFileListingSummary(workspaceDir))
+                appendLine()
+                appendLine("Think autonomously: inspect what is already done, DO NOT restart from scratch if files already exist, break the remaining work into concise fast steps so it finishes cleanly without timing out, and complete the original request below:")
+                appendLine("---")
+                appendLine(prompt)
+            }
+        }
+
+        return lastResult
+    }
+
+    private suspend fun runTeamCycle() {
+        val projectId = _state.value.runningTeamProjectId ?: _state.value.activeTeamProject?.id
+        val project = _state.value.teamProjects.firstOrNull { it.id == projectId } ?: _state.value.activeTeamProject
+        if (project == null) {
+            stopTeamWork()
+            return
+        }
+        val workspaceDir = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").apply { mkdirs() }
+        var initialGreetingSent = false
+
+        try {
+            // Persistent always-on standby loop: stays alive waiting for Owner commands until Pause/Stop!
+            while (_state.value.teamIsRunning) {
+                val activeAgents = _state.value.teamAgents.filter { it.config.isEnabled }
+                if (activeAgents.isEmpty()) {
+                    pauseTeamWork()
+                    return
+                }
+                val ceo = activeAgents.first()
+                val coder = activeAgents.getOrNull(1) ?: ceo
+                val reviewer = if (activeAgents.size >= 3) activeAgents.last() else ceo
+
+                // Wait for Owner directive if queue is empty (do NOT re-spam welcome message after tasks/errors!)
+                val initialRequest = pendingTeamDirectives.poll()
+                if (initialRequest == null) {
+                    if (!initialGreetingSent) {
+                        initialGreetingSent = true
+                        updateAgentActivities(ActivityType.WAITING)
+                        appendProjectTeamMessage(
+                            projectId = project.id,
+                            senderSlot = ceo.config.slot,
+                            senderName = ceo.config.name,
+                            text = "ทีม AI พร้อมทำงานแล้ว — กำลังรอรับคำสั่งจาก ${effectiveOwnerName()} ครับ (พิมพ์สั่งในแชทนี้ได้เลย)",
+                            messageType = GroupMessageType.PROGRESS_UPDATE,
+                        )
+                    }
+                    delay(350L)
+                    continue
+                }
+
+                initialGreetingSent = true
+                _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
+
+                val currentSpend = _state.value.teamEstimatedUsage?.estimatedCostUsd ?: 0.0
+                if (autonomousEngine.isBudgetExceeded(currentSpend, _state.value.budgetLimitUsd, _state.value.budgetAutoPauseEnabled)) {
+                    pauseTeamWork()
+                    recordCollaborationEvent(
+                        type = TeamEventType.TASK_BLOCKED,
+                        senderSlot = ceo.config.slot,
+                        message = "Budget Guard triggered: paused team at $${String.format("%.2f", currentSpend)}",
+                        priority = EventPriority.CRITICAL,
+                    )
+                    return
+                }
+
+                val accumulatedRequirements = mutableListOf(initialRequest)
+                val attachedImages = mutableListOf<File>()
+                while (true) {
+                    val img = pendingTeamImageFiles.poll() ?: break
+                    attachedImages.add(img)
+                }
+                val allWrittenFiles = linkedSetOf<String>()
+                val completedStepsSummary = mutableListOf<String>()
+                var taskHadFatalError = false
+
+                // STEP 1: CEO (Agent 1) analyzes Owner's request & creates the master plan
+                updateAgentActivities(ActivityType.WAITING)
+                clearAgentLiveLog(ceo.config.slot)
+                appendAgentLiveLog(ceo.config.slot, "Analyzing Owner request: $initialRequest")
+                updateAgentActivity(ceo.config.slot, ActivityType.PLANNING, "CEO Planning", "กำลังวิเคราะห์และวางแผน")
+                updateTeamForegroundNotification(project.name, "${ceo.config.name} • กำลังวางแผน")
+                val ownerName = effectiveOwnerName()
+                val ceoPlanPrompt = buildString {
+                    appendLine("You are ${ceo.config.name}, the CEO / Lead Architect of this AI Team.")
+                    appendLine("Owner's name (address the user as): $ownerName")
+                    appendLine("Your employee personality & tone: ${ceo.config.effectivePersonality()}")
+                    appendLine("$ownerName's request: \"$initialRequest\"")
+                    appendLine("Current workspace files (/workspace/${project.slug}):")
+                    appendLine(workspaceFileListingSummary(workspaceDir))
+                    appendLine()
+                    appendLine("Create a concise, concrete implementation plan and delegate the exact tasks to @${coder.config.name} (Developer).")
+                    appendLine("Reply in the same language as the Owner's request. Keep your chat summary concise and clean without dumping raw shell logs.")
+                }
+                val ceoResult = executeTeamTurnWithAutoSwitch(
+                    projectId = project.id,
+                    projectName = project.name,
+                    agent = ceo,
+                    workspaceDir = workspaceDir,
+                    projectSlug = project.slug,
+                    prompt = ceoPlanPrompt,
+                    imageFiles = attachedImages,
+                    onProgress = { step ->
+                        appendAgentLiveLog(ceo.config.slot, step)
+                        updateAgentActivity(ceo.config.slot, ActivityType.PLANNING, "CEO Planning", step)
+                    },
+                )
+                appendAgentLiveLog(ceo.config.slot, "Plan completed and handed off to @${coder.config.name}")
+                // CEO finishes planning -> immediately switch CEO to WAITING (resting) before Coder starts!
+                updateAgentActivity(
+                    ceo.config.slot,
+                    ActivityType.WAITING,
+                    "วางแผนเรียบร้อย",
+                    "พักรอ ${coder.config.name} ทำงาน",
+                )
+                val ceoWorkDetails = _state.value.teamAgentLiveLogs[ceo.config.slot].orEmpty()
+                val ceoChatText = if (ceoResult.isError) {
+                    "⚠️ ${ceoResult.responseText}"
+                } else {
+                    val summary = cleanChatSummary(ceoResult.responseText)
+                    if (ceo.config.slot != coder.config.slot && !summary.contains("@${coder.config.name}")) {
+                        "@${coder.config.name} วางแผนเรียบร้อยแล้วครับ รับงานไปเขียนโค้ดต่อได้เลย:\n\n$summary"
+                    } else summary
+                }
+                appendProjectTeamMessage(
+                    projectId = project.id,
+                    senderSlot = ceo.config.slot,
+                    senderName = ceo.config.name,
+                    text = ceoChatText,
+                    messageType = GroupMessageType.TASK_ASSIGNMENT,
+                    workStatus = if (ceoResult.isError) "วางแผนขัดข้อง" else "วางแผนเรียบร้อย · ส่งต่อ @${coder.config.name}",
+                    workDetails = ceoWorkDetails,
+                )
+                if (ceoResult.isError) {
+                    updateAgentActivities(ActivityType.WAITING)
+                    updateTeamForegroundNotification(project.name, "พบปัญหาขณะวางแผน · กำลังรอคำสั่งถัดไป")
+                    continue
+                }
+                completedStepsSummary.add("${ceo.config.name}: วางแผนงานและส่งต่อให้ ${coder.config.name}")
+
+                // STEP 2 & 3: Coder Build + QA/CEO Verification & Fix Loop (up to 4 rounds, absorbing live Owner steering!)
+                var lastFeedback: String? = null
+                var round = 1
+                val maxRounds = 4
+                while (round <= maxRounds && _state.value.teamIsRunning) {
+                    while (true) {
+                        val extra = pendingTeamDirectives.poll() ?: break
+                        accumulatedRequirements.add(extra)
+                    }
+                    _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
+
+                    // Developer (Agent 2) codes / fixes real files in workspaceDir while CEO rests
+                    clearAgentLiveLog(coder.config.slot)
+                    appendAgentLiveLog(coder.config.slot, "Round $round started in /team_workspaces/${project.slug}")
+                    updateAgentActivity(
+                        coder.config.slot,
+                        if (lastFeedback == null) ActivityType.WRITING_CODE else ActivityType.FIXING_BUG,
+                        if (lastFeedback == null) "Building (Round $round)" else "Fixing bugs (Round $round)",
+                        if (lastFeedback == null) "กำลังเขียนโค้ดและสร้างไฟล์" else "กำลังแก้ไขตามที่ตรวจสอบ",
+                    )
+                    updateTeamForegroundNotification(
+                        project.name,
+                        "${coder.config.name} • กำลัง${if (lastFeedback == null) "เขียนโค้ด" else "แก้ไขบั๊ก"}",
+                    )
+                    val tokenSaver = _state.value.teamContinuousConfig.tokenSaverCacheEnabled
+                    val planCap = if (tokenSaver) 1200 else 3000
+                    val feedbackCap = if (tokenSaver) 1200 else 2500
+                    val coderPrompt = buildString {
+                        appendLine("You are ${coder.config.name}, the Developer on this AI Team.")
+                        appendLine("Owner's name (address the user as): $ownerName")
+                        appendLine("Your employee personality & tone: ${coder.config.effectivePersonality()}")
+                        appendLine("CEO (${ceo.config.name}) plan:")
+                        appendLine(ceoResult.responseText.take(planCap))
+                        appendLine()
+                        appendLine("All Owner requirements to satisfy (include every single one):")
+                        accumulatedRequirements.forEachIndexed { i, req -> appendLine("${i + 1}. $req") }
+                        if (lastFeedback != null) {
+                            appendLine()
+                            appendLine("QA/Reviewer found issues in the previous round — fix ALL of them:")
+                            appendLine(lastFeedback!!.take(feedbackCap))
+                        }
+                        appendLine()
+                        appendLine("Current workspace files:")
+                        appendLine(workspaceFileListingSummary(workspaceDir))
+                        appendLine()
+                        appendLine("Implement ONLY the files that need creating/editing directly in the workspace (do not repeat unchanged files). Keep your summary concise to save tokens.")
+                    }
+                    val coderResult = executeTeamTurnWithAutoSwitch(
+                        projectId = project.id,
+                        projectName = project.name,
+                        agent = coder,
+                        workspaceDir = workspaceDir,
+                        projectSlug = project.slug,
+                        prompt = coderPrompt,
+                        imageFiles = attachedImages,
+                        onProgress = { step ->
+                            appendAgentLiveLog(coder.config.slot, step)
+                            updateAgentActivity(coder.config.slot, ActivityType.WRITING_CODE, "Round $round", step)
+                        },
+                    )
+                    allWrittenFiles.addAll(coderResult.writtenFiles)
+                    appendAgentLiveLog(coder.config.slot, "Finished round $round. Handed off to @${reviewer.config.name}")
+                    // Coder finishes coding -> immediately switch Coder to WAITING (resting) while Reviewer tests!
+                    updateAgentActivity(
+                        coder.config.slot,
+                        ActivityType.WAITING,
+                        "เขียนโค้ดเสร็จแล้ว",
+                        "พักรอ ${reviewer.config.name} เทสระบบ",
+                    )
+                    val coderWorkDetails = _state.value.teamAgentLiveLogs[coder.config.slot].orEmpty() +
+                        coderResult.writtenFiles.map { "Updated file: $it" }
+                    val coderChatText = if (coderResult.isError) {
+                        "⚠️ ${coderResult.responseText}"
+                    } else {
+                        val summary = cleanChatSummary(coderResult.responseText, coderResult.writtenFiles)
+                        if (coder.config.slot != reviewer.config.slot && !summary.contains("@${reviewer.config.name}")) {
+                            "@${reviewer.config.name} งานเสร็จเรียบร้อยแล้วครับ รบกวนช่วยตรวจสอบและเทสระบบได้เลย:\n\n$summary"
+                        } else summary
+                    }
+                    appendProjectTeamMessage(
+                        projectId = project.id,
+                        senderSlot = coder.config.slot,
+                        senderName = coder.config.name,
+                        text = coderChatText,
+                        messageType = GroupMessageType.COMPLETION_REPORT,
+                        workStatus = if (coderResult.isError) "เขียนโค้ดขัดข้อง" else "เขียนโค้ดเสร็จแล้ว (${coderResult.writtenFiles.size} ไฟล์) · ส่งต่อ @${reviewer.config.name}",
+                        workDetails = coderWorkDetails,
+                    )
+                    if (coderResult.isError) {
+                        taskHadFatalError = true
+                        break
+                    }
+                    completedStepsSummary.add("${coder.config.name} (รอบที่ $round): ${if (lastFeedback == null) "พัฒนาและเขียนโค้ด" else "แก้ไขจุดที่พบ"} (${coderResult.writtenFiles.size} ไฟล์)")
+
+                    // If Owner added new instructions while Coder was busy -> loop immediately to add them!
+                    if (pendingTeamDirectives.isNotEmpty()) {
+                        while (true) {
+                            val extra = pendingTeamDirectives.poll() ?: break
+                            accumulatedRequirements.add(extra)
+                        }
+                        _state.update { it.copy(teamPriorityDirectivesCount = 0) }
+                        lastFeedback = "Owner added new requirements above — please integrate them with your current work."
+                        round++
+                        continue
+                    }
+
+                    // QA / CEO Verification Step
+                    clearAgentLiveLog(reviewer.config.slot)
+                    appendAgentLiveLog(reviewer.config.slot, "Testing & verifying round $round output…")
+                    updateAgentActivity(reviewer.config.slot, ActivityType.TESTING, "Testing & Verifying (Round $round)", "กำลังตรวจสอบและเทสระบบ")
+                    updateTeamForegroundNotification(project.name, "${reviewer.config.name} • กำลังตรวจสอบระบบ")
+                    val reviewPrompt = buildString {
+                        appendLine("You are ${reviewer.config.name} verifying ${coder.config.name}'s work for $ownerName.")
+                        appendLine("Owner's name (address the user as): $ownerName")
+                        appendLine("Your employee personality & tone: ${reviewer.config.effectivePersonality()}")
+                        appendLine("Owner requirements:")
+                        accumulatedRequirements.forEachIndexed { i, req -> appendLine("${i + 1}. $req") }
+                        appendLine()
+                        appendLine("Developer report:")
+                        appendLine(coderResult.responseText.take(1000))
+                        appendLine()
+                        appendLine("Actual files now in workspace:")
+                        appendLine(workspaceFileListingSummary(workspaceDir))
+                        appendLine()
+                        appendLine("Inspect and test the files. Start your response with 'PASS:' if everything works and meets all requirements, OR start with 'FAIL:' followed by the exact bugs, root causes, and what ${coder.config.name} must fix.")
+                    }
+                    val reviewResult = executeTeamTurnWithAutoSwitch(
+                        projectId = project.id,
+                        projectName = project.name,
+                        agent = reviewer,
+                        workspaceDir = workspaceDir,
+                        projectSlug = project.slug,
+                        prompt = reviewPrompt,
+                        imageFiles = attachedImages,
+                        onProgress = { step ->
+                            appendAgentLiveLog(reviewer.config.slot, step)
+                            updateAgentActivity(reviewer.config.slot, ActivityType.TESTING, "Testing Round $round", step)
+                        },
+                    )
+                    val passed = !reviewResult.isError &&
+                        reviewResult.responseText.trimStart().startsWith("PASS", ignoreCase = true)
+                    appendAgentLiveLog(reviewer.config.slot, if (passed) "Verification PASSED" else "Verification FAILED — sent back to @${coder.config.name}")
+                    // Reviewer finishes testing -> update status cleanly
+                    updateAgentActivity(
+                        reviewer.config.slot,
+                        if (passed) ActivityType.COMPLETED else ActivityType.WAITING,
+                        if (passed) "ตรวจสอบผ่านเรียบร้อย" else "ส่งกลับให้แก้ไข",
+                        if (passed) "พร้อมรายงาน $ownerName" else "พักรอ ${coder.config.name} แก้ไข",
+                    )
+                    val reviewerWorkDetails = _state.value.teamAgentLiveLogs[reviewer.config.slot].orEmpty()
+                    val reviewChatText = if (reviewResult.isError) {
+                        "⚠️ ${reviewResult.responseText}"
+                    } else {
+                        val summary = cleanChatSummary(reviewResult.responseText)
+                        when {
+                            passed -> "@${coder.config.name} ตรวจสอบและเทสระบบผ่านเรียบร้อยครับ!\n\n$summary"
+                            coder.config.slot != reviewer.config.slot -> "@${coder.config.name} เทสระบบแล้วพบจุดที่ต้องแก้ไขครับ ช่วยแก้แล้วส่งกลับมาเทสใหม่ได้เลย:\n\n$summary"
+                            else -> summary
+                        }
+                    }
+                    appendProjectTeamMessage(
+                        projectId = project.id,
+                        senderSlot = reviewer.config.slot,
+                        senderName = reviewer.config.name,
+                        text = reviewChatText,
+                        messageType = if (passed) GroupMessageType.APPROVAL else GroupMessageType.BUG_REPORT,
+                        workStatus = when {
+                            reviewResult.isError -> "ตรวจสอบขัดข้อง"
+                            passed -> "เทสระบบผ่านเรียบร้อย"
+                            else -> "พบจุดต้องแก้ไข · ส่งกลับ @${coder.config.name}"
+                        },
+                        workDetails = reviewerWorkDetails,
+                    )
+
+                    if (passed && pendingTeamDirectives.isEmpty()) {
+                        completedStepsSummary.add("${reviewer.config.name}: ตรวจสอบและเทสระบบผ่านเรียบร้อย")
+                        updateAgentActivity(ceo.config.slot, ActivityType.COMPLETED, "Approved & Ready", "เสร็จสิ้นพร้อมส่งมอบ")
+                        break
+                    } else {
+                        completedStepsSummary.add("${reviewer.config.name} (รอบที่ $round): พบจุดต้องปรับปรุงและส่งกลับให้ ${coder.config.name}")
+                        lastFeedback = reviewResult.responseText
+                        round++
+                    }
+                }
+
+                // Automatic Owner Completion Summary Report mentioning @$ownerName after every finished task!
+                if (!taskHadFatalError && _state.value.teamIsRunning) {
+                    val ownerSummary = buildString {
+                        appendLine("@$ownerName ทีม AI ทำงานและตรวจสอบระบบเสร็จสมบูรณ์แล้วครับ!")
+                        appendLine("📋 รายงานสรุปงานเสร็จสิ้นถึง $ownerName")
+                        appendLine("• คำสั่ง: ${accumulatedRequirements.joinToString(" / ").take(180)}")
+                        if (allWrittenFiles.isNotEmpty()) {
+                            appendLine("• ไฟล์ที่สร้าง/แก้ไข (${allWrittenFiles.size} ไฟล์): ${allWrittenFiles.joinToString(", ")}")
+                        } else {
+                            appendLine("• สถานะไฟล์: ตรวจสอบและดำเนินการตามแผนเรียบร้อย")
+                        }
+                        appendLine("• สรุปการทำงาน: ${completedStepsSummary.joinToString(" → ")}")
+                    }.trim()
+                    appendProjectTeamMessage(
+                        projectId = project.id,
+                        senderSlot = ceo.config.slot,
+                        senderName = ceo.config.name,
+                        text = ownerSummary,
+                        messageType = GroupMessageType.COMPLETION_REPORT,
+                        workStatus = "รายงานสรุปงานเสร็จสิ้นถึง @$ownerName (${allWrittenFiles.size} ไฟล์)",
+                        workDetails = completedStepsSummary + allWrittenFiles.map { "ไฟล์: $it" },
+                    )
+                    notifyTeamTaskCompleted(
+                        projectName = project.name,
+                        summary = "${project.name}: งานเสร็จสิ้นแล้ว (${allWrittenFiles.size} ไฟล์) — ${initialRequest.take(80)}",
+                    )
+                }
+
+                // Task done — return to WAITING standby for the next Owner command!
+                updateAgentActivities(ActivityType.WAITING)
+                updateTeamForegroundNotification(project.name, "${project.name} · เสร็จสิ้นแล้ว — รอรับคำสั่งถัดไป")
+            }
+        } finally {
+            updateAgentActivities(ActivityType.WAITING)
+            if (!_state.value.teamIsRunning) {
+                stopTeamForegroundService()
+                _state.update { it.copy(runningTeamProjectId = null) }
+            }
+        }
     }
 
     private fun updateAgentActivity(slot: AgentSlot, activity: ActivityType, task: String = "", lastAction: String = "", file: String = "") {

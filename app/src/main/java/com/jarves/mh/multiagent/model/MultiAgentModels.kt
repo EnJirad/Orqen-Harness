@@ -57,7 +57,19 @@ data class AgentConfig(
     val temperature: Float = 0.7f,
     val maxTokens: Int = 8192,
     val customPrompt: String = "",
-)
+    val personality: String = "", // blank = Auto distinct employee persona per slot
+) {
+    fun effectivePersonality(): String = personality.trim().ifBlank { defaultEmployeePersonality(slot) }
+
+    companion object {
+        fun defaultEmployeePersonality(slot: AgentSlot): String = when (slot) {
+            AgentSlot.AGENT_1 -> "สุขุม รอบคอบ คิดเป็นระบบ สั่งงานชัดเจน และคอยรายงานสรุปให้เจ้าของบริษัทอย่างมืออาชีพ"
+            AgentSlot.AGENT_2 -> "กระตือรือร้น เขียนโค้ดเนี้ยบ รวดเร็ว ชอบแก้ปัญหาเชิงเทคนิคและอัปเดตงานตรงไปตรงมา"
+            AgentSlot.AGENT_3 -> "ละเอียดลออ รักความสะอาดของโครงสร้างโค้ด เน้นความปลอดภัยและประสิทธิภาพสูงสุด"
+            AgentSlot.AGENT_4 -> "ช่างสังเกต จริงจังเรื่องคุณภาพ จับบั๊กเก่ง และตรวจสอบทุกจุดอย่างเข้มงวดก่อนส่งมอบ"
+        }
+    }
+}
 
 enum class ActivityType(val iconName: String, val labelRes: Int) {
     ANALYZING("Search", R.string.activity_analyzing),

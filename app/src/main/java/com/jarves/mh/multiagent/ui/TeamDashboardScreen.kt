@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -22,8 +23,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,10 +41,14 @@ import com.jarves.mh.multiagent.tasks.ProjectPart
 import com.jarves.mh.multiagent.tasks.TeamTask
 import com.jarves.mh.network.GitHubRepository
 import com.jarves.mh.ui.GitHubAuthStatus
+import com.jarves.mh.ui.theme.PocketOrange
 import com.jarves.mh.provider.core.EstimatedUsage
 import com.jarves.mh.provider.core.LocalUsage
 import com.jarves.mh.provider.core.OfficialQuota
 import com.jarves.mh.provider.core.ProviderConfig
+import com.jarves.mh.provider.core.ProviderType
+import com.jarves.mh.runtime.AntigravityAuthState
+import com.jarves.mh.runtime.AntigravityAuthStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,10 +56,14 @@ fun TeamDashboardScreen(
     teamName: String,
     workspacePath: String,
     projects: List<Project> = emptyList(),
+    soloProjects: List<Project> = emptyList(),
     activeProject: Project? = null,
     githubAuthStatus: GitHubAuthStatus = GitHubAuthStatus.DISCONNECTED,
     githubLogin: String? = null,
+    githubUserCode: String? = null,
+    githubMessage: String? = null,
     githubRepositories: List<GitHubRepository> = emptyList(),
+    githubRepositoriesLoading: Boolean = false,
     gitCloneRunning: Boolean = false,
     projectImporting: Boolean = false,
     agents: List<AgentState>,
@@ -62,16 +75,27 @@ fun TeamDashboardScreen(
     estimatedUsage: EstimatedUsage?,
     localUsage: LocalUsage,
     providerConfigs: List<ProviderConfig> = emptyList(),
+    teamAgentAntigravityAuth: Map<AgentSlot, AntigravityAuthState> = emptyMap(),
+    defaultAntigravityAuth: AntigravityAuthState = AntigravityAuthState(),
+    hasProviderApiKey: (String) -> Boolean = { false },
     allProviderQuotas: Map<String, OfficialQuota> = emptyMap(),
     allProviderEstimated: Map<String, EstimatedUsage> = emptyMap(),
     continuousConfig: ContinuousExecutionConfig = ContinuousExecutionConfig(),
     isTeamRunning: Boolean,
+    runningTeamProjectId: String? = null,
+    runningTeamProjectName: String? = null,
+    onBackToProjects: () -> Unit = {},
+    onJumpToRunningProject: () -> Unit = {},
     onSelectProject: (Project) -> Unit = {},
     onCreateProject: (String) -> Unit = {},
+    onCloneFromSolo: (Project) -> Unit = {},
+    onDeleteTeamProject: (Project) -> Unit = {},
     onImportZip: (Uri) -> Unit = {},
     onCloneGit: (String) -> Unit = {},
     onStartGitHubLogin: () -> Unit = {},
+    onGenerateNewGitHubCode: () -> Unit = {},
     onRefreshGitHub: () -> Unit = {},
+    onDisconnectGitHub: () -> Unit = {},
     onCloneGitHub: (GitHubRepository) -> Unit = {},
     onAddAgent: () -> Unit = {},
     onRemoveAgent: (AgentSlot) -> Unit = {},
@@ -93,10 +117,12 @@ fun TeamDashboardScreen(
     var showContinuousOptions by remember { mutableStateOf(false) }
     var showWorkspaceGitPanel by remember { mutableStateOf(false) }
     var showNewProjectDialog by remember { mutableStateOf(false) }
+    var showCloneSoloDialog by remember { mutableStateOf(false) }
     var showGitCloneDialog by remember { mutableStateOf(false) }
     var showGitHubRepoDialog by remember { mutableStateOf(false) }
     var newProjectName by remember { mutableStateOf("") }
     var gitUrlInput by remember { mutableStateOf("") }
+    var repositorySearch by remember { mutableStateOf("") }
 
     val importZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) onImportZip(uri)
@@ -130,6 +156,64 @@ fun TeamDashboardScreen(
         )
     }
 
+    if (showCloneSoloDialog) {
+        AlertDialog(
+            onDismissRequest = { showCloneSoloDialog = false },
+            icon = { Icon(Icons.Default.ContentCopy, contentDescription = null, tint = PocketOrange) },
+            title = { Text(stringResource(R.string.team_clone_from_solo_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = stringResource(R.string.team_clone_from_solo_desc),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (soloProjects.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.team_clone_from_solo_empty),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            items(soloProjects, key = { it.id }) { solo ->
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !projectImporting && !gitCloneRunning) {
+                                            showCloneSoloDialog = false
+                                            onCloneFromSolo(solo)
+                                        },
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Icon(Icons.Default.Folder, contentDescription = null, tint = PocketOrange, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(10.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(solo.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text("/workspaces/${solo.slug} · ${solo.language}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showCloneSoloDialog = false }) { Text(stringResource(R.string.action_close)) }
+            },
+        )
+    }
+
     if (showGitCloneDialog) {
         AlertDialog(
             onDismissRequest = { showGitCloneDialog = false },
@@ -159,39 +243,90 @@ fun TeamDashboardScreen(
     }
 
     if (showGitHubRepoDialog) {
+        val clipboard = LocalClipboardManager.current
+        val filteredRepositories = githubRepositories.filter { repository ->
+            repositorySearch.isBlank() || repository.fullName.contains(repositorySearch, ignoreCase = true)
+        }
         AlertDialog(
-            onDismissRequest = { showGitHubRepoDialog = false },
-            title = { Text(githubLogin?.let { "GitHub (@$it)" } ?: stringResource(R.string.projects_connect_github)) },
+            onDismissRequest = { if (!gitCloneRunning) showGitHubRepoDialog = false },
+            icon = { Icon(Icons.Default.Code, null, tint = PocketOrange) },
+            title = { Text(githubLogin?.let { stringResource(R.string.projects_github_account, it) } ?: stringResource(R.string.projects_connect_github)) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (githubAuthStatus != GitHubAuthStatus.CONNECTED) {
+                when (githubAuthStatus) {
+                    GitHubAuthStatus.DISCONNECTED, GitHubAuthStatus.ERROR -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            githubMessage ?: stringResource(R.string.ws_github_signin_desc),
+                            color = if (githubAuthStatus == GitHubAuthStatus.ERROR) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp,
+                        )
                         Button(onClick = onStartGitHubLogin, modifier = Modifier.fillMaxWidth()) {
-                            Text(stringResource(R.string.projects_connect_github))
+                            Text(stringResource(R.string.ws_github_signin))
                         }
-                    } else {
-                        OutlinedButton(onClick = onRefreshGitHub, modifier = Modifier.fillMaxWidth()) {
-                            Text("Refresh Repositories")
+                    }
+                    GitHubAuthStatus.STARTING -> Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                        Spacer(Modifier.height(12.dp))
+                        Text(githubMessage ?: stringResource(R.string.ws_github_starting))
+                    }
+                    GitHubAuthStatus.AWAITING_USER -> Column(verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(stringResource(R.string.ws_github_enter_code), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().clickable { githubUserCode?.let { clipboard.setText(AnnotatedString(it)) } },
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Text(
+                                githubUserCode.orEmpty(),
+                                modifier = Modifier.padding(16.dp),
+                                textAlign = TextAlign.Center,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 22.sp,
+                                letterSpacing = 2.sp,
+                            )
                         }
-                        if (githubRepositories.isEmpty()) {
-                            Text("No repositories loaded yet.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        } else {
-                            LazyColumn(modifier = Modifier.heightIn(max = 260.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                items(githubRepositories) { repo ->
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                onCloneGitHub(repo)
-                                                showGitHubRepoDialog = false
-                                            },
-                                    ) {
-                                        Column(Modifier.padding(10.dp)) {
-                                            Text(repo.fullName, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                            if (repo.description.isNotBlank()) {
-                                                Text(repo.description, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            }
+                        Text(stringResource(R.string.ws_github_tap_code), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        OutlinedButton(
+                            onClick = onGenerateNewGitHubCode,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.ws_github_new_code))
+                        }
+                    }
+                    GitHubAuthStatus.CONNECTED -> Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(githubMessage ?: stringResource(R.string.ws_github_select_repo), modifier = Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            IconButton(onClick = onRefreshGitHub, enabled = !githubRepositoriesLoading) {
+                                Icon(Icons.Default.Refresh, stringResource(R.string.ws_github_refresh_repos))
+                            }
+                        }
+                        OutlinedTextField(
+                            value = repositorySearch,
+                            onValueChange = { repositorySearch = it },
+                            placeholder = { Text(stringResource(R.string.ws_github_search_repos)) },
+                            leadingIcon = { Icon(Icons.Default.Search, null) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (githubRepositoriesLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(filteredRepositories, key = { it.fullName }) { repository ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().clickable(enabled = !gitCloneRunning) {
+                                        showGitHubRepoDialog = false
+                                        onCloneGitHub(repository)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                ) {
+                                    Row(Modifier.padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(if (repository.private) Icons.Default.Key else Icons.Default.Code, null, modifier = Modifier.size(17.dp), tint = PocketOrange)
+                                        Spacer(Modifier.width(9.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(repository.fullName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text("${if (repository.private) stringResource(R.string.ws_repo_private) else stringResource(R.string.ws_repo_public)} · ${repository.defaultBranch}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                 }
@@ -201,15 +336,31 @@ fun TeamDashboardScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showGitHubRepoDialog = false }) { Text("Close") }
+                if (githubAuthStatus == GitHubAuthStatus.CONNECTED) {
+                    TextButton(onClick = { showGitHubRepoDialog = false }) { Text(stringResource(R.string.action_close)) }
+                }
+            },
+            dismissButton = {
+                if (githubAuthStatus == GitHubAuthStatus.CONNECTED) {
+                    TextButton(onClick = { onDisconnectGitHub(); showGitHubRepoDialog = false }) { Text(stringResource(R.string.ws_disconnect)) }
+                } else if (githubAuthStatus != GitHubAuthStatus.STARTING) {
+                    TextButton(onClick = { showGitHubRepoDialog = false }) { Text(stringResource(R.string.action_cancel)) }
+                }
             },
         )
     }
+
+    val isLockedByOtherProject = runningTeamProjectId != null && runningTeamProjectId != activeProject?.id
 
     Scaffold(
         topBar = {
             TopAppBar(
                 modifier = Modifier.padding(top = 8.dp),
+                navigationIcon = {
+                    IconButton(onClick = onBackToProjects) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to folders")
+                    }
+                },
                 title = {
                     Column {
                         Text(
@@ -289,13 +440,6 @@ fun TeamDashboardScreen(
                             onClick = onOpenGroupChat,
                             label = { Text(stringResource(R.string.nav_tab_chat)) },
                             leadingIcon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, Modifier.size(16.dp)) },
-                        )
-                    }
-                    item {
-                        AssistChip(
-                            onClick = onOpenProviderSettings,
-                            label = { Text("Providers") },
-                            leadingIcon = { Icon(Icons.Default.Dns, contentDescription = null, Modifier.size(16.dp)) },
                         )
                     }
                 }
@@ -381,14 +525,40 @@ fun TeamDashboardScreen(
                             ) {
                                 if (projects.isNotEmpty()) {
                                     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        items(projects) { project ->
+                                        items(projects, key = { it.id }) { project ->
                                             FilterChip(
                                                 selected = activeProject?.id == project.id,
                                                 onClick = { onSelectProject(project) },
                                                 label = { Text(project.name, fontSize = 11.sp) },
+                                                trailingIcon = if (activeProject?.id == project.id) {
+                                                    {
+                                                        Icon(
+                                                            Icons.Default.Close,
+                                                            contentDescription = stringResource(R.string.action_delete),
+                                                            modifier = Modifier.size(14.dp).clickable { onDeleteTeamProject(project) },
+                                                        )
+                                                    }
+                                                } else null,
                                             )
                                         }
                                     }
+                                } else {
+                                    Text(
+                                        text = stringResource(R.string.team_no_projects_yet),
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+
+                                FilledTonalButton(
+                                    onClick = { showCloneSoloDialog = true },
+                                    enabled = !projectImporting && !gitCloneRunning,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null, Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(stringResource(R.string.team_clone_from_solo), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                                 }
 
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -446,57 +616,82 @@ fun TeamDashboardScreen(
                 }
             }
 
-            // 2. Control Panel
+            // 2. Control Panel (with Single-Project Lock + Prominent Group Chat Command Button)
+            if (isLockedByOtherProject) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFFF59E0B).copy(alpha = 0.14f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = stringResource(R.string.team_locked_by_other_project, runningTeamProjectName ?: ""),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFFD97706),
+                            )
+                            OutlinedButton(
+                                onClick = onJumpToRunningProject,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Text(stringResource(R.string.team_jump_running_project), fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (!isTeamRunning) {
-                        Button(
-                            onClick = onStartTeam,
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(stringResource(R.string.team_start))
-                        }
-                    } else {
-                        OutlinedButton(
-                            onClick = onPauseTeam,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Icon(Icons.Default.Pause, contentDescription = null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(stringResource(R.string.team_pause))
-                        }
-                        Button(
-                            onClick = onStopTeam,
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                        ) {
-                            Icon(Icons.Default.Stop, contentDescription = null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(stringResource(R.string.team_stop))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (!isTeamRunning || isLockedByOtherProject) {
+                            Button(
+                                onClick = onStartTeam,
+                                enabled = !isLockedByOtherProject,
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(stringResource(R.string.team_start))
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = onPauseTeam,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Icon(Icons.Default.Pause, contentDescription = null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(stringResource(R.string.team_pause))
+                            }
+                            Button(
+                                onClick = onStopTeam,
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(stringResource(R.string.team_stop))
+                            }
                         }
                     }
-
-                    IconButton(
+                    FilledTonalButton(
                         onClick = onOpenGroupChat,
-                        modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)),
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Group Chat")
-                    }
-
-                    IconButton(
-                        onClick = onOpenProviderSettings,
-                        modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)),
-                    ) {
-                        Icon(Icons.Default.Dns, contentDescription = "Provider Management")
+                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.team_open_group_chat_btn), fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -537,8 +732,31 @@ fun TeamDashboardScreen(
 
             // 4. Agent Cards List (2 to 4 Agents)
             items(agents, key = { it.config.slot.id }) { agent ->
+                val providerCfg = providerConfigs.firstOrNull { it.id == agent.config.providerId }
+                val isAgy = agent.config.providerId == "preset-antigravity" || providerCfg?.type == ProviderType.ANTIGRAVITY
+                val slotAuth = teamAgentAntigravityAuth[agent.config.slot] ?: AntigravityAuthState()
+                val effectiveAuth = if (slotAuth.status != AntigravityAuthStatus.SIGNED_OUT) slotAuth else defaultAntigravityAuth
+                val connStatus = when {
+                    agent.activityState.activity == ActivityType.ERROR -> 1 // Yellow: waiting/reconnecting
+                    isAgy -> when (effectiveAuth.status) {
+                        AntigravityAuthStatus.SIGNED_IN -> 2 // Green: connected
+                        AntigravityAuthStatus.STARTING, AntigravityAuthStatus.COMPLETING, AntigravityAuthStatus.AWAITING_CODE -> 1 // Yellow: connecting/waiting
+                        AntigravityAuthStatus.SIGNED_OUT, AntigravityAuthStatus.ERROR -> 0 // Red: disconnected
+                    }
+                    hasProviderApiKey(agent.config.providerId) -> 2 // Green: API key configured
+                    else -> 0 // Red: disconnected / missing key
+                }
+                val connDetail = when {
+                    isAgy && effectiveAuth.status == AntigravityAuthStatus.SIGNED_IN -> effectiveAuth.accountEmail
+                    !isAgy -> providerCfg?.name
+                    else -> null
+                }
+                val connLoading = isAgy && (effectiveAuth.status == AntigravityAuthStatus.STARTING || effectiveAuth.status == AntigravityAuthStatus.COMPLETING)
                 AgentCard(
                     agent = agent,
+                    connectionLevel = connStatus,
+                    connectionDetail = connDetail,
+                    connectionLoading = connLoading,
                     canRemove = agents.size > 1,
                     onCardClick = { onOpenAgentDetail(agent.config.slot) },
                     onChatClick = { onOpenAgentChat(agent.config.slot) },
@@ -547,12 +765,13 @@ fun TeamDashboardScreen(
                 )
             }
 
-            // 5. All-Provider Quota & Usage Monitor Card
+            // 5. Active Project Models Live Quota & Usage Monitor Card
             item {
                 QuotaMonitorCard(
                     officialQuota = officialQuota,
                     estimatedUsage = estimatedUsage,
                     localUsage = localUsage,
+                    agents = agents,
                     providerConfigs = providerConfigs,
                     allProviderQuotas = allProviderQuotas,
                     allProviderEstimated = allProviderEstimated,
@@ -621,6 +840,50 @@ fun TeamDashboardScreen(
                                     isChecked = continuousConfig.autoCheckpoint,
                                     onCheckedChange = { onUpdateContinuousConfig(continuousConfig.copy(autoCheckpoint = it)) },
                                 )
+                                Spacer(Modifier.height(8.dp))
+                                ContinuousOptionRow(
+                                    title = stringResource(R.string.token_saver_cache_title),
+                                    description = stringResource(R.string.token_saver_cache_desc),
+                                    isChecked = continuousConfig.tokenSaverCacheEnabled,
+                                    onCheckedChange = { onUpdateContinuousConfig(continuousConfig.copy(tokenSaverCacheEnabled = it)) },
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                ContinuousOptionRow(
+                                    title = stringResource(R.string.quota_auto_switch_title),
+                                    description = stringResource(R.string.quota_auto_switch_desc, continuousConfig.quotaSwitchThresholdPercent),
+                                    isChecked = continuousConfig.autoSwitchOnLowQuota,
+                                    onCheckedChange = { onUpdateContinuousConfig(continuousConfig.copy(autoSwitchOnLowQuota = it)) },
+                                )
+                                if (continuousConfig.autoSwitchOnLowQuota) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        text = stringResource(R.string.quota_fallback_model_label),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    val realPlanModels = remember(agents, providerConfigs) {
+                                        val usedIds = agents.map { it.config.providerId }.toSet()
+                                        providerConfigs
+                                            .filter { usedIds.isEmpty() || it.id in usedIds }
+                                            .flatMap { it.availableModels }
+                                            .filter { it.isNotBlank() }
+                                            .distinct()
+                                            .take(8)
+                                    }
+                                    val fallbackOptions = listOf("" to stringResource(R.string.quota_fallback_auto_coding)) +
+                                        realPlanModels.map { it to it }
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        items(fallbackOptions) { (modelId, label) ->
+                                            FilterChip(
+                                                selected = continuousConfig.fallbackModelId == modelId,
+                                                onClick = { onUpdateContinuousConfig(continuousConfig.copy(fallbackModelId = modelId)) },
+                                                label = { Text(label, fontSize = 11.sp) },
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -633,6 +896,9 @@ fun TeamDashboardScreen(
 @Composable
 fun AgentCard(
     agent: AgentState,
+    connectionLevel: Int = 2,
+    connectionDetail: String? = null,
+    connectionLoading: Boolean = false,
     canRemove: Boolean = false,
     onCardClick: () -> Unit,
     onChatClick: () -> Unit,
@@ -702,6 +968,39 @@ fun AgentCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                        Spacer(Modifier.height(4.dp))
+                        val (connColor, connText) = when (connectionLevel) {
+                            2 -> Color(0xFF22C55E) to (connectionDetail?.let { "${stringResource(R.string.conn_status_connected)} · $it" } ?: stringResource(R.string.conn_status_connected))
+                            1 -> Color(0xFFF59E0B) to if (connectionLoading) stringResource(R.string.conn_status_connecting) else stringResource(R.string.conn_status_waiting_network)
+                            else -> Color(0xFFEF4444) to stringResource(R.string.conn_status_disconnected)
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            if (connectionLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(10.dp),
+                                    strokeWidth = 1.6.dp,
+                                    color = connColor,
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(connColor),
+                                )
+                            }
+                            Text(
+                                text = connText,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = connColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
 
@@ -784,11 +1083,22 @@ fun QuotaMonitorCard(
     officialQuota: OfficialQuota?,
     estimatedUsage: EstimatedUsage?,
     localUsage: LocalUsage,
+    agents: List<AgentState> = emptyList(),
     providerConfigs: List<ProviderConfig> = emptyList(),
     allProviderQuotas: Map<String, OfficialQuota> = emptyMap(),
     allProviderEstimated: Map<String, EstimatedUsage> = emptyMap(),
     onCardClick: () -> Unit = {},
 ) {
+    // Show ONLY the models/providers actively used by agents in this project
+    val activeModels = remember(agents, providerConfigs) {
+        val enabled = agents.filter { it.config.isEnabled }
+        if (enabled.isNotEmpty()) {
+            enabled.distinctBy { "${it.config.providerId}:${it.config.modelId}" }
+        } else {
+            agents.distinctBy { "${it.config.providerId}:${it.config.modelId}" }
+        }
+    }
+
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -804,10 +1114,11 @@ fun QuotaMonitorCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = stringResource(R.string.team_all_providers_quota).uppercase(),
+                    text = stringResource(R.string.quota_project_models_title).uppercase(),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Details", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
@@ -816,39 +1127,67 @@ fun QuotaMonitorCard(
             }
             Spacer(Modifier.height(10.dp))
 
-            if (providerConfigs.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    providerConfigs.forEach { cfg ->
-                        val q = allProviderQuotas[cfg.id]
-                        val e = allProviderEstimated[cfg.id]
+            if (activeModels.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    activeModels.forEach { agent ->
+                        val providerId = agent.config.providerId
+                        val cfg = providerConfigs.firstOrNull { it.id == providerId }
+                        val q = allProviderQuotas[providerId] ?: officialQuota
+                        val e = allProviderEstimated[providerId] ?: estimatedUsage
                         val isAvail = q?.isAvailable == true
-                        val badgeColor = if (isAvail) {
-                            if ((q?.remainingPercent ?: 1f) > 0.2f) Color(0xFF2E7D32) else Color(0xFFC62828)
-                        } else MaterialTheme.colorScheme.onSurfaceVariant
+                        val remaining = (q?.remainingPercent ?: 1f).coerceIn(0f, 1f)
+                        val usedPct = ((1f - remaining) * 100).toInt()
+                        val badgeColor = when {
+                            !isAvail -> MaterialTheme.colorScheme.onSurfaceVariant
+                            remaining > 0.25f -> Color(0xFF16A34A)
+                            remaining > 0.12f -> Color(0xFFD97706)
+                            else -> Color(0xFFDC2626)
+                        }
 
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
                         ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(cfg.name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(
-                                    text = "Tokens: ${e?.estimatedTokens ?: 0} · ฿${String.format("%.2f", e?.estimatedCostThb ?: 0.0)}",
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = agent.config.modelId.ifBlank { cfg?.selectedModelId ?: "Default Model" },
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = "${agent.config.name} · ${cfg?.name ?: providerId} · ${e?.estimatedTokens ?: 0} tok",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                Surface(shape = RoundedCornerShape(8.dp), color = badgeColor.copy(alpha = 0.14f)) {
+                                    Text(
+                                        text = if (isAvail) "${(remaining * 100).toInt()}% (-$usedPct%)" else "LIVE ${e?.estimatedTokens ?: 0}",
+                                        color = badgeColor,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                    )
+                                }
                             }
-                            Surface(shape = RoundedCornerShape(8.dp), color = badgeColor.copy(alpha = 0.14f)) {
-                                Text(
-                                    text = if (isAvail) "${((q?.remainingPercent ?: 1f) * 100).toInt()}%" else "EST",
+                            if (isAvail) {
+                                LinearProgressIndicator(
+                                    progress = { remaining },
+                                    modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp)),
                                     color = badgeColor,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                    trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                                 )
                             }
                         }

@@ -11,50 +11,60 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-val PocketOrange = Color(0xFFF28C52)
-val PocketBlue = Color(0xFF8EA8FF)
-val PocketGreen = Color(0xFF69D69E)
-val PocketBackground = Color(0xFF0B0E14)
-val PocketSurface = Color(0xFF131821)
-val PocketSurfaceVariant = Color(0xFF1B222D)
-val PocketOutline = Color(0xFF2A3240)
+// ORQEN Signature Palette: Obsidian Black + Mint-Cyan
+val OrqenMint = Color(0xFF00E5C4)
+val OrqenMintSoft = Color(0xFF2DD4BF)
+val OrqenCyan = Color(0xFF38BDF8)
+val OrqenObsidian = Color(0xFF070A0D)
+val OrqenSurface = Color(0xFF0E1319)
+val OrqenSurfaceVariant = Color(0xFF151D26)
+val OrqenOutline = Color(0xFF22303D)
+
+// Keep legacy symbol aliases mapped to ORQEN Black + Mint-Cyan so every screen adopts the new theme seamlessly
+val PocketOrange = OrqenMint
+val PocketBlue = OrqenCyan
+val PocketGreen = Color(0xFF10B981)
+val PocketBackground = OrqenObsidian
+val PocketSurface = OrqenSurface
+val PocketSurfaceVariant = OrqenSurfaceVariant
+val PocketOutline = OrqenOutline
 
 private val DarkColors = darkColorScheme(
-    primary = PocketOrange,
-    onPrimary = Color(0xFF241107),
-    primaryContainer = Color(0xFF42281D),
-    onPrimaryContainer = Color(0xFFFFDDCC),
-    secondary = PocketBlue,
-    onSecondary = Color(0xFF001F58),
-    tertiary = PocketGreen,
-    onTertiary = Color(0xFF00391E),
-    background = PocketBackground,
-    onBackground = Color(0xFFE6EDF3),
-    surface = PocketSurface,
-    onSurface = Color(0xFFE6EDF3),
-    surfaceVariant = PocketSurfaceVariant,
-    onSurfaceVariant = Color(0xFF9AA0A6),
-    outline = PocketOutline,
-    outlineVariant = Color(0xFF333B4A),
+    primary = OrqenMint,
+    onPrimary = Color(0xFF031F1B),
+    primaryContainer = Color(0xFF0D2E2A),
+    onPrimaryContainer = Color(0xFFB8FFF3),
+    secondary = OrqenCyan,
+    onSecondary = Color(0xFF042235),
+    tertiary = OrqenMintSoft,
+    onTertiary = Color(0xFF03211E),
+    background = OrqenObsidian,
+    onBackground = Color(0xFFEAF4F4),
+    surface = OrqenSurface,
+    onSurface = Color(0xFFEAF4F4),
+    surfaceVariant = OrqenSurfaceVariant,
+    onSurfaceVariant = Color(0xFF8FA6AD),
+    outline = OrqenOutline,
+    outlineVariant = Color(0xFF1E2B36),
 )
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFFD85A20),
+    primary = Color(0xFF00A890),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFFFE0D2),
-    onPrimaryContainer = Color(0xFF451A08),
-    secondary = Color(0xFF3366CC),
+    primaryContainer = Color(0xFFCFFAF2),
+    onPrimaryContainer = Color(0xFF003830),
+    secondary = Color(0xFF0284C7),
     onSecondary = Color(0xFFFFFFFF),
-    tertiary = Color(0xFF1B8A5A),
+    tertiary = Color(0xFF0D9488),
     onTertiary = Color(0xFFFFFFFF),
-    background = Color(0xFFF6F8FA),
-    onBackground = Color(0xFF1F2328),
+    background = Color(0xFFF3F8F8),
+    onBackground = Color(0xFF0F171A),
     surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF1F2328),
-    surfaceVariant = Color(0xFFEAEFF5),
-    onSurfaceVariant = Color(0xFF57606A),
-    outline = Color(0xFFD0D7DE),
-    outlineVariant = Color(0xFFD8DEE4),
+    onSurface = Color(0xFF0F171A),
+    surfaceVariant = Color(0xFFE5F0EF),
+    onSurfaceVariant = Color(0xFF475C63),
+    outline = Color(0xFFC4D6D6),
+    outlineVariant = Color(0xFFD5E3E3),
 )
 
 enum class AppThemeMode { SYSTEM, DARK, LIGHT }

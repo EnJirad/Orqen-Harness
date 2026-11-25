@@ -3,8 +3,8 @@
     <string name="app_name">ORQEN</string>
 
     
-    <string name="tab_projects">โปรเจกต์</string>
-    <string name="tab_agent">Agent</string>
+    <string name="tab_projects">งานเดี่ยว</string>
+    <string name="tab_agent">Providers</string>
     <string name="tab_settings">การตั้งค่า</string>
 
     
@@ -38,6 +38,11 @@
     <string name="settings_language">ภาษา (Language)</string>
     <string name="settings_tools">เครื่องมือนักพัฒนา</string>
     <string name="settings_runtime">Linux Runtime</string>
+    <string name="settings_workspaces">พื้นที่ทำงานและจัดเก็บไฟล์</string>
+    <string name="settings_workspaces_subtitle">งานเดี่ยว %1$d · หน่วย AI %2$d (แยกโฟลเดอร์)</string>
+    <string name="settings_solo_workspace_label">โฟลเดอร์สตูดิโองานเดี่ยว</string>
+    <string name="settings_squad_workspace_label">โฟลเดอร์หน่วย AI (แยกอิสระ)</string>
+    <string name="settings_workspace_isolation_note">งานเดี่ยวและหน่วย AI ใช้โฟลเดอร์แยกกันโดยสมบูรณ์ เพื่อให้การทำงานอัตโนมัติของทีมไม่กระทบไฟล์งานเดี่ยวของคุณ</string>
     <string name="settings_privacy">นโยบายความเป็นส่วนตัว</string>
     <string name="settings_privacy_desc">วิธีจัดการข้อมูลในเครื่องและคำขอผู้ให้บริการ AI</string>
     <string name="settings_app_desc">พื้นที่ทำงานเขียนโค้ดด้วย AI บนเครื่อง</string>
@@ -85,7 +90,7 @@
     <string name="provider_testing">กำลังทดสอบ…</string>
 
     
-    <string name="projects_title">โปรเจกต์</string>
+    <string name="projects_title">สตูดิโองานเดี่ยว</string>
     <string name="projects_new">โปรเจกต์ใหม่</string>
     <string name="projects_quick_chat">แชทด่วน</string>
     <string name="projects_clone">โคลน Repository</string>
@@ -102,7 +107,17 @@
     <string name="chat_export_project">ส่งออกโปรเจกต์</string>
 
     
-    <string name="agent_title">Agent</string>
+    <string name="agent_title">ผู้ให้บริการ AI</string>
+    <string name="providers_tab_default">ค่าเริ่มต้น (Default)</string>
+    <string name="providers_tab_manage_all">จัดการผู้ให้บริการทั้งหมด</string>
+    <string name="providers_default_banner">ใช้เป็นค่าเริ่มต้นสำหรับงานเดี่ยว และสำหรับทีม AI ทุกตัวที่ไม่ได้ตั้งค่าแยกเฉพาะ</string>
+    <string name="agent_antigravity_isolated_hint">บัญชี Google แยกเฉพาะสำหรับ %1$s — การเชื่อมอีเมลใหม่ที่นี่จะไม่กระทบ AI ตัวอื่น</string>
+    <string name="conn_status_connected">เชื่อมต่อแล้ว</string>
+    <string name="conn_status_connecting">กำลังเชื่อมต่อ…</string>
+    <string name="conn_status_waiting_network">รอเชื่อมต่ออินเทอร์เน็ตใหม่…</string>
+    <string name="conn_status_disconnected">ออกจากระบบ / ไม่ได้เชื่อมต่อ</string>
+    <string name="conn_test_api_btn">เชื่อมต่อและทดสอบ API</string>
+    <string name="conn_verifying_code">กำลังยืนยันรหัส…</string>
     <string name="agent_choose">เลือก Coding Agent</string>
     <string name="agent_google_signin">ลงชื่อเข้าใช้ด้วย Google</string>
 

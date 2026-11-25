@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -22,10 +23,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.R
 import com.jarves.mh.multiagent.model.AgentState
+import com.jarves.mh.multiagent.supervisor.ContinuousExecutionConfig
 import com.jarves.mh.provider.core.EstimatedUsage
 import com.jarves.mh.provider.core.LocalUsage
 import com.jarves.mh.provider.core.OfficialQuota
 import com.jarves.mh.provider.core.ProviderConfig
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -40,29 +43,57 @@ fun QuotaManagementScreen(
     allProviderLocal: Map<String, LocalUsage> = emptyMap(),
     budgetLimitUsd: Double = 10.0,
     isAutoPauseEnabled: Boolean = true,
+    continuousConfig: ContinuousExecutionConfig = ContinuousExecutionConfig(),
+    onUpdateContinuousConfig: (ContinuousExecutionConfig) -> Unit = {},
     onRefreshQuotas: () -> Unit = {},
     onUpdateBudget: (Double, Boolean) -> Unit = { _, _ -> },
     onBack: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
 
+    // Real-time auto-refresh while Quota screen is open
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15_000L)
+            onRefreshQuotas()
+        }
+    }
+
     var showThbFirst by remember { mutableStateOf(true) }
     var autoPause by remember { mutableStateOf(isAutoPauseEnabled) }
     var budgetLimit by remember { mutableDoubleStateOf(budgetLimitUsd) }
 
-    val totalCostUsd = if (allProviderEstimated.isNotEmpty()) {
-        allProviderEstimated.values.sumOf { it.estimatedCostUsd }
+    // Filter strictly to providers & models actually used by active agents in this project
+    val usedProviderIds = remember(agents) {
+        agents.filter { it.config.isEnabled }.map { it.config.providerId }.toSet()
+            .ifEmpty { agents.map { it.config.providerId }.toSet() }
+    }
+    val projectProviderConfigs = remember(providerConfigs, usedProviderIds) {
+        if (usedProviderIds.isEmpty()) providerConfigs
+        else providerConfigs.filter { it.id in usedProviderIds }
+    }
+    val projectEstimatedMap = remember(allProviderEstimated, usedProviderIds) {
+        if (usedProviderIds.isEmpty()) allProviderEstimated
+        else allProviderEstimated.filterKeys { it in usedProviderIds }
+    }
+    val projectLocalMap = remember(allProviderLocal, usedProviderIds) {
+        if (usedProviderIds.isEmpty()) allProviderLocal
+        else allProviderLocal.filterKeys { it in usedProviderIds }
+    }
+
+    val totalCostUsd = if (projectEstimatedMap.isNotEmpty()) {
+        projectEstimatedMap.values.sumOf { it.estimatedCostUsd }
     } else {
         estimatedUsage?.estimatedCostUsd ?: 0.0
     }
     val totalCostThb = totalCostUsd * 35.0
-    val totalTokens = if (allProviderEstimated.isNotEmpty()) {
-        allProviderEstimated.values.sumOf { it.estimatedTokens }
+    val totalTokens = if (projectEstimatedMap.isNotEmpty()) {
+        projectEstimatedMap.values.sumOf { it.estimatedTokens }
     } else {
         estimatedUsage?.estimatedTokens ?: 0L
     }
-    val totalRequests = if (allProviderLocal.isNotEmpty()) {
-        allProviderLocal.values.sumOf { it.totalRequests }
+    val totalRequests = if (projectLocalMap.isNotEmpty()) {
+        projectLocalMap.values.sumOf { it.totalRequests }
     } else {
         localUsage.totalRequests
     }
@@ -245,24 +276,101 @@ fun QuotaManagementScreen(
                 }
             }
 
-            // 3. ALL Connected Providers Quota Breakdown
+            // 2.5 Auto-Switch Model Before Quota Ends Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.SwapHoriz, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    Text(
+                                        text = stringResource(R.string.quota_auto_switch_title),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.quota_auto_switch_desc, continuousConfig.quotaSwitchThresholdPercent),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = continuousConfig.autoSwitchOnLowQuota,
+                                onCheckedChange = { onUpdateContinuousConfig(continuousConfig.copy(autoSwitchOnLowQuota = it)) },
+                            )
+                        }
+
+                        if (continuousConfig.autoSwitchOnLowQuota) {
+                            Text(
+                                text = stringResource(R.string.quota_fallback_model_label),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            val realPlanModels = remember(projectProviderConfigs) {
+                                projectProviderConfigs
+                                    .flatMap { it.availableModels }
+                                    .filter { it.isNotBlank() }
+                                    .distinct()
+                                    .take(8)
+                            }
+                            val fallbackOptions = listOf("" to stringResource(R.string.quota_fallback_auto_coding)) +
+                                realPlanModels.map { it to it }
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(fallbackOptions) { (modelId, label) ->
+                                    FilterChip(
+                                        selected = continuousConfig.fallbackModelId == modelId,
+                                        onClick = { onUpdateContinuousConfig(continuousConfig.copy(fallbackModelId = modelId)) },
+                                        label = { Text(label, fontSize = 11.sp) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Active Project Models Real-Time Quota Breakdown (ONLY models used in this project!)
             item {
                 Text(
-                    text = stringResource(R.string.team_all_providers_quota),
+                    text = stringResource(R.string.quota_project_models_title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
 
-            items(providerConfigs) { cfg ->
+            items(projectProviderConfigs) { cfg ->
                 val pQuota = allProviderQuotas[cfg.id]
                 val pEst = allProviderEstimated[cfg.id]
                 val pLocal = allProviderLocal[cfg.id] ?: LocalUsage()
+                val usedModelsForProvider = agents.filter { it.config.providerId == cfg.id }
+                    .map { it.config.modelId.ifBlank { cfg.selectedModelId } }
+                    .distinct()
+                    .joinToString(", ")
+                    .ifBlank { cfg.selectedModelId.ifBlank { "Default" } }
                 val isAvail = pQuota?.isAvailable == true
-                val healthColor = if (isAvail) {
-                    if ((pQuota?.remainingPercent ?: 1f) > 0.2f) Color(0xFF2E7D32) else Color(0xFFC62828)
-                } else Color.Gray
+                val remaining = (pQuota?.remainingPercent ?: 1f).coerceIn(0f, 1f)
+                val usedPct = ((1f - remaining) * 100).toInt()
+                val healthColor = when {
+                    !isAvail -> Color.Gray
+                    remaining > 0.25f -> Color(0xFF16A34A)
+                    remaining > 0.12f -> Color(0xFFD97706)
+                    else -> Color(0xFFDC2626)
+                }
 
                 Card(
                     shape = RoundedCornerShape(14.dp),
@@ -280,20 +388,29 @@ fun QuotaManagementScreen(
                             Column(Modifier.weight(1f)) {
                                 Text(cfg.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "${cfg.type.displayName} · ${cfg.selectedModelId.ifBlank { "Default" }}",
+                                    "${cfg.type.displayName} · $usedModelsForProvider",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             Surface(shape = RoundedCornerShape(10.dp), color = healthColor.copy(alpha = 0.15f)) {
                                 Text(
-                                    text = if (isAvail) "${((pQuota?.remainingPercent ?: 1f) * 100).toInt()}% LEFT" else "ESTIMATED",
+                                    text = if (isAvail) "${(remaining * 100).toInt()}% LEFT (-$usedPct%)" else "LIVE TRACKING",
                                     color = healthColor,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                 )
                             }
+                        }
+
+                        if (isAvail) {
+                            LinearProgressIndicator(
+                                progress = { remaining },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = healthColor,
+                                trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                            )
                         }
 
                         if (pQuota != null && pQuota.isAvailable) {

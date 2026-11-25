@@ -18,6 +18,10 @@ data class ContinuousExecutionConfig(
     val initialBackoffMs: Long = 2_000L,
     val maxBackoffMs: Long = 60_000L,
     val proactiveCheckpointIntervalMs: Long = 45 * 60 * 1000L, // 45 mins to safely beat 60-min PRoot limit
+    val autoSwitchOnLowQuota: Boolean = true,
+    val quotaSwitchThresholdPercent: Int = 15,
+    val fallbackModelId: String = "", // blank = Auto-select best coding-capable match
+    val tokenSaverCacheEnabled: Boolean = true,
 )
 
 data class StopReason(

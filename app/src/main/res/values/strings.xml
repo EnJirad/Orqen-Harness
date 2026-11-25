@@ -2,8 +2,8 @@
     <string name="app_name">ORQEN</string>
 
     <!-- Navigation / Bottom Tabs -->
-    <string name="tab_projects">Projects</string>
-    <string name="tab_agent">Agent</string>
+    <string name="tab_projects">Solo</string>
+    <string name="tab_agent">Providers</string>
     <string name="tab_settings">Settings</string>
 
     <!-- Workspace Tabs -->
@@ -37,6 +37,11 @@
     <string name="settings_language">Language</string>
     <string name="settings_tools">Developer tools</string>
     <string name="settings_runtime">Linux runtime</string>
+    <string name="settings_workspaces">Workspaces &amp; Storage</string>
+    <string name="settings_workspaces_subtitle">%1$d Solo · %2$d AI Squad (isolated)</string>
+    <string name="settings_solo_workspace_label">Solo Studio Folder</string>
+    <string name="settings_squad_workspace_label">AI Squad Folder (Isolated)</string>
+    <string name="settings_workspace_isolation_note">Solo Studio and AI Squad keep separate project folders so team automation never overwrites your solo work.</string>
     <string name="settings_privacy">Privacy policy</string>
     <string name="settings_privacy_desc">How local data and AI provider requests are handled</string>
     <string name="settings_app_desc">Local AI coding workspace</string>
@@ -84,7 +89,7 @@
     <string name="provider_testing">Testing…</string>
 
     <!-- Projects -->
-    <string name="projects_title">Projects</string>
+    <string name="projects_title">Solo Studio</string>
     <string name="projects_new">New project</string>
     <string name="projects_quick_chat">Quick chat</string>
     <string name="projects_clone">Clone repository</string>
@@ -101,7 +106,17 @@
     <string name="chat_export_project">Export project</string>
 
     <!-- Agent -->
-    <string name="agent_title">Agent</string>
+    <string name="agent_title">AI Providers</string>
+    <string name="providers_tab_default">Default AI</string>
+    <string name="providers_tab_manage_all">All Providers</string>
+    <string name="providers_default_banner">Used as the default AI for Solo Studio and any AI Team agent without a custom override.</string>
+    <string name="agent_antigravity_isolated_hint">Independent Google account for %1$s — signing in here will not affect other agents.</string>
+    <string name="conn_status_connected">Connected</string>
+    <string name="conn_status_connecting">Connecting…</string>
+    <string name="conn_status_waiting_network">Waiting to reconnect…</string>
+    <string name="conn_status_disconnected">Disconnected</string>
+    <string name="conn_test_api_btn">Connect &amp; Test API</string>
+    <string name="conn_verifying_code">Verifying code…</string>
     <string name="agent_choose">Choose coding agent</string>
     <string name="agent_google_signin">Sign in with Google</string>
 

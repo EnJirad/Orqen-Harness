@@ -305,6 +305,63 @@ class AppPreferences(private val context: Context) {
     private fun providerPrefix(agent: AgentKind): String = "provider_${agent.stableId.replace('-', '_')}_"
 
     fun saveProjects(projects: List<Project>) {
+        saveProjectsToKey("projects_json", projects)
+    }
+
+    fun saveTeamProjects(projects: List<Project>) {
+        saveProjectsToKey("team_projects_json", projects)
+    }
+
+    var activeTeamProjectId: String?
+        get() = preferences.getString("active_team_project_id", null)?.takeIf { it.isNotBlank() }
+        set(value) {
+            preferences.edit().putString("active_team_project_id", value.orEmpty()).apply()
+        }
+
+    var ownerDisplayName: String
+        get() = preferences.getString("owner_display_name", "").orEmpty()
+        set(value) {
+            preferences.edit().putString("owner_display_name", value.trim()).apply()
+        }
+
+    fun isTeamAgentAntigravitySignedIn(slotName: String): Boolean =
+        preferences.getBoolean("team_agy_signed_in_$slotName", false)
+
+    fun setTeamAgentAntigravitySignedIn(slotName: String, signedIn: Boolean) {
+        preferences.edit().putBoolean("team_agy_signed_in_$slotName", signedIn).apply()
+    }
+
+    fun getTeamAgentAntigravityEmail(slotName: String): String =
+        preferences.getString("team_agy_email_$slotName", "").orEmpty()
+
+    fun setTeamAgentAntigravityEmail(slotName: String, email: String) {
+        preferences.edit().putString("team_agy_email_$slotName", email).apply()
+    }
+
+    fun loadTeamProjects(): List<Project> {
+        val raw = preferences.getString("team_projects_json", null) ?: return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { i ->
+                val obj = arr.getJSONObject(i)
+                Project(
+                    id = obj.getString("id"),
+                    name = obj.getString("name"),
+                    description = obj.optString("description"),
+                    language = obj.optString("language", "General"),
+                    slug = obj.optString("slug").ifBlank { projectSlug(obj.getString("name")) },
+                    rootPath = obj.optString("rootPath"),
+                    updatedAtMillis = obj.optLong("updatedAtMillis", System.currentTimeMillis()),
+                    kind = runCatching { ProjectKind.valueOf(obj.optString("kind", ProjectKind.PROJECT.name)) }
+                        .getOrDefault(ProjectKind.PROJECT),
+                    type = runCatching { ProjectType.valueOf(obj.optString("type", ProjectType.GENERAL.name)) }
+                        .getOrDefault(ProjectType.GENERAL),
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun saveProjectsToKey(key: String, projects: List<Project>) {
         val arr = JSONArray()
         projects.forEach { p ->
             arr.put(JSONObject().apply {
@@ -320,7 +377,7 @@ class AppPreferences(private val context: Context) {
                 p.androidTemplate?.let { put("androidTemplate", it.name) }
             })
         }
-        preferences.edit().putString("projects_json", arr.toString()).apply()
+        preferences.edit().putString(key, arr.toString()).apply()
     }
 
     fun loadProjects(): List<Project> {

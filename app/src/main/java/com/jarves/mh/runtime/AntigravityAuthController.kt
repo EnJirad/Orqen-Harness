@@ -18,6 +18,7 @@ class AntigravityAuthController(
     private val context: Context,
     initiallySignedIn: Boolean,
     initialAccountEmail: String,
+    private val profileId: String? = null,
     private val onSignedInChanged: (Boolean, String?) -> Unit,
 ) {
     private val installer = RuntimeInstaller(context)
@@ -30,8 +31,10 @@ class AntigravityAuthController(
     )
     val state: StateFlow<AntigravityAuthState> = mutableState.asStateFlow()
     private fun str(@androidx.annotation.StringRes id: Int, vararg args: Any): String = AppStrings.get(context, id, *args)
-    private val authOutput = File(context.cacheDir, "antigravity-auth-output.log")
-    private val logoutOutput = File(context.cacheDir, "antigravity-logout-output.log")
+    private val profileSuffix = profileId?.let { "-$it" }.orEmpty()
+    private val guestHomeDir = profileId?.let { "/root/.orqen/agy-profiles/$it" } ?: "/root"
+    private val authOutput = File(context.cacheDir, "antigravity-auth-output$profileSuffix.log")
+    private val logoutOutput = File(context.cacheDir, "antigravity-logout-output$profileSuffix.log")
     @Volatile private var process: Process? = null
     @Volatile private var codeSubmitted = false
 
@@ -47,9 +50,14 @@ class AntigravityAuthController(
         }
     }
 
-    private fun officialCredentialFile() = File(
+    private fun hostProfileHomeDir() = File(
         context.filesDir,
-        "runtime/ubuntu/root/.gemini/antigravity-cli/antigravity-oauth-token",
+        "runtime/ubuntu/${guestHomeDir.removePrefix("/")}",
+    )
+
+    private fun officialCredentialFile() = File(
+        hostProfileHomeDir(),
+        ".gemini/antigravity-cli/antigravity-oauth-token",
     )
 
     fun hasOfficialCredential(): Boolean = officialCredentialFile().isFile
@@ -67,7 +75,8 @@ class AntigravityAuthController(
         codeSubmitted = false
         authOutput.delete()
         val runtime = installer.installedRuntime()
-        val workspace = java.io.File(context.filesDir, "workspaces/antigravity-auth").apply { mkdirs() }
+        hostProfileHomeDir().mkdirs()
+        val workspace = java.io.File(context.filesDir, "workspaces/antigravity-auth$profileSuffix").apply { mkdirs() }
         val running = installer.process(
             runtime.proot,
             runtime.rootfs,
@@ -75,6 +84,7 @@ class AntigravityAuthController(
             // SSH selects agy's official manual browser URL + one-time code flow.
             // NativeSpawn supplies a real PTY; PocketDev remains only the terminal.
             mapOf(
+                "HOME" to guestHomeDir,
                 "SSH_CONNECTION" to "127.0.0.1 1 127.0.0.1 1",
                 "TERM" to "xterm-256color",
                 "NO_COLOR" to "1",
@@ -291,7 +301,7 @@ class AntigravityAuthController(
             runtime.proot,
             runtime.rootfs,
             workspace,
-            emptyMap(),
+            mapOf("HOME" to guestHomeDir),
             listOf(RuntimeInstaller.AGY_GUEST_PATH, "models"),
             guestWorkspacePath = "/workspace/antigravity-auth",
             emulateHardLinks = false,

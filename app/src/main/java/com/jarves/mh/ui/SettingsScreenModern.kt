@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Refresh
@@ -111,7 +112,7 @@ import com.jarves.mh.ui.theme.AppThemeMode
 import com.jarves.mh.ui.theme.PocketOrange
 import kotlinx.coroutines.launch
 
-private enum class SettingsSection { APPEARANCE, LANGUAGE, TOOLS, RUNTIME, DIAGNOSTICS, BACKUP, UPDATE_CHANNEL }
+private enum class SettingsSection { APPEARANCE, LANGUAGE, WORKSPACES, TOOLS, RUNTIME, DIAGNOSTICS, BACKUP, UPDATE_CHANNEL }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -122,6 +123,7 @@ fun SettingsScreen(
     onValidateProvider: suspend (ProviderProfile, String, List<DiscoveredModel>) -> ConnectionValidation,
     onSetThemeMode: (AppThemeMode) -> Unit,
     onSetLanguage: (String) -> Unit = {},
+    onSetOwnerDisplayName: (String) -> Unit = {},
     onPing: () -> Unit,
     onClearTerminal: () -> Unit,
     getSavedApiKey: (ProviderKind) -> String,
@@ -228,6 +230,47 @@ fun SettingsScreen(
             contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+
+            // Global Owner Display Name Card (applies to all AI models, all chats, all projects!)
+            item {
+                var ownerNameDraft by remember(state.ownerDisplayName) { mutableStateOf(state.ownerDisplayName) }
+                var savedOwnerName by remember { mutableStateOf(false) }
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(stringResource(R.string.settings_owner_name_title), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                Text(stringResource(R.string.settings_owner_name_desc), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = ownerNameDraft,
+                                onValueChange = { ownerNameDraft = it; savedOwnerName = false },
+                                placeholder = { Text(stringResource(R.string.settings_owner_name_hint), fontSize = 12.sp) },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                            )
+                            Button(
+                                onClick = {
+                                    onSetOwnerDisplayName(ownerNameDraft.trim())
+                                    savedOwnerName = true
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Text(if (savedOwnerName) "✓" else stringResource(R.string.action_save), fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
 
             item {
                 SettingsAccordion(
@@ -339,6 +382,28 @@ fun SettingsScreen(
                             }
                         }
                     }
+                }
+            }
+
+            item {
+                SettingsAccordion(
+                    title = stringResource(R.string.settings_workspaces),
+                    subtitle = stringResource(R.string.settings_workspaces_subtitle, state.projects.size, state.teamProjects.size),
+                    icon = Icons.Default.Memory,
+                    expanded = expanded == SettingsSection.WORKSPACES,
+                    onClick = { toggle(SettingsSection.WORKSPACES) },
+                ) {
+                    RuntimeInfoRow(stringResource(R.string.settings_solo_workspace_label), "workspaces/ (${state.projects.size})")
+                    RuntimeInfoRow(stringResource(R.string.settings_squad_workspace_label), "team_workspaces/ (${state.teamProjects.size})")
+                    RuntimeInfoRow("AI Squad Agents", "${state.teamAgents.count { it.config.isEnabled }} / ${state.teamAgents.size}")
+                    RuntimeInfoRow("AI Providers", "${state.providerConfigs.size}")
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Text(
+                        text = stringResource(R.string.settings_workspace_isolation_note),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 

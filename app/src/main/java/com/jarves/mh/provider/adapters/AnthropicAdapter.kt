@@ -140,13 +140,44 @@ class AnthropicAdapter : ProviderAdapter {
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("x-api-key", apiKey.trim())
             setRequestProperty("anthropic-version", "2023-06-01")
+            setRequestProperty("anthropic-beta", "prompt-caching-2024-07-31")
             config.customHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
         }
 
         val messagesArray = JSONArray()
-        for (m in messages) {
+        for ((idx, m) in messages.withIndex()) {
             val role = if (m.role == "system") "user" else m.role
-            messagesArray.put(JSONObject().put("role", role).put("content", m.content))
+            val shouldCacheMessage = messages.size > 1 && idx == messages.lastIndex - 1 && m.content.length > 400
+            if (m.images.isNotEmpty()) {
+                val parts = JSONArray()
+                for (img in m.images) {
+                    parts.put(
+                        JSONObject()
+                            .put("type", "image")
+                            .put(
+                                "source",
+                                JSONObject()
+                                    .put("type", "base64")
+                                    .put("media_type", img.mimeType)
+                                    .put("data", img.base64Data),
+                            ),
+                    )
+                }
+                val textBlock = JSONObject().put("type", "text").put("text", m.content)
+                if (shouldCacheMessage) {
+                    textBlock.put("cache_control", JSONObject().put("type", "ephemeral"))
+                }
+                parts.put(textBlock)
+                messagesArray.put(JSONObject().put("role", role).put("content", parts))
+            } else if (shouldCacheMessage) {
+                val block = JSONObject()
+                    .put("type", "text")
+                    .put("text", m.content)
+                    .put("cache_control", JSONObject().put("type", "ephemeral"))
+                messagesArray.put(JSONObject().put("role", role).put("content", JSONArray().put(block)))
+            } else {
+                messagesArray.put(JSONObject().put("role", role).put("content", m.content))
+            }
         }
 
         val requestJson = JSONObject()
@@ -157,7 +188,11 @@ class AnthropicAdapter : ProviderAdapter {
             .put("stream", true)
 
         if (systemInstruction.isNotBlank()) {
-            requestJson.put("system", systemInstruction)
+            val sysBlock = JSONObject()
+                .put("type", "text")
+                .put("text", systemInstruction)
+                .put("cache_control", JSONObject().put("type", "ephemeral"))
+            requestJson.put("system", JSONArray().put(sysBlock))
         }
 
         conn.outputStream.use { it.write(requestJson.toString().toByteArray(Charsets.UTF_8)) }
