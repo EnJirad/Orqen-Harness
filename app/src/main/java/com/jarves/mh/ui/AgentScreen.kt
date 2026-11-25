@@ -872,7 +872,7 @@ fun AgentScreen(
                             }
                         }
 
-                        if (quotaAvail && soloQuota != null) {
+                        if (soloQuota != null && soloQuota.isAvailable) {
                             Text(
                                 text = "Official Quota: ${((soloQuota.remainingPercent ?: 1f) * 100).toInt()}% · Source: ${soloQuota.source}",
                                 fontSize = 11.5.sp,

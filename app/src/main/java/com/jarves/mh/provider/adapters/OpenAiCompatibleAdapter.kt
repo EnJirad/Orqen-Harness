@@ -178,7 +178,7 @@ class OpenAiCompatibleAdapter : ProviderAdapter {
                         val first = choices.getJSONObject(0)
                         val delta = first.optJSONObject("delta")
                         val content = delta?.optString("content", "") ?: ""
-                        val finish = first.optString("finish_reason", null)
+                        val finish = first.optString("finish_reason", "").takeIf { it.isNotBlank() && it != "null" }
                         if (content.isNotEmpty() || finish != null) {
                             emit(AiStreamChunk(
                                 deltaText = content,

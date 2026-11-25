@@ -2669,7 +2669,7 @@ private fun RootScreenHost(
                             allProviderLocal = state.teamAllProviderLocal,
                             budgetLimitUsd = state.budgetLimitUsd,
                             isAutoPauseEnabled = state.budgetAutoPauseEnabled,
-                            onRefreshQuotas = viewModel::refreshAllQuotas,
+                            onRefreshQuotas = { viewModel.refreshAllQuotas(forceRefresh = true) },
                             onUpdateBudget = viewModel::updateBudget,
                             onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
                         )

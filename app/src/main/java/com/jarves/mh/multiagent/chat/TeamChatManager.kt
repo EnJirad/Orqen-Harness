@@ -52,7 +52,7 @@ class TeamChatManager(context: Context, private val teamId: String) {
                 val array = JSONArray(raw)
                 for (i in 0 until array.length()) {
                     val obj = array.getJSONObject(i)
-                    val slotStr = obj.optString("senderSlot", null)
+                    val slotStr = obj.optString("senderSlot", "").takeIf { it.isNotBlank() && it != "null" }
                     val slot = slotStr?.let { AgentSlot.fromId(it) }
                     val type = runCatching { GroupMessageType.valueOf(obj.getString("messageType")) }.getOrDefault(GroupMessageType.NORMAL)
                     list.add(

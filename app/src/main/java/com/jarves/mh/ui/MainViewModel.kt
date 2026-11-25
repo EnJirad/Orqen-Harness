@@ -5692,8 +5692,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun refreshAllQuotas() {
+    fun refreshAllQuotas(forceRefresh: Boolean = false) {
         viewModelScope.launch {
+            if (forceRefresh) {
+                providerManager.invalidateQuotaCache()
+            }
             fileLockManager.cleanExpiredLocks()
             val locks = fileLockManager.getActiveLocks()
             val configs = _state.value.providerConfigs

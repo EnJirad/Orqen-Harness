@@ -296,7 +296,7 @@ fun QuotaManagementScreen(
                             }
                         }
 
-                        if (isAvail && pQuota != null) {
+                        if (pQuota != null && pQuota.isAvailable) {
                             Text(
                                 text = "Source: ${pQuota.source}${pQuota.resetTime?.let { " · Reset: $it" } ?: ""}",
                                 fontSize = 11.sp,

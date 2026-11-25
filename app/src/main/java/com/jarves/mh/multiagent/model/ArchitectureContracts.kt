@@ -91,6 +91,9 @@ class AgentLifecycleStateMachine(val slot: AgentSlot) {
         }
         _currentState.value = newState
         _history.add(StateTransitionRecord(current, newState, reason))
+        if (_history.size > 100) {
+            _history.removeAt(0)
+        }
         return true
     }
 

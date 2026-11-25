@@ -84,7 +84,7 @@ class ProviderManager(
                             isEnabled = obj.optBoolean("isEnabled", true),
                             selectedModelId = obj.optString("selectedModelId", ""),
                             availableModels = models,
-                            organizationId = obj.optString("organizationId", null),
+                            organizationId = obj.optString("organizationId", "").takeIf { it.isNotBlank() && it != "null" },
                         )
                     )
                 }
@@ -206,6 +206,14 @@ class ProviderManager(
             saveConfig(updated, null)
         }
         models
+    }
+
+    fun invalidateQuotaCache(configId: String? = null) {
+        if (configId == null) {
+            quotaCache.clear()
+        } else {
+            quotaCache.remove(configId)
+        }
     }
 
     suspend fun getOfficialQuota(configId: String): OfficialQuota = withContext(Dispatchers.IO) {

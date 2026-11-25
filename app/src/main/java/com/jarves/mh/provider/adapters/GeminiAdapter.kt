@@ -182,7 +182,7 @@ class GeminiAdapter : ProviderAdapter {
                         val candidate = candidates.getJSONObject(0)
                         val content = candidate.optJSONObject("content")
                         val parts = content?.optJSONArray("parts")
-                        val finishReason = candidate.optString("finishReason", null)
+                        val finishReason = candidate.optString("finishReason", "").takeIf { it.isNotBlank() && it != "null" }
                         var text = ""
                         if (parts != null) {
                             for (p in 0 until parts.length()) {
