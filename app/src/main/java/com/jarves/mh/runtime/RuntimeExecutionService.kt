@@ -17,9 +17,19 @@ import com.jarves.mh.ui.AppStrings
 
 internal object RuntimeTaskController {
     @Volatile var stopAction: (() -> Unit)? = null
+    @Volatile var pauseAction: (() -> Unit)? = null
+    @Volatile var resumeAction: (() -> Unit)? = null
 
     fun requestStop() {
         stopAction?.invoke()
+    }
+
+    fun requestPause() {
+        pauseAction?.invoke()
+    }
+
+    fun requestResume() {
+        resumeAction?.invoke()
     }
 }
 
@@ -88,6 +98,27 @@ class RuntimeExecutionService : Service() {
                     runningNotification(AppStrings.get(this, R.string.rt_exec_stopping), includeStop = false),
                 )
             }
+            ACTION_PAUSE -> {
+                stopLiveTimer()
+                releaseWakeLock()
+                RuntimeTaskController.requestPause()
+                currentDetailText = AppStrings.get(this, R.string.rt_exec_paused)
+                getSystemService(NotificationManager::class.java).notify(
+                    RUNNING_NOTIFICATION_ID,
+                    runningNotification(currentDetailText, includeStop = canStop, isPaused = true),
+                )
+            }
+            ACTION_RESUME -> {
+                RuntimeTaskController.requestResume()
+                if (taskRunning) {
+                    acquireWakeLock()
+                    startLiveTimer()
+                    getSystemService(NotificationManager::class.java).notify(
+                        RUNNING_NOTIFICATION_ID,
+                        runningNotification(currentDetailText, includeStop = canStop, isPaused = false),
+                    )
+                }
+            }
             ACTION_PROGRESS -> {
                 // Live step updates only matter while a task is actually running.
                 if (!taskRunning) return START_NOT_STICKY
@@ -152,7 +183,11 @@ class RuntimeExecutionService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun runningNotification(detail: String, includeStop: Boolean): android.app.Notification {
+    private fun runningNotification(
+        detail: String,
+        includeStop: Boolean,
+        isPaused: Boolean = false,
+    ): android.app.Notification {
         val elapsedStr = if (startedAtElapsedMs > 0L) {
             formatElapsedDuration(SystemClock.elapsedRealtime() - startedAtElapsedMs)
         } else "0:00"
@@ -169,6 +204,23 @@ class RuntimeExecutionService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         if (includeStop) {
+            if (isPaused) {
+                val resumeIntent = PendingIntent.getService(
+                    this,
+                    3,
+                    Intent(this, RuntimeExecutionService::class.java).setAction(ACTION_RESUME),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                builder.addAction(0, AppStrings.get(this, R.string.rt_exec_resume_task), resumeIntent)
+            } else if (RuntimeTaskController.pauseAction != null) {
+                val pauseIntent = PendingIntent.getService(
+                    this,
+                    4,
+                    Intent(this, RuntimeExecutionService::class.java).setAction(ACTION_PAUSE),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                builder.addAction(0, AppStrings.get(this, R.string.rt_exec_pause_task), pauseIntent)
+            }
             val stopIntent = PendingIntent.getService(
                 this,
                 2,
@@ -231,6 +283,8 @@ class RuntimeExecutionService : Service() {
     companion object {
         const val ACTION_START = "com.jarves.mh.START_RUNTIME"
         const val ACTION_STOP = "com.jarves.mh.STOP_RUNTIME"
+        const val ACTION_PAUSE = "com.jarves.mh.PAUSE_RUNTIME"
+        const val ACTION_RESUME = "com.jarves.mh.RESUME_RUNTIME"
         const val ACTION_PROGRESS = "com.jarves.mh.PROGRESS_RUNTIME"
         const val ACTION_COMPLETE = "com.jarves.mh.COMPLETE_RUNTIME"
         const val ACTION_NOTIFY_RESULT = "com.jarves.mh.NOTIFY_RESULT_RUNTIME"

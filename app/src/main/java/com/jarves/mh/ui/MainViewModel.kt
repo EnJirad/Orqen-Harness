@@ -495,7 +495,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val providerManager = ProviderManager(application, vault, preferences)
     val fileLockManager = FileLockManager()
     val teamEventBus = TeamEventBus()
-    val taskManager = TaskManager()
+    val taskManager by lazy { TaskManager(durableStore = orqenTaskStore) }
     val continuousSupervisor = ContinuousSupervisor()
     val soloSupervisor = ContinuousSupervisor()
     val autonomousEngine = AutonomousExecutionEngine(fileLockManager)
@@ -529,6 +529,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val teamProjectChats = mutableMapOf<String, MutableList<GroupChatMessage>>()
     private val teamAgentRunner by lazy {
         com.jarves.mh.runtime.TeamAgentRunner(getApplication(), installer, providerManager)
+    }
+    private val orqenTaskStore by lazy {
+        com.jarves.mh.multiagent.persistence.SqliteOrqenTaskStore(getApplication())
+    }
+    private val checkpointManager by lazy {
+        com.jarves.mh.multiagent.engine.CheckpointManager(orqenTaskStore)
+    }
+    private val recoverySupervisor by lazy {
+        com.jarves.mh.multiagent.engine.ExecutionRecoverySupervisor(
+            store = orqenTaskStore,
+            checkpointManager = checkpointManager,
+            fileLockManager = fileLockManager,
+        )
+    }
+    private val multiSessionController by lazy {
+        com.jarves.mh.multiagent.session.MultiSessionChatController(orqenTaskStore)
+    }
+    private val hierarchicalMemory by lazy {
+        com.jarves.mh.multiagent.session.HierarchicalMemoryManager(orqenTaskStore)
     }
     @Volatile private var lastOpenedAntigravityAuthUrl: String? = null
     private var activeRuntimeRequest: RuntimeRetryRequest? = null
@@ -6128,7 +6147,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         teamCycleJob?.cancel()
         _state.update { it.copy(teamIsRunning = true, runningTeamProjectId = activeProj.id) }
         continuousSupervisor.startContinuous()
-        startTeamForegroundService(activeProj.name, "${activeProj.name} · กำลังรอรับคำสั่งจากเจ้าของบริษัท")
+        startTeamForegroundService(activeProj.name, "${activeProj.name} · กำลังรอรับคำสั่งจาก ${effectiveOwnerName()}")
+        com.jarves.mh.runtime.TaskRecoveryJobService.scheduleReconciliation(
+            context = getApplication(),
+            taskId = activeProj.id,
+        )
         teamCycleJob = viewModelScope.launch {
             runTeamCycle()
         }
@@ -6151,6 +6174,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         teamCycleJob?.cancel()
         teamCycleJob = null
         pendingTeamDirectives.clear()
+        _state.value.activeTeamProject?.id?.let { projId ->
+            com.jarves.mh.runtime.TaskRecoveryJobService.cancelTaskRecovery(getApplication(), projId)
+        }
         _state.update {
             it.copy(
                 teamIsRunning = false,
@@ -6177,6 +6203,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun startTeamForegroundService(projectName: String, statusDetail: String) {
         val app = getApplication<Application>()
         com.jarves.mh.runtime.RuntimeTaskController.stopAction = { stopTeamWork() }
+        com.jarves.mh.runtime.RuntimeTaskController.pauseAction = { pauseTeamWork() }
+        com.jarves.mh.runtime.RuntimeTaskController.resumeAction = { resumeTeamWork() }
         runCatching {
             androidx.core.content.ContextCompat.startForegroundService(
                 app,

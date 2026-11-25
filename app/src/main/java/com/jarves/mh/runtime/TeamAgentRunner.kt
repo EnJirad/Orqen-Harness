@@ -2,6 +2,9 @@ package com.jarves.mh.runtime
 
 import android.content.Context
 import com.jarves.mh.model.AgentKind
+import com.jarves.mh.multiagent.engine.ClassifiedError
+import com.jarves.mh.multiagent.engine.RequestExecutionPolicy
+import com.jarves.mh.multiagent.engine.StructuredErrorClassifier
 import com.jarves.mh.multiagent.model.AgentSlot
 import com.jarves.mh.multiagent.model.AgentState
 import com.jarves.mh.provider.core.AiMessage
@@ -24,6 +27,8 @@ data class TeamAgentExecutionResult(
     val writtenFiles: List<String> = emptyList(),
     val isError: Boolean = false,
     val isRecoverable: Boolean = false,
+    val classifiedError: ClassifiedError? = null,
+    val exitCode: Int? = null,
 )
 
 /**
@@ -39,6 +44,7 @@ class TeamAgentRunner(
     private val context: Context,
     private val installer: RuntimeInstaller,
     private val providerManager: ProviderManager,
+    private val defaultPolicy: RequestExecutionPolicy = RequestExecutionPolicy(),
 ) {
     private data class CachedTurnEntry(
         val result: TeamAgentExecutionResult,
@@ -176,7 +182,7 @@ class TeamAgentRunner(
             add(RuntimeInstaller.AGY_GUEST_PATH)
             addAll(listOf("--input-format", "stream-json"))
             addAll(listOf("--output-format", "stream-json"))
-            addAll(listOf("--print-timeout", "12m"))
+            addAll(listOf("--print-timeout", "${defaultPolicy.cliPrintTimeoutMinutes}m"))
             add("--dangerously-skip-permissions")
             if (!resolvedModel.isNullOrBlank()) {
                 addAll(listOf("--model", resolvedModel))
@@ -198,7 +204,7 @@ class TeamAgentRunner(
         )
 
         return try {
-            withTimeout(12 * 60_000L) {
+            withTimeout(defaultPolicy.requestTimeoutMs) {
                 val request = JSONObject()
                     .put("event", "user")
                     .put("message", JSONObject().put("content", prompt))
@@ -208,6 +214,7 @@ class TeamAgentRunner(
                 process.outputStream.close()
 
                 var offset = 0L
+                var lastActivityAtMs = System.currentTimeMillis()
                 val pending = StringBuilder()
                 val textAccumulator = StringBuilder()
                 var finalResponse: String? = null
@@ -217,9 +224,15 @@ class TeamAgentRunner(
                 while (!done && (process.isAlive || outputFile.length() > offset)) {
                     val available = outputFile.length() - offset
                     if (available <= 0L) {
+                        if (process.isAlive && (System.currentTimeMillis() - lastActivityAtMs) >= defaultPolicy.idleStreamTimeoutMs) {
+                            errorMessage = "Idle stream timeout (${defaultPolicy.idleStreamTimeoutMs / 1000}s without output)"
+                            done = true
+                            break
+                        }
                         delay(120)
                         continue
                     }
+                    lastActivityAtMs = System.currentTimeMillis()
                     val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
                     val count = RandomAccessFile(outputFile, "r").use { file ->
                         file.seek(offset)
@@ -233,7 +246,11 @@ class TeamAgentRunner(
                         val line = pending.substring(0, newline).trimEnd('\r')
                         pending.delete(0, newline + 1)
                         when (val event = AntigravityEventParser.parse(line)) {
-                            is AntigravityParsedEvent.Text -> textAccumulator.append(event.value)
+                            is AntigravityParsedEvent.Text -> {
+                                if (textAccumulator.length < defaultPolicy.maxResponseBytes) {
+                                    textAccumulator.append(event.value)
+                                }
+                            }
                             is AntigravityParsedEvent.ToolStarted -> onProgress("${event.name}: ${event.detail.take(80)}")
                             is AntigravityParsedEvent.ToolCompleted -> onProgress("Done: ${event.name}")
                             is AntigravityParsedEvent.Result -> {
@@ -251,13 +268,32 @@ class TeamAgentRunner(
                     }
                 }
 
+                val exitCode = if (!process.isAlive) runCatching { process.exitValue() }.getOrNull() else null
                 val changedFiles = diffWorkspaceFiles(workspaceDir, beforeMtimes)
                 if (errorMessage != null) {
+                    val classified = StructuredErrorClassifier.classify(
+                        message = errorMessage,
+                        exitCode = exitCode,
+                        isIdleStream = errorMessage.contains("Idle stream", ignoreCase = true),
+                    )
                     TeamAgentExecutionResult(
                         responseText = errorMessage,
                         writtenFiles = changedFiles,
                         isError = true,
-                        isRecoverable = isRecoverableErrorText(errorMessage),
+                        isRecoverable = classified.retryable,
+                        classifiedError = classified,
+                        exitCode = exitCode,
+                    )
+                } else if (exitCode != null && exitCode != 0 && finalResponse.isNullOrBlank() && textAccumulator.isBlank()) {
+                    val msg = "CLI process exited with code $exitCode"
+                    val classified = StructuredErrorClassifier.classify(msg, exitCode = exitCode)
+                    TeamAgentExecutionResult(
+                        responseText = msg,
+                        writtenFiles = changedFiles,
+                        isError = true,
+                        isRecoverable = classified.retryable,
+                        classifiedError = classified,
+                        exitCode = exitCode,
                     )
                 } else {
                     val reply = (finalResponse ?: textAccumulator.toString()).trim()
@@ -266,26 +302,32 @@ class TeamAgentRunner(
                         writtenFiles = changedFiles,
                         isError = false,
                         isRecoverable = false,
+                        exitCode = exitCode ?: 0,
                     )
                 }
             }
         } catch (timeout: TimeoutCancellationException) {
             val changedFiles = diffWorkspaceFiles(workspaceDir, beforeMtimes)
+            val msg = "Timed out waiting for step response (${defaultPolicy.requestTimeoutMs / 1000}s limit)"
+            val classified = StructuredErrorClassifier.classify(msg, isTimeout = true)
             TeamAgentExecutionResult(
-                responseText = "Timed out waiting for response (${timeout.message ?: "12m limit"})",
+                responseText = msg,
                 writtenFiles = changedFiles,
                 isError = true,
                 isRecoverable = true,
+                classifiedError = classified,
             )
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (err: Throwable) {
             val msg = err.message?.take(240) ?: "Antigravity execution failed"
+            val classified = StructuredErrorClassifier.classify(msg)
             TeamAgentExecutionResult(
                 responseText = msg,
                 writtenFiles = diffWorkspaceFiles(workspaceDir, beforeMtimes),
                 isError = true,
-                isRecoverable = isRecoverableErrorText(msg),
+                isRecoverable = classified.retryable,
+                classifiedError = classified,
             )
         } finally {
             runCatching { process.destroy() }
@@ -340,7 +382,7 @@ class TeamAgentRunner(
         }
         val fullText = StringBuilder()
         return try {
-            withTimeout(8 * 60_000L) {
+            withTimeout(defaultPolicy.requestTimeoutMs) {
                 adapter.sendChatCompletion(
                     config = cfg,
                     apiKey = apiKey,
@@ -350,7 +392,7 @@ class TeamAgentRunner(
                     temperature = agent.config.temperature.toDouble(),
                     maxTokens = agent.config.maxTokens,
                 ).collect { chunk ->
-                    if (chunk.deltaText.isNotEmpty()) {
+                    if (chunk.deltaText.isNotEmpty() && fullText.length < defaultPolicy.maxResponseBytes) {
                         fullText.append(chunk.deltaText)
                     }
                 }
@@ -366,20 +408,25 @@ class TeamAgentRunner(
             )
         } catch (timeout: TimeoutCancellationException) {
             providerManager.recordUsage(cfg.id, agent.config.modelId, prompt.length / 4, 0, isError = true)
+            val msg = "API step request timed out (${defaultPolicy.requestTimeoutMs / 1000}s limit)"
+            val classified = StructuredErrorClassifier.classify(msg, isTimeout = true)
             TeamAgentExecutionResult(
-                responseText = "API request timed out (${timeout.message ?: "8m limit"})",
+                responseText = msg,
                 isError = true,
                 isRecoverable = true,
+                classifiedError = classified,
             )
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (err: Throwable) {
             val msg = err.message?.take(240) ?: "API request failed"
+            val classified = StructuredErrorClassifier.classify(msg)
             providerManager.recordUsage(cfg.id, agent.config.modelId, prompt.length / 4, 0, isError = true)
             TeamAgentExecutionResult(
                 responseText = msg,
                 isError = true,
-                isRecoverable = isRecoverableErrorText(msg),
+                isRecoverable = classified.retryable,
+                classifiedError = classified,
             )
         }
     }
