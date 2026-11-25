@@ -3,7 +3,6 @@ package com.jarves.mh.multiagent.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -18,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.R
@@ -45,16 +45,21 @@ fun ProviderManagementScreen(
     onBack: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
+
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingConfig by remember { mutableStateOf<ProviderConfig?>(null) }
     var oauthCode by remember { mutableStateOf("") }
     var selectedForTest by remember { mutableStateOf<String?>(null) }
     var testResult by remember { mutableStateOf<ConnectionTestResult?>(null) }
     var isTesting by remember { mutableStateOf(false) }
+    var discoveringConfigId by remember { mutableStateOf<String?>(null) }
+    var discoveredMessage by remember { mutableStateOf<Pair<String, String>?>(null) }
     val scope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
             TopAppBar(
+                modifier = Modifier.padding(top = 4.dp),
                 title = {
                     Column {
                         Text(stringResource(R.string.provider_mgmt_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -70,12 +75,13 @@ fun ProviderManagementScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
+            ExtendedFloatingActionButton(
                 onClick = { showAddDialog = true },
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text(stringResource(R.string.provider_add_new)) },
                 containerColor = MaterialTheme.colorScheme.primary,
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Add Provider")
-            }
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            )
         },
     ) { padding ->
         LazyColumn(
@@ -84,9 +90,31 @@ fun ProviderManagementScreen(
                 .padding(padding)
                 .background(MaterialTheme.colorScheme.background)
                 .padding(16.dp),
+            contentPadding = PaddingValues(bottom = 84.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(configs) { config ->
+            item {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.provider_add_another_id_hint),
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+
+            items(configs, key = { it.id }) { config ->
+                var modelDropdownExpanded by remember(config.id) { mutableStateOf(false) }
+                val hasKey = remember(config.id, editingConfig) { getSavedApiKey(config.id).isNotBlank() }
+
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -104,9 +132,29 @@ fun ProviderManagementScreen(
                                 Text(config.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 Text(config.type.displayName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                             }
-                            if (config.type.supportsOAuth) {
-                                Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF1976D2).copy(alpha = 0.15f)) {
-                                    Text("OAuth", color = Color(0xFF1976D2), fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (config.type.supportsOAuth) {
+                                    Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF1976D2).copy(alpha = 0.15f)) {
+                                        Text("OAuth", color = Color(0xFF1976D2), fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp))
+                                    }
+                                } else {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (hasKey) Color(0xFF2E7D32).copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant,
+                                    ) {
+                                        Text(
+                                            text = if (hasKey) "KEY SET" else "NO KEY",
+                                            color = if (hasKey) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                }
+                                if (!config.id.startsWith("preset-")) {
+                                    IconButton(onClick = { onDeleteConfig(config.id) }, modifier = Modifier.size(30.dp)) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                                    }
                                 }
                             }
                         }
@@ -116,10 +164,7 @@ fun ProviderManagementScreen(
                             Text("URL: ${config.baseUrl}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
 
-                        if (config.selectedModelId.isNotBlank()) {
-                            Text("Model: ${config.selectedModelId}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-
+                        // Antigravity inline CLI & OAuth flow
                         if (config.type == ProviderType.ANTIGRAVITY) {
                             Spacer(Modifier.height(10.dp))
                             Surface(
@@ -193,12 +238,60 @@ fun ProviderManagementScreen(
                             }
                         }
 
+                        // Live Available Models Dropdown Selector
+                        Spacer(Modifier.height(10.dp))
+                        Box(Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = config.selectedModelId.ifBlank { config.availableModels.firstOrNull().orEmpty() },
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text(stringResource(R.string.provider_select_model_dropdown, config.availableModels.size)) },
+                                trailingIcon = {
+                                    IconButton(onClick = { modelDropdownExpanded = true }) {
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Select Model")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                singleLine = true,
+                            )
+                            DropdownMenu(
+                                expanded = modelDropdownExpanded,
+                                onDismissRequest = { modelDropdownExpanded = false },
+                            ) {
+                                val modelsToShow = config.availableModels.ifEmpty { listOf(config.selectedModelId).filter { it.isNotBlank() } }
+                                modelsToShow.forEach { m ->
+                                    DropdownMenuItem(
+                                        text = { Text(m) },
+                                        onClick = {
+                                            onSaveConfig(config.copy(selectedModelId = m), null)
+                                            modelDropdownExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
                         Spacer(Modifier.height(10.dp))
 
+                        // Action Buttons: Configure Key / Test & Auto-Discover / Discover Models
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            if (!config.type.supportsOAuth) {
+                                OutlinedButton(
+                                    onClick = { editingConfig = config },
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Icon(Icons.Default.Key, contentDescription = null, Modifier.size(15.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(stringResource(R.string.provider_edit_key_btn), fontSize = 11.sp, maxLines = 1)
+                                }
+                            }
+
                             OutlinedButton(
                                 onClick = {
                                     selectedForTest = config.id
@@ -208,21 +301,53 @@ fun ProviderManagementScreen(
                                         val res = onTestConnection(config.id)
                                         testResult = res
                                         isTesting = false
+                                        if (res.isSuccess) {
+                                            discoveringConfigId = config.id
+                                            val discovered = onDiscoverModels(config.id)
+                                            discoveredMessage = config.id to "Loaded ${discovered.size} models"
+                                            discoveringConfigId = null
+                                        }
                                     }
                                 },
                                 shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                                 modifier = Modifier.weight(1f),
                             ) {
-                                Icon(Icons.Default.Speed, contentDescription = null, Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(stringResource(R.string.provider_connection_test_btn), fontSize = 12.sp)
+                                Icon(Icons.Default.Speed, contentDescription = null, Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(stringResource(R.string.provider_connection_test_btn), fontSize = 11.sp, maxLines = 1)
                             }
 
-                            if (!config.id.startsWith("preset-")) {
-                                IconButton(onClick = { onDeleteConfig(config.id) }) {
-                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
-                                }
+                            FilledTonalButton(
+                                onClick = {
+                                    discoveringConfigId = config.id
+                                    scope.launch {
+                                        val discovered = onDiscoverModels(config.id)
+                                        discoveredMessage = config.id to "Loaded ${discovered.size} models"
+                                        discoveringConfigId = null
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, Modifier.size(15.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(stringResource(R.string.provider_discover_models_short), fontSize = 11.sp, maxLines = 1)
                             }
+                        }
+
+                        if (discoveringConfigId == config.id) {
+                            Spacer(Modifier.height(6.dp))
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        } else if (discoveredMessage?.first == config.id) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = discoveredMessage!!.second,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium,
+                            )
                         }
 
                         // Test result feedback
@@ -257,9 +382,90 @@ fun ProviderManagementScreen(
             onSave = { config, key ->
                 onSaveConfig(config, key)
                 showAddDialog = false
+                scope.launch {
+                    onDiscoverModels(config.id)
+                }
             },
         )
     }
+
+    editingConfig?.let { target ->
+        EditProviderKeyDialog(
+            config = target,
+            initialKey = getSavedApiKey(target.id),
+            onDismiss = { editingConfig = null },
+            onSave = { updatedConfig, newKey ->
+                onSaveConfig(updatedConfig, newKey)
+                editingConfig = null
+                scope.launch {
+                    discoveringConfigId = updatedConfig.id
+                    val discovered = onDiscoverModels(updatedConfig.id)
+                    discoveredMessage = updatedConfig.id to "Saved key & loaded ${discovered.size} models"
+                    discoveringConfigId = null
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun EditProviderKeyDialog(
+    config: ProviderConfig,
+    initialKey: String,
+    onDismiss: () -> Unit,
+    onSave: (ProviderConfig, String) -> Unit,
+) {
+    var name by remember(config) { mutableStateOf(config.name) }
+    var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
+    var apiKey by remember(config, initialKey) { mutableStateOf(initialKey) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${stringResource(R.string.provider_edit_key_btn)} — ${config.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Account / ID Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it },
+                    label = { Text("Base URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    label = { Text("API Key") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        config.copy(name = name.trim().ifBlank { config.name }, baseUrl = baseUrl.trim()),
+                        apiKey.trim(),
+                    )
+                },
+            ) {
+                Text(stringResource(R.string.action_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
 }
 
 @Composable
@@ -268,7 +474,8 @@ fun AddProviderDialog(
     onSave: (ProviderConfig, String) -> Unit,
 ) {
     var name by remember { mutableStateOf("") }
-    var selectedType by remember { mutableStateOf(ProviderType.CUSTOM_API) }
+    var selectedType by remember { mutableStateOf(ProviderType.OPENAI_COMPATIBLE) }
+    var typeMenuExpanded by remember { mutableStateOf(false) }
     var baseUrl by remember { mutableStateOf("https://api.openai.com/v1") }
     var apiKey by remember { mutableStateOf("") }
     var selectedProtocol by remember { mutableStateOf(ApiProtocol.OPENAI_CHAT) }
@@ -279,28 +486,92 @@ fun AddProviderDialog(
         title = { Text(stringResource(R.string.provider_add_new)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Provider Type Selector
+                Box(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = selectedType.displayName,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text(stringResource(R.string.provider_type_select)) },
+                        trailingIcon = {
+                            IconButton(onClick = { typeMenuExpanded = true }) {
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    DropdownMenu(
+                        expanded = typeMenuExpanded,
+                        onDismissRequest = { typeMenuExpanded = false },
+                    ) {
+                        ProviderType.entries.forEach { t ->
+                            DropdownMenuItem(
+                                text = { Text(t.displayName) },
+                                onClick = {
+                                    selectedType = t
+                                    typeMenuExpanded = false
+                                    when (t) {
+                                        ProviderType.OPENAI_COMPATIBLE -> {
+                                            baseUrl = "https://api.openai.com/v1"
+                                            selectedProtocol = ApiProtocol.OPENAI_CHAT
+                                        }
+                                        ProviderType.ANTHROPIC -> {
+                                            baseUrl = "https://api.anthropic.com"
+                                            selectedProtocol = ApiProtocol.ANTHROPIC_MESSAGES
+                                        }
+                                        ProviderType.GEMINI -> {
+                                            baseUrl = "https://generativelanguage.googleapis.com"
+                                            selectedProtocol = ApiProtocol.GEMINI_DEV_API
+                                        }
+                                        ProviderType.DEEPSEEK -> {
+                                            baseUrl = "https://api.deepseek.com/v1"
+                                            selectedProtocol = ApiProtocol.OPENAI_CHAT
+                                        }
+                                        ProviderType.OPENROUTER -> {
+                                            baseUrl = "https://openrouter.ai/api/v1"
+                                            selectedProtocol = ApiProtocol.OPENAI_CHAT
+                                        }
+                                        ProviderType.ANTIGRAVITY -> {
+                                            baseUrl = ""
+                                            selectedProtocol = ApiProtocol.ANTIGRAVITY_OAUTH
+                                        }
+                                        ProviderType.CUSTOM_API -> {
+                                            selectedProtocol = ApiProtocol.OPENAI_CHAT
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Provider Name") },
+                    label = { Text("Account / ID Name (e.g. OpenAI #2)") },
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = baseUrl,
                     onValueChange = { baseUrl = it },
                     label = { Text("Base URL") },
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = apiKey,
                     onValueChange = { apiKey = it },
                     label = { Text("API Key") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = modelId,
                     onValueChange = { modelId = it },
-                    label = { Text("Model ID") },
+                    label = { Text("Default Model ID (optional)") },
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -310,13 +581,14 @@ fun AddProviderDialog(
                 onClick = {
                     if (name.isNotBlank()) {
                         val config = ProviderConfig(
-                            name = name,
+                            name = name.trim(),
                             type = selectedType,
-                            baseUrl = baseUrl,
+                            baseUrl = baseUrl.trim(),
                             protocol = selectedProtocol,
-                            selectedModelId = modelId,
+                            selectedModelId = modelId.trim(),
+                            availableModels = listOfNotNull(modelId.trim().takeIf { it.isNotBlank() }),
                         )
-                        onSave(config, apiKey)
+                        onSave(config, apiKey.trim())
                     }
                 },
                 enabled = name.isNotBlank(),

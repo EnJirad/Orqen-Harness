@@ -2636,12 +2636,14 @@ private fun RootScreenHost(
                                 ?: state.teamAgents.first()
                             AgentDetailScreen(
                                 agentState = agentState,
+                                allAgents = state.teamAgents,
                                 fileLocks = state.teamFileLocks,
                                 providerConfigs = state.providerConfigs,
                                 antigravityCliInstalled = state.installedAgentVersions.containsKey(AgentKind.ANTIGRAVITY),
                                 antigravityInstalling = state.agentInstalling == AgentKind.ANTIGRAVITY,
                                 antigravityAuth = state.antigravityAuth,
                                 canRemoveAgent = state.teamAgents.size > 1,
+                                onDiscoverProviderModels = viewModel::discoverProviderModels,
                                 onInstallAntigravityCli = { viewModel.installAgent(AgentKind.ANTIGRAVITY) },
                                 onStartAntigravityLogin = viewModel::startAntigravityLogin,
                                 onSubmitAntigravityCode = viewModel::submitAntigravityCode,

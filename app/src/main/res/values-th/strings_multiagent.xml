@@ -188,4 +188,12 @@
     <string name="agent_antigravity_connect">เชื่อมต่อด้วย Antigravity (Google OAuth)</string>
     <string name="agent_antigravity_connected">เชื่อมต่อ Antigravity แล้ว</string>
     <string name="agent_quota_card_title">โควตาและการใช้งานของตัวที่เชื่อมต่ออยู่</string>
+
+    <!-- Part 05 Provider Orchestration & Shared/Multi-ID (ภาษาไทย) -->
+    <string name="provider_edit_key_btn">ตั้งค่า API Key</string>
+    <string name="provider_discover_models_short">ดึงรายชื่อโมเดล</string>
+    <string name="provider_select_model_dropdown">เลือกโมเดล (พร้อมใช้ %1$d ตัว)</string>
+    <string name="provider_shared_id_hint">ใช้ ID เดียวกับ %1$s — สามารถเลือกคนละโมเดลเพื่อทำงานร่วมกันได้</string>
+    <string name="provider_unique_id_hint">ใช้ ID แยกเฉพาะสำหรับ Agent ตัวนี้</string>
+    <string name="provider_add_another_id_hint">เพิ่มบัญชี/ID ใหม่ (ใช้ผู้ให้บริการเดิมหรือต่างผู้ให้บริการก็ได้)</string>
 </resources>

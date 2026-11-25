@@ -1,20 +1,19 @@
 # Task Queue
 
-## Part 01–03 Tasks (Completed)
+## Part 01–04 Tasks (Completed)
 - [COMPLETED] **Part 01**: Project Analysis & `.agent/` Hub Baseline
 - [COMPLETED] **Part 02**: Architecture Contracts & State Machine Interfaces
 - [COMPLETED] **Part 03**: Multi-Agent Frontend Screens & Thai Localization
+- [COMPLETED] **Part 04**: Autonomous Backend Engine, Solo Continuous Mode & UX Upgrades
 
-## Part 04 Tasks (Completed)
-- [COMPLETED] **TASK-04-01: Autonomous Engine Loop & Enhanced ContinuousSupervisor (Retry-After + 45m Checkpoint)**
-- [COMPLETED] **TASK-04-02: ContextWindowPruner & Custom Team Name Roster Injection**
-- [COMPLETED] **TASK-04-03: HubExchangeService (.agent/ State Snapshots & Inbox/Outbox)**
-- [COMPLETED] **TASK-04-04: Solo Continuous Execution UI & Supervisor Integration**
-- [COMPLETED] **TASK-04-05: AI Team Top Inset Fix, 2 Default Agents (+Add up to 4), Custom Names, Git/Project Hub**
-- [COMPLETED] **TASK-04-06: Inline Antigravity CLI/OAuth in AI Team & All-Provider + Solo Quota Cards**
-- [COMPLETED] **TASK-04-07: System BackHandler Across All Tabs & Sub-Screens**
+## Part 05 Tasks (Completed)
+- [COMPLETED] **TASK-05-01: Implement ProviderOrchestrator (Shared-ID Multi-Model & Separate-ID Routing + Smart Fallback)**
+- [COMPLETED] **TASK-05-02: Upgrade ProviderManagementScreen with Key Editor, Auto Model Discovery & Model Dropdown**
+- [COMPLETED] **TASK-05-03: Upgrade AgentDetailScreen with Shared-ID Indicator & Live Model Discovery Dropdown**
+- [COMPLETED] **TASK-05-04: Implement GitHubSyncCoordinator (IGitHubSyncCoordinator)**
+- [COMPLETED] **TASK-05-05: Unit Test Verification (Part05IntegrationOrchestrationTest)**
 
-## Part 05 Upcoming Tasks (Shared Integration)
-- [READY] **TASK-05-01: Multi-Provider Live Model Routing & Smart Fallback**
-- [READY] **TASK-05-02: Automated GitHub Sync & Commit/PR Pipeline**
-- [READY] **TASK-05-03: Cross-Agent Shared Tool Execution Verification**
+## Part 06 Upcoming Tasks (Verification & Concurrency Testing)
+- [READY] **TASK-06-01: Multi-Threaded 4-Agent File Lock Concurrency Stress Tests**
+- [READY] **TASK-06-02: End-to-End Multi-Agent Workflow & Recovery Verification**
+- [READY] **TASK-06-03: Full Debug APK Build Verification**

@@ -25,15 +25,18 @@ import androidx.compose.ui.unit.sp
 import com.jarves.mh.R
 import com.jarves.mh.multiagent.locks.FileLock
 import com.jarves.mh.multiagent.model.*
+import com.jarves.mh.provider.core.ModelInfo
 import com.jarves.mh.provider.core.ProviderConfig
 import com.jarves.mh.provider.core.ProviderType
 import com.jarves.mh.runtime.AntigravityAuthState
 import com.jarves.mh.runtime.AntigravityAuthStatus
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentDetailScreen(
     agentState: AgentState,
+    allAgents: List<AgentState> = emptyList(),
     fileLocks: List<FileLock>,
     providerConfigs: List<ProviderConfig> = emptyList(),
     availableModels: List<String> = listOf("gemini-3.8-flash-high", "gemini-3.8-flash", "claude-sonnet-4-6", "claude-haiku-3-5", "gpt-4o", "gpt-4o-mini", "deepseek-coder"),
@@ -41,6 +44,7 @@ fun AgentDetailScreen(
     antigravityInstalling: Boolean = false,
     antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
     canRemoveAgent: Boolean = false,
+    onDiscoverProviderModels: suspend (String) -> List<ModelInfo> = { emptyList() },
     onInstallAntigravityCli: () -> Unit = {},
     onStartAntigravityLogin: () -> Unit = {},
     onSubmitAntigravityCode: (String) -> Unit = {},
@@ -66,15 +70,24 @@ fun AgentDetailScreen(
     var roleMenuExpanded by remember { mutableStateOf(false) }
     var providerMenuExpanded by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
+    var discoveringModels by remember { mutableStateOf(false) }
+    var liveDiscoveredModels by remember(selectedProvider) { mutableStateOf<List<String>>(emptyList()) }
+    val scope = rememberCoroutineScope()
 
     val selectedProviderConfig = remember(providerConfigs, selectedProvider) {
         providerConfigs.firstOrNull { it.id == selectedProvider }
     }
     val isAntigravityProvider = selectedProvider == "preset-antigravity" || selectedProviderConfig?.type == ProviderType.ANTIGRAVITY
 
-    val modelChoices = remember(selectedProviderConfig, availableModels) {
+    val peersSharingSameProvider = remember(allAgents, selectedProvider, agentState.config.slot) {
+        allAgents.filter { it.config.slot != agentState.config.slot && it.config.providerId == selectedProvider }
+            .map { it.config.name }
+    }
+
+    val modelChoices = remember(selectedProviderConfig, liveDiscoveredModels, availableModels) {
+        val fromLive = liveDiscoveredModels
         val fromProvider = selectedProviderConfig?.availableModels.orEmpty()
-        (fromProvider + availableModels).distinct()
+        (fromLive + fromProvider + availableModels).filter { it.isNotBlank() }.distinct()
     }
 
     val activity = agentState.activityState.activity
@@ -376,35 +389,80 @@ fun AgentDetailScreen(
                             }
                         }
 
+                        // Shared vs Dedicated Provider ID Hint
+                        Spacer(Modifier.height(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (peersSharingSameProvider.isNotEmpty()) Color(0xFF1976D2).copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = if (peersSharingSameProvider.isNotEmpty()) {
+                                    stringResource(R.string.provider_shared_id_hint, peersSharingSameProvider.joinToString(", "))
+                                } else {
+                                    stringResource(R.string.provider_unique_id_hint)
+                                },
+                                fontSize = 11.sp,
+                                color = if (peersSharingSameProvider.isNotEmpty()) Color(0xFF1976D2) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            )
+                        }
+
                         Spacer(Modifier.height(12.dp))
 
-                        // Model Selector Dropdown
-                        Box(Modifier.fillMaxWidth()) {
-                            OutlinedTextField(
-                                value = selectedModel,
-                                onValueChange = { selectedModel = it },
-                                label = { Text("Model ID") },
-                                trailingIcon = {
-                                    IconButton(onClick = { modelMenuExpanded = true }) {
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        // Model Selector Dropdown + Live Discover Button
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(Modifier.weight(1f)) {
+                                OutlinedTextField(
+                                    value = selectedModel,
+                                    onValueChange = { selectedModel = it },
+                                    label = { Text(stringResource(R.string.provider_select_model_dropdown, modelChoices.size)) },
+                                    trailingIcon = {
+                                        IconButton(onClick = { modelMenuExpanded = true }) {
+                                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    singleLine = true,
+                                )
+                                DropdownMenu(
+                                    expanded = modelMenuExpanded,
+                                    onDismissRequest = { modelMenuExpanded = false },
+                                ) {
+                                    modelChoices.forEach { model ->
+                                        DropdownMenuItem(
+                                            text = { Text(model) },
+                                            onClick = {
+                                                selectedModel = model
+                                                modelMenuExpanded = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                            FilledTonalIconButton(
+                                onClick = {
+                                    discoveringModels = true
+                                    scope.launch {
+                                        val discovered = onDiscoverProviderModels(selectedProvider)
+                                        if (discovered.isNotEmpty()) {
+                                            liveDiscoveredModels = discovered.map { it.id }
+                                        }
+                                        discoveringModels = false
+                                        modelMenuExpanded = true
                                     }
                                 },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp),
-                                singleLine = true,
-                            )
-                            DropdownMenu(
-                                expanded = modelMenuExpanded,
-                                onDismissRequest = { modelMenuExpanded = false },
+                                enabled = !discoveringModels,
                             ) {
-                                modelChoices.forEach { model ->
-                                    DropdownMenuItem(
-                                        text = { Text(model) },
-                                        onClick = {
-                                            selectedModel = model
-                                            modelMenuExpanded = false
-                                        },
-                                    )
+                                if (discoveringModels) {
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.provider_discover_models_short))
                                 }
                             }
                         }
