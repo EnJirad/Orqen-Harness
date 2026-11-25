@@ -439,6 +439,14 @@ data class AppUiState(
     val budgetLimitUsd: Double = 10.0,
     val budgetAutoPauseEnabled: Boolean = true,
     val teamCollaborationEvents: List<PrioritizedCollaborationEvent> = emptyList(),
+    val soloContinuousConfig: ContinuousExecutionConfig = ContinuousExecutionConfig(),
+    val teamContinuousConfig: ContinuousExecutionConfig = ContinuousExecutionConfig(),
+    val teamAllProviderQuotas: Map<String, OfficialQuota> = emptyMap(),
+    val teamAllProviderEstimated: Map<String, EstimatedUsage> = emptyMap(),
+    val teamAllProviderLocal: Map<String, LocalUsage> = emptyMap(),
+    val soloOfficialQuota: OfficialQuota? = null,
+    val soloEstimatedUsage: EstimatedUsage? = null,
+    val soloLocalUsage: LocalUsage = LocalUsage(),
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -473,6 +481,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val teamEventBus = TeamEventBus()
     val taskManager = TaskManager()
     val continuousSupervisor = ContinuousSupervisor()
+    val soloSupervisor = ContinuousSupervisor()
+    val autonomousEngine = AutonomousExecutionEngine(fileLockManager)
+    private val teamPrefs = application.getSharedPreferences("orqen_team_agents", Context.MODE_PRIVATE)
     private val teamChatManager = TeamChatManager(application, "default_team")
     val gitCoordinator = GitCoordinator(File(application.filesDir, "workspaces"))
     private fun appUpdater(): AppUpdater = AppUpdater(
@@ -5448,102 +5459,167 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- ORQEN Multi-Agent AI Workspace & Team Coordination ---
 
-    private fun initMultiAgentTeam() {
-        val initialAgents = listOf(
-            AgentState(
-                config = AgentConfig(
-                    slot = AgentSlot.AGENT_1,
-                    name = "Agent 01 (Lead)",
-                    role = AgentRole(
-                        type = AgentRoleType.TEAM_LEADER,
-                        title = "Team Leader / Architect / QA",
-                        systemInstructions = "Analyze project overview, plan development steps, assign tasks to agents, verify commits, test features thoroughly, and approve pull requests.",
-                        responsibilities = listOf(
-                            "Analyze codebase overview and plan sequential parts",
-                            "Assign tasks and define acceptance criteria",
-                            "Verify commit SHAs and independent test results",
-                            "Perform architectural review and approve merges"
-                        ),
+    private fun defaultAgentTemplateForSlot(slot: AgentSlot): AgentState = when (slot) {
+        AgentSlot.AGENT_1 -> AgentState(
+            config = AgentConfig(
+                slot = AgentSlot.AGENT_1,
+                name = "Agent 01 (Lead)",
+                role = AgentRole(
+                    type = AgentRoleType.TEAM_LEADER,
+                    title = "Team Leader / Architect / QA",
+                    systemInstructions = "Analyze project overview, plan development steps, assign tasks to agents, verify commits, test features thoroughly, and approve pull requests.",
+                    responsibilities = listOf(
+                        "Analyze codebase overview and plan sequential parts",
+                        "Assign tasks and define acceptance criteria",
+                        "Verify commit SHAs and independent test results",
+                        "Perform architectural review and approve merges"
                     ),
-                    providerId = "preset-antigravity",
-                    modelId = "gemini-3.8-flash-high",
                 ),
-                activityState = AgentActivityState(
-                    activity = ActivityType.PLANNING,
-                    currentTask = "Part 01: Project Architecture Analysis",
-                    lastAction = "Waiting for team kickoff",
-                ),
+                providerId = "preset-antigravity",
+                modelId = "gemini-3.8-flash-high",
             ),
-            AgentState(
-                config = AgentConfig(
-                    slot = AgentSlot.AGENT_2,
-                    name = "Agent 02 (Dev)",
-                    role = AgentRole(
-                        type = AgentRoleType.SOFTWARE_ENGINEER,
-                        title = "Software Engineer",
-                        systemInstructions = "Receive tasks from Agent 01, analyze codebase, write clean code, fix bugs, commit and push changes with clear commit messages.",
-                        responsibilities = listOf(
-                            "Implement assigned feature tasks",
-                            "Edit source files under file locks",
-                            "Create Git commits with part prefixes"
-                        ),
-                    ),
-                    providerId = "preset-anthropic",
-                    modelId = "claude-sonnet-4-6",
-                ),
-                activityState = AgentActivityState(
-                    activity = ActivityType.WAITING,
-                    currentTask = "Ready for task assignment",
-                    lastAction = "Idle",
-                ),
-            ),
-            AgentState(
-                config = AgentConfig(
-                    slot = AgentSlot.AGENT_3,
-                    name = "Agent 03 (Specialist)",
-                    role = AgentRole(
-                        type = AgentRoleType.SPECIALIST,
-                        title = "Specialist / Backend Developer",
-                        systemInstructions = "Handle specialized tasks, complex algorithms, backend logic, APIs, and assist Agent 02 on heavy modules.",
-                        responsibilities = listOf(
-                            "Develop complex backend APIs and data logic",
-                            "Optimize algorithms and performance",
-                            "Coordinate interface contracts with Agent 02"
-                        ),
-                    ),
-                    providerId = "preset-openai",
-                    modelId = "gpt-4o",
-                ),
-                activityState = AgentActivityState(
-                    activity = ActivityType.WAITING,
-                    currentTask = "Ready for specialized tasks",
-                    lastAction = "Idle",
-                ),
-            ),
-            AgentState(
-                config = AgentConfig(
-                    slot = AgentSlot.AGENT_4,
-                    name = "Agent 04 (Tester)",
-                    role = AgentRole(
-                        type = AgentRoleType.TESTER,
-                        title = "Independent Tester / Reviewer",
-                        systemInstructions = "Independently review code, test edge cases, verify regressions, inspect security, check performance, and report bug findings to Agent 01.",
-                        responsibilities = listOf(
-                            "Run independent test suites",
-                            "Inspect code security and regressions",
-                            "Create bug reports for Agent 01"
-                        ),
-                    ),
-                    providerId = "preset-gemini",
-                    modelId = "gemini-2.5-flash",
-                ),
-                activityState = AgentActivityState(
-                    activity = ActivityType.WAITING,
-                    currentTask = "Ready to test commits",
-                    lastAction = "Idle",
-                ),
+            activityState = AgentActivityState(
+                activity = ActivityType.PLANNING,
+                currentTask = "Ready to lead & coordinate",
+                lastAction = "Waiting for team kickoff",
             ),
         )
+        AgentSlot.AGENT_2 -> AgentState(
+            config = AgentConfig(
+                slot = AgentSlot.AGENT_2,
+                name = "Agent 02 (Dev)",
+                role = AgentRole(
+                    type = AgentRoleType.SOFTWARE_ENGINEER,
+                    title = "Software Engineer",
+                    systemInstructions = "Receive tasks from Lead, analyze codebase, write clean code, fix bugs, commit and push changes with clear commit messages.",
+                    responsibilities = listOf(
+                        "Implement assigned feature tasks",
+                        "Edit source files under file locks",
+                        "Create Git commits with part prefixes"
+                    ),
+                ),
+                providerId = "preset-anthropic",
+                modelId = "claude-sonnet-4-6",
+            ),
+            activityState = AgentActivityState(
+                activity = ActivityType.WAITING,
+                currentTask = "Ready for task assignment",
+                lastAction = "Idle",
+            ),
+        )
+        AgentSlot.AGENT_3 -> AgentState(
+            config = AgentConfig(
+                slot = AgentSlot.AGENT_3,
+                name = "Agent 03 (Specialist)",
+                role = AgentRole(
+                    type = AgentRoleType.SPECIALIST,
+                    title = "Specialist / Backend Developer",
+                    systemInstructions = "Handle specialized tasks, complex algorithms, backend logic, APIs, and assist teammates on heavy modules.",
+                    responsibilities = listOf(
+                        "Develop complex backend APIs and data logic",
+                        "Optimize algorithms and performance",
+                        "Coordinate interface contracts with teammates"
+                    ),
+                ),
+                providerId = "preset-openai",
+                modelId = "gpt-4o",
+            ),
+            activityState = AgentActivityState(
+                activity = ActivityType.WAITING,
+                currentTask = "Ready for specialized tasks",
+                lastAction = "Idle",
+            ),
+        )
+        AgentSlot.AGENT_4 -> AgentState(
+            config = AgentConfig(
+                slot = AgentSlot.AGENT_4,
+                name = "Agent 04 (Tester)",
+                role = AgentRole(
+                    type = AgentRoleType.TESTER,
+                    title = "Independent Tester / Reviewer",
+                    systemInstructions = "Independently review code, test edge cases, verify regressions, inspect security, check performance, and report bug findings.",
+                    responsibilities = listOf(
+                        "Run independent test suites",
+                        "Inspect code security and regressions",
+                        "Create bug reports for Team Lead"
+                    ),
+                ),
+                providerId = "preset-gemini",
+                modelId = "gemini-2.5-flash",
+            ),
+            activityState = AgentActivityState(
+                activity = ActivityType.WAITING,
+                currentTask = "Ready to test commits",
+                lastAction = "Idle",
+            ),
+        )
+    }
+
+    private fun loadSavedTeamAgents(): List<AgentState> {
+        val raw = teamPrefs.getString("agents_json", null)
+        if (!raw.isNullOrBlank()) {
+            val parsed = runCatching {
+                val arr = org.json.JSONArray(raw)
+                val list = mutableListOf<AgentState>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val slot = AgentSlot.fromId(obj.getString("slot")) ?: continue
+                    val base = defaultAgentTemplateForSlot(slot)
+                    val roleType = runCatching { AgentRoleType.valueOf(obj.optString("roleType", base.config.role.type.name)) }
+                        .getOrDefault(base.config.role.type)
+                    val customPrompt = obj.optString("customPrompt", base.config.role.systemInstructions)
+                    list.add(
+                        base.copy(
+                            config = base.config.copy(
+                                name = obj.optString("name", base.config.name).ifBlank { base.config.name },
+                                role = base.config.role.copy(
+                                    type = roleType,
+                                    title = roleType.defaultTitle,
+                                    systemInstructions = customPrompt,
+                                ),
+                                providerId = obj.optString("providerId", base.config.providerId),
+                                modelId = obj.optString("modelId", base.config.modelId),
+                                isEnabled = obj.optBoolean("isEnabled", true),
+                                temperature = obj.optDouble("temperature", 0.7).toFloat(),
+                                maxTokens = obj.optInt("maxTokens", 8192),
+                                customPrompt = customPrompt,
+                            )
+                        )
+                    )
+                }
+                list.take(AgentSlot.MAX_AGENTS)
+            }.getOrNull()
+            if (!parsed.isNullOrEmpty()) return parsed
+        }
+        // Default: 2 AI agents (User can add up to 4 agents)
+        return listOf(
+            defaultAgentTemplateForSlot(AgentSlot.AGENT_1),
+            defaultAgentTemplateForSlot(AgentSlot.AGENT_2),
+        )
+    }
+
+    private fun saveTeamAgents(agents: List<AgentState>) {
+        val arr = org.json.JSONArray()
+        agents.take(AgentSlot.MAX_AGENTS).forEach { agent ->
+            arr.put(
+                org.json.JSONObject().apply {
+                    put("slot", agent.config.slot.id)
+                    put("name", agent.config.name)
+                    put("roleType", agent.config.role.type.name)
+                    put("providerId", agent.config.providerId)
+                    put("modelId", agent.config.modelId)
+                    put("isEnabled", agent.config.isEnabled)
+                    put("temperature", agent.config.temperature.toDouble())
+                    put("maxTokens", agent.config.maxTokens)
+                    put("customPrompt", agent.config.customPrompt.ifBlank { agent.config.role.systemInstructions })
+                }
+            )
+        }
+        teamPrefs.edit().putString("agents_json", arr.toString()).apply()
+    }
+
+    private fun initMultiAgentTeam() {
+        val initialAgents = loadSavedTeamAgents()
 
         val defaultTasks = listOf(
             TeamTask(
@@ -5608,25 +5684,104 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             teamChatManager.messages.collect { msgs -> _state.update { it.copy(teamGroupMessages = msgs) } }
         }
         viewModelScope.launch {
-            // Periodic quota & file lock refresh
+            // Immediate + periodic quota & file lock refresh across ALL providers and Solo agent
             while (true) {
+                refreshAllQuotas()
                 delay(15_000L)
-                fileLockManager.cleanExpiredLocks()
-                val locks = fileLockManager.getActiveLocks()
-                val primaryConfigId = _state.value.providerConfigs.firstOrNull()?.id ?: "preset-antigravity"
-                val quota = providerManager.getOfficialQuota(primaryConfigId)
-                val est = providerManager.getEstimatedUsage(primaryConfigId)
-                val local = providerManager.getLocalUsage(primaryConfigId)
-                _state.update {
-                    it.copy(
-                        teamFileLocks = locks,
-                        teamOfficialQuota = quota,
-                        teamEstimatedUsage = est,
-                        teamLocalUsage = local,
-                    )
-                }
             }
         }
+    }
+
+    fun refreshAllQuotas() {
+        viewModelScope.launch {
+            fileLockManager.cleanExpiredLocks()
+            val locks = fileLockManager.getActiveLocks()
+            val configs = _state.value.providerConfigs
+            val allQuotas = mutableMapOf<String, OfficialQuota>()
+            val allEstimated = mutableMapOf<String, EstimatedUsage>()
+            val allLocal = mutableMapOf<String, LocalUsage>()
+
+            for (cfg in configs) {
+                runCatching {
+                    allQuotas[cfg.id] = providerManager.getOfficialQuota(cfg.id)
+                    allEstimated[cfg.id] = providerManager.getEstimatedUsage(cfg.id)
+                    allLocal[cfg.id] = providerManager.getLocalUsage(cfg.id)
+                }
+            }
+
+            val primaryConfigId = configs.firstOrNull()?.id ?: "preset-antigravity"
+            val soloProviderId = when {
+                _state.value.agentKind == AgentKind.ANTIGRAVITY -> "preset-antigravity"
+                _state.value.provider.kind == ProviderKind.ANTHROPIC -> "preset-anthropic"
+                _state.value.provider.kind == ProviderKind.DEEPSEEK -> "preset-deepseek"
+                _state.value.provider.kind == ProviderKind.LLM_ROUTER -> "preset-openrouter"
+                else -> primaryConfigId
+            }
+
+            _state.update {
+                it.copy(
+                    teamFileLocks = locks,
+                    teamOfficialQuota = allQuotas[primaryConfigId],
+                    teamEstimatedUsage = allEstimated[primaryConfigId],
+                    teamLocalUsage = allLocal[primaryConfigId] ?: LocalUsage(),
+                    teamAllProviderQuotas = allQuotas,
+                    teamAllProviderEstimated = allEstimated,
+                    teamAllProviderLocal = allLocal,
+                    soloOfficialQuota = allQuotas[soloProviderId] ?: allQuotas[primaryConfigId],
+                    soloEstimatedUsage = allEstimated[soloProviderId] ?: allEstimated[primaryConfigId],
+                    soloLocalUsage = allLocal[soloProviderId] ?: LocalUsage(),
+                )
+            }
+        }
+    }
+
+    fun addTeamAgent() {
+        val current = _state.value.teamAgents.toMutableList()
+        if (current.size >= AgentSlot.MAX_AGENTS) return
+        val usedSlots = current.map { it.config.slot }.toSet()
+        val nextSlot = AgentSlot.entries.firstOrNull { it !in usedSlots } ?: return
+        val newAgent = defaultAgentTemplateForSlot(nextSlot)
+        current.add(newAgent)
+        saveTeamAgents(current)
+        _state.update { it.copy(teamAgents = current) }
+        recordCollaborationEvent(
+            type = TeamEventType.TASK_CREATED,
+            senderSlot = nextSlot,
+            message = "${newAgent.config.name} joined the AI Team (${current.size}/${AgentSlot.MAX_AGENTS})",
+            priority = EventPriority.NORMAL,
+        )
+    }
+
+    fun removeTeamAgent(slot: AgentSlot) {
+        val current = _state.value.teamAgents.toMutableList()
+        if (current.size <= 1) return
+        val removed = current.firstOrNull { it.config.slot == slot } ?: return
+        current.removeAll { it.config.slot == slot }
+        fileLockManager.releaseAllForAgent(slot)
+        saveTeamAgents(current)
+        _state.update {
+            it.copy(
+                teamAgents = current,
+                teamFileLocks = fileLockManager.getActiveLocks(),
+                activePrivateSlot = if (it.activePrivateSlot == slot) current.firstOrNull()?.config?.slot else it.activePrivateSlot,
+            )
+        }
+        recordCollaborationEvent(
+            type = TeamEventType.FILE_UNLOCKED,
+            senderSlot = slot,
+            message = "${removed.config.name} removed from AI Team (${current.size}/${AgentSlot.MAX_AGENTS})",
+            priority = EventPriority.NORMAL,
+        )
+    }
+
+    fun updateSoloContinuousConfig(config: ContinuousExecutionConfig) {
+        soloSupervisor.updateConfig(config)
+        _state.update { it.copy(soloContinuousConfig = config) }
+    }
+
+    fun updateTeamContinuousConfig(config: ContinuousExecutionConfig) {
+        continuousSupervisor.updateConfig(config)
+        _state.update { it.copy(teamContinuousConfig = config) }
     }
 
     fun setTeamScreenMode(mode: TeamScreenMode) {
@@ -5719,12 +5874,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return providerManager.getApiKey(configId)
     }
 
+    private fun agentNameFor(slot: AgentSlot): String {
+        return _state.value.teamAgents.firstOrNull { it.config.slot == slot }?.config?.name ?: slot.defaultName
+    }
+
     fun updateAgentConfig(slot: AgentSlot, config: AgentConfig) {
         val current = _state.value.teamAgents.toMutableList()
         val index = current.indexOfFirst { it.config.slot == slot }
         if (index >= 0) {
             val old = current[index]
             current[index] = old.copy(config = config)
+            saveTeamAgents(current)
             _state.update { it.copy(teamAgents = current) }
             recordCollaborationEvent(
                 type = TeamEventType.TASK_ASSIGNED,
@@ -5742,6 +5902,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val old = current[index]
             val updatedConfig = old.config.copy(isEnabled = !old.config.isEnabled)
             current[index] = old.copy(config = updatedConfig)
+            saveTeamAgents(current)
             _state.update { it.copy(teamAgents = current) }
             recordCollaborationEvent(
                 type = TeamEventType.TASK_ASSIGNED,
@@ -5796,80 +5957,134 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun runTeamCycle() {
+        val activeAgents = _state.value.teamAgents.filter { it.config.isEnabled }
+        if (activeAgents.isEmpty()) {
+            pauseTeamWork()
+            return
+        }
+        val lead = activeAgents.first()
+        val dev = activeAgents.getOrNull(1) ?: lead
+        val specialist = activeAgents.getOrNull(2)
+        val reviewer = activeAgents.getOrNull(3) ?: lead
+
+        val currentSpend = _state.value.teamEstimatedUsage?.estimatedCostUsd ?: 0.0
+        if (autonomousEngine.isBudgetExceeded(currentSpend, _state.value.budgetLimitUsd, _state.value.budgetAutoPauseEnabled)) {
+            pauseTeamWork()
+            recordCollaborationEvent(
+                type = TeamEventType.TASK_BLOCKED,
+                senderSlot = lead.config.slot,
+                message = "Budget Guard triggered: paused team at $${String.format("%.2f", currentSpend)}",
+                priority = EventPriority.CRITICAL,
+            )
+            return
+        }
+
+        val rosterNames = activeAgents.joinToString(", ") { it.config.name }
         teamChatManager.postMessage(
-            senderSlot = AgentSlot.AGENT_1,
-            senderName = "Agent 01 (Lead)",
-            text = "Team session started. Checking task queue and verifying shared workspace.",
+            senderSlot = lead.config.slot,
+            senderName = lead.config.name,
+            text = "Team session started with [$rosterNames]. Checking task queue and shared workspace.",
             messageType = GroupMessageType.TASK_ASSIGNMENT,
         )
+        recordCollaborationEvent(
+            type = TeamEventType.TASK_STARTED,
+            senderSlot = lead.config.slot,
+            message = "${lead.config.name} kicked off autonomous cycle with [$rosterNames]",
+            priority = EventPriority.NORMAL,
+        )
 
-        // Agent 01: analyzing
-        updateAgentActivity(AgentSlot.AGENT_1, ActivityType.ANALYZING, "Analyzing workspace", "Checking dependencies")
-        delay(1200L)
+        // Lead: analyzing
+        updateAgentActivity(lead.config.slot, ActivityType.ANALYZING, "Analyzing workspace", "Checking dependencies")
+        delay(1000L)
 
-        // Agent 02: lock file & start coding
+        // Dev: lock file & start coding
         val sampleFile = "app/src/main/java/com/orqen/workspace/MainFeature.kt"
-        fileLockManager.acquireLock(sampleFile, AgentSlot.AGENT_2, "task-1", "Implementing feature")
+        fileLockManager.acquireLock(sampleFile, dev.config.slot, "task-1", "Implementing feature")
         _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
-        updateAgentActivity(AgentSlot.AGENT_2, ActivityType.WRITING_CODE, "Implementing feature", "Editing $sampleFile", sampleFile)
-
+        updateAgentActivity(dev.config.slot, ActivityType.WRITING_CODE, "Implementing feature", "Editing $sampleFile", sampleFile)
+        recordCollaborationEvent(
+            type = TeamEventType.FILE_LOCKED,
+            senderSlot = dev.config.slot,
+            filePath = sampleFile,
+            message = "${dev.config.name} acquired lock on $sampleFile",
+            priority = EventPriority.NORMAL,
+        )
         teamChatManager.postMessage(
-            senderSlot = AgentSlot.AGENT_2,
-            senderName = "Agent 02 (Dev)",
-            text = "Lock acquired for $sampleFile. Beginning implementation.",
+            senderSlot = dev.config.slot,
+            senderName = dev.config.name,
+            text = "Lock acquired for $sampleFile. Beginning implementation (reporting to ${lead.config.name}).",
             messageType = GroupMessageType.PROGRESS_UPDATE,
             relatedFilePath = sampleFile,
         )
-        delay(1500L)
-
-        // Agent 03: Specialist backend work
-        updateAgentActivity(AgentSlot.AGENT_3, ActivityType.WRITING_CODE, "Backend service setup", "Updating API contract")
         delay(1200L)
 
-        // Agent 04: Preparing test suite
-        updateAgentActivity(AgentSlot.AGENT_4, ActivityType.TESTING, "Running test verification", "Executing unit tests")
-        delay(1500L)
+        // Specialist (if added)
+        if (specialist != null) {
+            updateAgentActivity(specialist.config.slot, ActivityType.WRITING_CODE, "Backend service setup", "Updating API contract")
+            delay(1000L)
+        }
 
         // Release lock & commit
-        fileLockManager.releaseLock(sampleFile, AgentSlot.AGENT_2)
+        fileLockManager.releaseLock(sampleFile, dev.config.slot)
         _state.update { it.copy(teamFileLocks = fileLockManager.getActiveLocks()) }
-        updateAgentActivity(AgentSlot.AGENT_2, ActivityType.COMMITTING, "Committing changes", "git commit")
+        updateAgentActivity(dev.config.slot, ActivityType.COMMITTING, "Committing changes", "git commit")
 
         val commitMsg = gitCoordinator.formatCommitMessage(_state.value.teamCurrentPartNumber, "implement main feature", "feat")
+        recordCollaborationEvent(
+            type = TeamEventType.COMMIT_CREATED,
+            senderSlot = dev.config.slot,
+            filePath = sampleFile,
+            message = "${dev.config.name} committed: $commitMsg",
+            priority = EventPriority.HIGH,
+        )
         teamChatManager.postMessage(
-            senderSlot = AgentSlot.AGENT_2,
-            senderName = "Agent 02 (Dev)",
-            text = "Feature completed and verified. Created commit: \"$commitMsg\". Requesting review from Agent 01 and Agent 04.",
+            senderSlot = dev.config.slot,
+            senderName = dev.config.name,
+            text = "Feature completed and verified. Created commit: \"$commitMsg\". Requesting review from ${reviewer.config.name}.",
             messageType = GroupMessageType.COMPLETION_REPORT,
         )
         delay(1000L)
 
-        // Agent 04 reviews
-        updateAgentActivity(AgentSlot.AGENT_4, ActivityType.REVIEWING, "Code review", "Reviewing commit $commitMsg")
+        // Reviewer reviews
+        updateAgentActivity(reviewer.config.slot, ActivityType.REVIEWING, "Code review", "Reviewing commit $commitMsg")
         teamChatManager.postMessage(
-            senderSlot = AgentSlot.AGENT_4,
-            senderName = "Agent 04 (Tester)",
-            text = "Independent review passed. No regressions or security issues found.",
+            senderSlot = reviewer.config.slot,
+            senderName = reviewer.config.name,
+            text = "Independent review passed for ${dev.config.name}'s changes. No regressions found.",
             messageType = GroupMessageType.REVIEW_REQUEST,
         )
         delay(1000L)
 
-        // Agent 01 approves
-        updateAgentActivity(AgentSlot.AGENT_1, ActivityType.COMPLETED, "Part task approved", "Merged into shared workspace")
+        // Lead approves
+        updateAgentActivity(lead.config.slot, ActivityType.COMPLETED, "Part task approved", "Merged into shared workspace")
         teamChatManager.postMessage(
-            senderSlot = AgentSlot.AGENT_1,
-            senderName = "Agent 01 (Lead)",
+            senderSlot = lead.config.slot,
+            senderName = lead.config.name,
             text = "Approved. Acceptance criteria verified on device.",
             messageType = GroupMessageType.APPROVAL,
         )
+        recordCollaborationEvent(
+            type = TeamEventType.PART_APPROVED,
+            senderSlot = lead.config.slot,
+            message = "${lead.config.name} approved cycle milestone",
+            priority = EventPriority.HIGH,
+        )
 
-        delay(1000L)
+        delay(800L)
         updateAgentActivities(ActivityType.WAITING)
         continuousSupervisor.handleSessionCompletion(
             completedTask = _state.value.teamTasks.firstOrNull(),
             hasMoreTasks = false,
             exitCode = 0,
             errorMessage = null,
+            onSaveCheckpoint = { chk ->
+                recordCollaborationEvent(
+                    type = TeamEventType.CHECKPOINT_CREATED,
+                    senderSlot = lead.config.slot,
+                    message = "Auto-checkpoint saved: ${chk.reason}",
+                    priority = EventPriority.NORMAL,
+                )
+            },
             onContinueNext = {},
         )
     }

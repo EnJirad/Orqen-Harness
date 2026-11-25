@@ -1,5 +1,6 @@
 package com.jarves.mh.multiagent.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,12 +22,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.R
 import com.jarves.mh.provider.core.*
+import com.jarves.mh.runtime.AntigravityAuthState
+import com.jarves.mh.runtime.AntigravityAuthStatus
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProviderManagementScreen(
     configs: List<ProviderConfig>,
+    antigravityCliInstalled: Boolean = true,
+    antigravityInstalling: Boolean = false,
+    antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
+    onInstallAntigravityCli: () -> Unit = {},
+    onStartAntigravityLogin: () -> Unit = {},
+    onSubmitAntigravityCode: (String) -> Unit = {},
+    onLogoutAntigravity: () -> Unit = {},
     onSaveConfig: (ProviderConfig, String?) -> Unit,
     onDeleteConfig: (String) -> Unit,
     onTestConnection: suspend (String) -> ConnectionTestResult,
@@ -34,7 +44,9 @@ fun ProviderManagementScreen(
     getSavedApiKey: (String) -> String,
     onBack: () -> Unit,
 ) {
+    BackHandler(onBack = onBack)
     var showAddDialog by remember { mutableStateOf(false) }
+    var oauthCode by remember { mutableStateOf("") }
     var selectedForTest by remember { mutableStateOf<String?>(null) }
     var testResult by remember { mutableStateOf<ConnectionTestResult?>(null) }
     var isTesting by remember { mutableStateOf(false) }
@@ -106,6 +118,79 @@ fun ProviderManagementScreen(
 
                         if (config.selectedModelId.isNotBlank()) {
                             Text("Model: ${config.selectedModelId}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+
+                        if (config.type == ProviderType.ANTIGRAVITY) {
+                            Spacer(Modifier.height(10.dp))
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (!antigravityCliInstalled) {
+                                        Text(
+                                            text = stringResource(R.string.agent_antigravity_cli_needed),
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.error,
+                                            fontWeight = FontWeight.SemiBold,
+                                        )
+                                        Button(
+                                            onClick = onInstallAntigravityCli,
+                                            enabled = !antigravityInstalling,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                        ) {
+                                            Text(stringResource(R.string.agent_antigravity_install_cli), fontSize = 12.sp)
+                                        }
+                                    } else if (antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                text = "${stringResource(R.string.agent_antigravity_connected)} ${antigravityAuth.accountEmail?.let { "($it)" } ?: ""}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF2E7D32),
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                            TextButton(onClick = onLogoutAntigravity) {
+                                                Text("Sign Out", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
+                                    } else {
+                                        Button(
+                                            onClick = onStartAntigravityLogin,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                        ) {
+                                            Text(stringResource(R.string.agent_antigravity_connect), fontSize = 12.sp)
+                                        }
+                                        if (antigravityAuth.status == AntigravityAuthStatus.AWAITING_CODE || antigravityAuth.authorizationUrl != null) {
+                                            OutlinedTextField(
+                                                value = oauthCode,
+                                                onValueChange = { oauthCode = it },
+                                                label = { Text("OAuth Code") },
+                                                singleLine = true,
+                                                modifier = Modifier.fillMaxWidth(),
+                                            )
+                                            Button(
+                                                onClick = {
+                                                    if (oauthCode.isNotBlank()) {
+                                                        onSubmitAntigravityCode(oauthCode.trim())
+                                                        oauthCode = ""
+                                                    }
+                                                },
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Text("Submit Code")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         Spacer(Modifier.height(10.dp))

@@ -1,5 +1,6 @@
 package com.jarves.mh.multiagent.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,6 +42,7 @@ fun CentralGroupChatScreen(
     onSendMessage: (text: String, type: GroupMessageType, targetSlot: AgentSlot?) -> Unit,
     onBack: () -> Unit,
 ) {
+    BackHandler(onBack = onBack)
     var inputText by remember { mutableStateOf("") }
     var selectedType by remember { mutableStateOf(GroupMessageType.NORMAL) }
     var targetSlot by remember { mutableStateOf<AgentSlot?>(null) }

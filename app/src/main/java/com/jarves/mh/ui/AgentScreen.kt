@@ -830,6 +830,87 @@ fun AgentScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            // ── 0. Connected Provider Quota & Usage Card (Solo Agent) ──
+            item {
+                val soloQuota = state.soloOfficialQuota
+                val soloEst = state.soloEstimatedUsage
+                val soloLocal = state.soloLocalUsage
+                val quotaAvail = soloQuota?.isAvailable == true
+                val quotaColor = if (quotaAvail) {
+                    if ((soloQuota?.remainingPercent ?: 1f) > 0.2f) Color(0xFF2E7D32) else Color(0xFFC62828)
+                } else MaterialTheme.colorScheme.onSurfaceVariant
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.agent_quota_card_title),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = quotaColor.copy(alpha = 0.14f),
+                            ) {
+                                Text(
+                                    text = if (quotaAvail) "${((soloQuota?.remainingPercent ?: 1f) * 100).toInt()}% LEFT" else "ESTIMATED",
+                                    color = quotaColor,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
+
+                        if (quotaAvail && soloQuota != null) {
+                            Text(
+                                text = "Official Quota: ${((soloQuota.remainingPercent ?: 1f) * 100).toInt()}% · Source: ${soloQuota.source}",
+                                fontSize = 11.5.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        } else {
+                            Text(
+                                text = soloQuota?.unavailableReason ?: stringResource(R.string.quota_unavailable),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = "Tokens: ${soloEst?.estimatedTokens ?: 0}",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = "฿${String.format("%.2f", soloEst?.estimatedCostThb ?: 0.0)} ($${String.format("%.4f", soloEst?.estimatedCostUsd ?: 0.0)})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                text = "Req: ${soloLocal.totalRequests}",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+
             // ── 1. Compact 3-Way Segmented Engine Selector ──
             item {
                 Column(modifier = Modifier.fillMaxWidth()) {

@@ -2487,6 +2487,19 @@ private fun RootScreenHost(
     var showQuickTerminal by rememberSaveable { mutableStateOf(false) }
     var openBackup by rememberSaveable { mutableStateOf(false) }
 
+    // System Back Button handling across all root tabs & AI Team sub-screens
+    BackHandler(enabled = showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.DASHBOARD) || screen != RootScreen.PROJECTS) {
+        when {
+            showQuickTerminal -> showQuickTerminal = false
+            screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.DASHBOARD -> {
+                viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD)
+            }
+            screen != RootScreen.PROJECTS -> {
+                screen = RootScreen.PROJECTS
+            }
+        }
+    }
+
     if (state.showWhatsNew) {
         WhatsNewDialog(
             onDismiss = viewModel::dismissWhatsNew,
@@ -2560,12 +2573,20 @@ private fun RootScreenHost(
                     onPing = viewModel::pingApi,
                     onToggleTheme = viewModel::toggleTheme,
                     onInstallUpdate = viewModel::installAppUpdate,
+                    onUpdateSoloContinuousConfig = viewModel::updateSoloContinuousConfig,
                 )
                 RootScreen.TEAM -> {
                     when (state.teamScreenMode) {
                         TeamScreenMode.DASHBOARD -> TeamDashboardScreen(
                             teamName = state.activeProject?.name ?: "ORQEN Workspace",
                             workspacePath = state.activeProject?.slug?.let { "/workspace/$it" } ?: "/workspace/shared",
+                            projects = state.projects,
+                            activeProject = state.activeProject,
+                            githubAuthStatus = state.githubAuthStatus,
+                            githubLogin = state.githubLogin,
+                            githubRepositories = state.githubRepositories,
+                            gitCloneRunning = state.gitCloneRunning,
+                            projectImporting = state.projectImporting,
                             agents = state.teamAgents,
                             tasks = state.teamTasks,
                             parts = state.teamParts,
@@ -2574,7 +2595,21 @@ private fun RootScreenHost(
                             officialQuota = state.teamOfficialQuota,
                             estimatedUsage = state.teamEstimatedUsage,
                             localUsage = state.teamLocalUsage,
+                            providerConfigs = state.providerConfigs,
+                            allProviderQuotas = state.teamAllProviderQuotas,
+                            allProviderEstimated = state.teamAllProviderEstimated,
+                            continuousConfig = state.teamContinuousConfig,
                             isTeamRunning = state.teamIsRunning,
+                            onSelectProject = viewModel::openProject,
+                            onCreateProject = viewModel::createProject,
+                            onImportZip = viewModel::importZipProject,
+                            onCloneGit = viewModel::clonePublicGitRepository,
+                            onStartGitHubLogin = viewModel::startGitHubLogin,
+                            onRefreshGitHub = viewModel::refreshGitHubRepositories,
+                            onCloneGitHub = viewModel::cloneGitHubRepository,
+                            onAddAgent = viewModel::addTeamAgent,
+                            onRemoveAgent = viewModel::removeTeamAgent,
+                            onUpdateContinuousConfig = viewModel::updateTeamContinuousConfig,
                             onStartTeam = viewModel::startTeamWork,
                             onPauseTeam = viewModel::pauseTeamWork,
                             onResumeTeam = viewModel::resumeTeamWork,
@@ -2602,7 +2637,17 @@ private fun RootScreenHost(
                             AgentDetailScreen(
                                 agentState = agentState,
                                 fileLocks = state.teamFileLocks,
+                                providerConfigs = state.providerConfigs,
+                                antigravityCliInstalled = state.installedAgentVersions.containsKey(AgentKind.ANTIGRAVITY),
+                                antigravityInstalling = state.agentInstalling == AgentKind.ANTIGRAVITY,
+                                antigravityAuth = state.antigravityAuth,
+                                canRemoveAgent = state.teamAgents.size > 1,
+                                onInstallAntigravityCli = { viewModel.installAgent(AgentKind.ANTIGRAVITY) },
+                                onStartAntigravityLogin = viewModel::startAntigravityLogin,
+                                onSubmitAntigravityCode = viewModel::submitAntigravityCode,
+                                onLogoutAntigravity = viewModel::logoutAntigravity,
                                 onSaveConfig = { config -> viewModel.updateAgentConfig(slot, config) },
+                                onRemoveAgent = viewModel::removeTeamAgent,
                                 onReleaseFileLock = viewModel::releaseFileLock,
                                 onOpenChat = { targetSlot ->
                                     viewModel.setActivePrivateSlot(targetSlot)
@@ -2616,8 +2661,13 @@ private fun RootScreenHost(
                             estimatedUsage = state.teamEstimatedUsage,
                             localUsage = state.teamLocalUsage,
                             agents = state.teamAgents,
+                            providerConfigs = state.providerConfigs,
+                            allProviderQuotas = state.teamAllProviderQuotas,
+                            allProviderEstimated = state.teamAllProviderEstimated,
+                            allProviderLocal = state.teamAllProviderLocal,
                             budgetLimitUsd = state.budgetLimitUsd,
                             isAutoPauseEnabled = state.budgetAutoPauseEnabled,
+                            onRefreshQuotas = viewModel::refreshAllQuotas,
                             onUpdateBudget = viewModel::updateBudget,
                             onBack = { viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD) },
                         )
@@ -2640,7 +2690,7 @@ private fun RootScreenHost(
                                 ?: state.teamAgents.first()
                             PrivateAgentChatScreen(
                                 agentState = agentState,
-                                messages = state.teamGroupMessages.filter { it.senderSlot == slot || it.text.contains("@${slot.defaultName}") },
+                                messages = state.teamGroupMessages.filter { it.senderSlot == slot || it.text.contains("@${slot.defaultName}") || it.text.contains("@${agentState.config.name}") },
                                 onSendMessage = { text ->
                                     viewModel.postTeamChatMessage(text, GroupMessageType.NORMAL, slot)
                                 },
@@ -2649,6 +2699,13 @@ private fun RootScreenHost(
                         }
                         TeamScreenMode.PROVIDER_SETTINGS -> ProviderManagementScreen(
                             configs = state.providerConfigs,
+                            antigravityCliInstalled = state.installedAgentVersions.containsKey(AgentKind.ANTIGRAVITY),
+                            antigravityInstalling = state.agentInstalling == AgentKind.ANTIGRAVITY,
+                            antigravityAuth = state.antigravityAuth,
+                            onInstallAntigravityCli = { viewModel.installAgent(AgentKind.ANTIGRAVITY) },
+                            onStartAntigravityLogin = viewModel::startAntigravityLogin,
+                            onSubmitAntigravityCode = viewModel::submitAntigravityCode,
+                            onLogoutAntigravity = viewModel::logoutAntigravity,
                             onSaveConfig = viewModel::saveProviderConfig,
                             onDeleteConfig = viewModel::deleteProviderConfig,
                             onTestConnection = viewModel::testProviderConnection,
@@ -3717,12 +3774,14 @@ private fun ProjectsScreen(
     onPing: () -> Unit,
     onToggleTheme: () -> Unit,
     onInstallUpdate: () -> Unit,
+    onUpdateSoloContinuousConfig: (com.jarves.mh.multiagent.supervisor.ContinuousExecutionConfig) -> Unit = {},
 ) {
     var showCreate by rememberSaveable { mutableStateOf(false) }
     var showUpdateDialog by rememberSaveable { mutableStateOf(false) }
     var showGitDialog by rememberSaveable { mutableStateOf(false) }
     var showGitHubDialog by rememberSaveable { mutableStateOf(false) }
     var importExpanded by rememberSaveable { mutableStateOf(false) }
+    var soloContinuousExpanded by rememberSaveable { mutableStateOf(false) }
     var gitUrl by rememberSaveable { mutableStateOf("") }
     var repositorySearch by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
@@ -3912,6 +3971,94 @@ private fun ProjectsScreen(
                                 Text(stringResource(R.string.ws_update_ready), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Text(stringResource(R.string.ws_update), color = PocketOrange, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+            // Solo Continuous Execution Card (Auto-Resume, Rate-Limit Retry-After + Backoff, Auto-Checkpoint)
+            item {
+                val soloCfg = state.soloContinuousConfig
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+                ) {
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { soloContinuousExpanded = !soloContinuousExpanded }
+                                .padding(horizontal = 14.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, tint = PocketOrange, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(stringResource(R.string.solo_continuous_title), fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    stringResource(R.string.solo_continuous_desc),
+                                    fontSize = 10.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Icon(
+                                imageVector = if (soloContinuousExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        AnimatedVisibility(visible = soloContinuousExpanded) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(stringResource(R.string.continuous_auto_resume), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(stringResource(R.string.continuous_auto_resume_desc), fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    androidx.compose.material3.Switch(
+                                        checked = soloCfg.autoResume,
+                                        onCheckedChange = { onUpdateSoloContinuousConfig(soloCfg.copy(autoResume = it)) },
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(stringResource(R.string.continuous_auto_retry), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(stringResource(R.string.continuous_auto_retry_desc), fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    androidx.compose.material3.Switch(
+                                        checked = soloCfg.autoRetryRateLimit,
+                                        onCheckedChange = { onUpdateSoloContinuousConfig(soloCfg.copy(autoRetryRateLimit = it)) },
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(stringResource(R.string.continuous_checkpoints), fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                                        Text(stringResource(R.string.continuous_checkpoints_desc), fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    androidx.compose.material3.Switch(
+                                        checked = soloCfg.autoCheckpoint,
+                                        onCheckedChange = { onUpdateSoloContinuousConfig(soloCfg.copy(autoCheckpoint = it)) },
+                                    )
+                                }
+                            }
                         }
                     }
                 }

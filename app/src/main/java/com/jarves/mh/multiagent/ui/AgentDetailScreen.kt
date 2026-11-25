@@ -1,10 +1,10 @@
 package com.jarves.mh.multiagent.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,30 +25,57 @@ import androidx.compose.ui.unit.sp
 import com.jarves.mh.R
 import com.jarves.mh.multiagent.locks.FileLock
 import com.jarves.mh.multiagent.model.*
+import com.jarves.mh.provider.core.ProviderConfig
+import com.jarves.mh.provider.core.ProviderType
+import com.jarves.mh.runtime.AntigravityAuthState
+import com.jarves.mh.runtime.AntigravityAuthStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentDetailScreen(
     agentState: AgentState,
     fileLocks: List<FileLock>,
-    availableProviders: List<String> = listOf("preset-antigravity", "preset-anthropic", "preset-gemini", "preset-openai"),
-    availableModels: List<String> = listOf("gemini-3.8-flash-high", "gemini-3.8-flash", "claude-sonnet-4-6", "claude-haiku-3-5", "gpt-4o", "gpt-4o-mini"),
+    providerConfigs: List<ProviderConfig> = emptyList(),
+    availableModels: List<String> = listOf("gemini-3.8-flash-high", "gemini-3.8-flash", "claude-sonnet-4-6", "claude-haiku-3-5", "gpt-4o", "gpt-4o-mini", "deepseek-coder"),
+    antigravityCliInstalled: Boolean = true,
+    antigravityInstalling: Boolean = false,
+    antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
+    canRemoveAgent: Boolean = false,
+    onInstallAntigravityCli: () -> Unit = {},
+    onStartAntigravityLogin: () -> Unit = {},
+    onSubmitAntigravityCode: (String) -> Unit = {},
+    onLogoutAntigravity: () -> Unit = {},
     onSaveConfig: (AgentConfig) -> Unit,
+    onRemoveAgent: (AgentSlot) -> Unit = {},
     onReleaseFileLock: (String, AgentSlot) -> Unit,
     onOpenChat: (AgentSlot) -> Unit,
     onBack: () -> Unit,
 ) {
+    BackHandler(onBack = onBack)
+
     var name by remember(agentState) { mutableStateOf(agentState.config.name) }
     var selectedRoleType by remember(agentState) { mutableStateOf(agentState.config.role.type) }
     var isEnabled by remember(agentState) { mutableStateOf(agentState.config.isEnabled) }
     var selectedProvider by remember(agentState) { mutableStateOf(agentState.config.providerId) }
     var selectedModel by remember(agentState) { mutableStateOf(agentState.config.modelId) }
-    var systemPrompt by remember(agentState) { mutableStateOf(agentState.config.role.systemInstructions.ifBlank { agentState.config.customPrompt }) }
+    var systemPrompt by remember(agentState) { mutableStateOf(agentState.config.customPrompt.ifBlank { agentState.config.role.systemInstructions }) }
     var temperature by remember(agentState) { mutableFloatStateOf(agentState.config.temperature) }
     var maxTokens by remember(agentState) { mutableIntStateOf(agentState.config.maxTokens) }
+    var oauthCode by remember { mutableStateOf("") }
 
     var roleMenuExpanded by remember { mutableStateOf(false) }
+    var providerMenuExpanded by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
+
+    val selectedProviderConfig = remember(providerConfigs, selectedProvider) {
+        providerConfigs.firstOrNull { it.id == selectedProvider }
+    }
+    val isAntigravityProvider = selectedProvider == "preset-antigravity" || selectedProviderConfig?.type == ProviderType.ANTIGRAVITY
+
+    val modelChoices = remember(selectedProviderConfig, availableModels) {
+        val fromProvider = selectedProviderConfig?.availableModels.orEmpty()
+        (fromProvider + availableModels).distinct()
+    }
 
     val activity = agentState.activityState.activity
     val activityColor = ActivityVisuals.colorFor(activity)
@@ -60,6 +87,7 @@ fun AgentDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                modifier = Modifier.padding(top = 4.dp),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
@@ -95,6 +123,14 @@ fun AgentDetailScreen(
                     IconButton(onClick = { onOpenChat(agentState.config.slot) }) {
                         Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = stringResource(R.string.agent_detail_chat_btn))
                     }
+                    if (canRemoveAgent) {
+                        IconButton(onClick = {
+                            onRemoveAgent(agentState.config.slot)
+                            onBack()
+                        }) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = stringResource(R.string.team_remove_agent), tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
             )
@@ -109,7 +145,7 @@ fun AgentDetailScreen(
             contentPadding = PaddingValues(vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // 1. General & Status Card
+            // 1. General & Custom Name Card
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -149,6 +185,7 @@ fun AgentDetailScreen(
                             value = name,
                             onValueChange = { name = it },
                             label = { Text(stringResource(R.string.agent_detail_name)) },
+                            supportingText = { Text("Teammates will remember & address this agent by this name", fontSize = 11.sp) },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(10.dp),
                             singleLine = true,
@@ -190,7 +227,220 @@ fun AgentDetailScreen(
                 }
             }
 
-            // 2. Lifecycle State Card
+            // 2. Provider & Model Configuration + Inline Antigravity OAuth
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(
+                            text = stringResource(R.string.agent_detail_provider_model),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Spacer(Modifier.height(12.dp))
+
+                        // Provider Selector Dropdown
+                        Box(Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = selectedProviderConfig?.name ?: selectedProvider,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("AI Provider") },
+                                trailingIcon = {
+                                    IconButton(onClick = { providerMenuExpanded = true }) {
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                            )
+                            DropdownMenu(
+                                expanded = providerMenuExpanded,
+                                onDismissRequest = { providerMenuExpanded = false },
+                            ) {
+                                val options = if (providerConfigs.isNotEmpty()) {
+                                    providerConfigs.map { it.id to it.name }
+                                } else {
+                                    listOf(
+                                        "preset-antigravity" to "Antigravity (Google)",
+                                        "preset-anthropic" to "Anthropic API",
+                                        "preset-gemini" to "Google Gemini API",
+                                        "preset-openai" to "OpenAI",
+                                        "preset-deepseek" to "DeepSeek API",
+                                        "preset-openrouter" to "OpenRouter",
+                                    )
+                                }
+                                options.forEach { (id, title) ->
+                                    DropdownMenuItem(
+                                        text = { Text(title) },
+                                        onClick = {
+                                            selectedProvider = id
+                                            providerConfigs.firstOrNull { it.id == id }?.selectedModelId?.takeIf { it.isNotBlank() }?.let {
+                                                selectedModel = it
+                                            }
+                                            providerMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        // Inline Antigravity CLI & OAuth Flow when Antigravity is chosen
+                        if (isAntigravityProvider) {
+                            Spacer(Modifier.height(12.dp))
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (!antigravityCliInstalled) {
+                                        Text(
+                                            text = stringResource(R.string.agent_antigravity_cli_needed),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                        Button(
+                                            onClick = onInstallAntigravityCli,
+                                            enabled = !antigravityInstalling,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                        ) {
+                                            if (antigravityInstalling) {
+                                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                                                Spacer(Modifier.width(8.dp))
+                                            }
+                                            Text(stringResource(R.string.agent_antigravity_install_cli))
+                                        }
+                                    } else if (antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Column(Modifier.weight(1f)) {
+                                                Text(
+                                                    text = stringResource(R.string.agent_antigravity_connected),
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF2E7D32),
+                                                )
+                                                antigravityAuth.accountEmail?.let { email ->
+                                                    Text(email, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                            }
+                                            TextButton(onClick = onLogoutAntigravity) {
+                                                Text("Sign Out", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                                            }
+                                        }
+                                    } else {
+                                        Button(
+                                            onClick = onStartAntigravityLogin,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                        ) {
+                                            Icon(Icons.Default.Login, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(stringResource(R.string.agent_antigravity_connect))
+                                        }
+                                        if (antigravityAuth.status == AntigravityAuthStatus.AWAITING_CODE || antigravityAuth.authorizationUrl != null) {
+                                            OutlinedTextField(
+                                                value = oauthCode,
+                                                onValueChange = { oauthCode = it },
+                                                label = { Text("Paste OAuth Code") },
+                                                singleLine = true,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                shape = RoundedCornerShape(10.dp),
+                                            )
+                                            Button(
+                                                onClick = {
+                                                    if (oauthCode.isNotBlank()) {
+                                                        onSubmitAntigravityCode(oauthCode.trim())
+                                                        oauthCode = ""
+                                                    }
+                                                },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                shape = RoundedCornerShape(10.dp),
+                                            ) {
+                                                Text("Verify & Connect")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        // Model Selector Dropdown
+                        Box(Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = selectedModel,
+                                onValueChange = { selectedModel = it },
+                                label = { Text("Model ID") },
+                                trailingIcon = {
+                                    IconButton(onClick = { modelMenuExpanded = true }) {
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                singleLine = true,
+                            )
+                            DropdownMenu(
+                                expanded = modelMenuExpanded,
+                                onDismissRequest = { modelMenuExpanded = false },
+                            ) {
+                                modelChoices.forEach { model ->
+                                    DropdownMenuItem(
+                                        text = { Text(model) },
+                                        onClick = {
+                                            selectedModel = model
+                                            modelMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        Text(
+                            text = stringResource(R.string.agent_detail_temperature, temperature),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Slider(
+                            value = temperature,
+                            onValueChange = { temperature = it },
+                            valueRange = 0.0f..1.0f,
+                            steps = 10,
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        Text(
+                            text = stringResource(R.string.agent_detail_max_tokens, maxTokens),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Slider(
+                            value = maxTokens.toFloat(),
+                            onValueChange = { maxTokens = it.toInt() },
+                            valueRange = 1024f..32768f,
+                            steps = 31,
+                        )
+                    }
+                }
+            }
+
+            // 3. Lifecycle State Card
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -237,87 +487,6 @@ fun AgentDetailScreen(
                 }
             }
 
-            // 3. Provider & Model Configuration
-            item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text(
-                            text = stringResource(R.string.agent_detail_provider_model),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Spacer(Modifier.height(12.dp))
-
-                        // Model Selector Dropdown
-                        Box(Modifier.fillMaxWidth()) {
-                            OutlinedTextField(
-                                value = selectedModel,
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text("Model ID") },
-                                trailingIcon = {
-                                    IconButton(onClick = { modelMenuExpanded = true }) {
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(10.dp),
-                            )
-                            DropdownMenu(
-                                expanded = modelMenuExpanded,
-                                onDismissRequest = { modelMenuExpanded = false },
-                            ) {
-                                availableModels.forEach { model ->
-                                    DropdownMenuItem(
-                                        text = { Text(model) },
-                                        onClick = {
-                                            selectedModel = model
-                                            modelMenuExpanded = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(12.dp))
-
-                        // Temperature Slider
-                        Text(
-                            text = stringResource(R.string.agent_detail_temperature, temperature),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Slider(
-                            value = temperature,
-                            onValueChange = { temperature = it },
-                            valueRange = 0.0f..1.0f,
-                            steps = 10,
-                        )
-
-                        Spacer(Modifier.height(8.dp))
-
-                        // Max Tokens Slider
-                        Text(
-                            text = stringResource(R.string.agent_detail_max_tokens, maxTokens),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Slider(
-                            value = maxTokens.toFloat(),
-                            onValueChange = { maxTokens = it.toInt() },
-                            valueRange = 1024f..32768f,
-                            steps = 31,
-                        )
-                    }
-                }
-            }
-
             // 4. System Prompt & Templates
             item {
                 Card(
@@ -335,7 +504,6 @@ fun AgentDetailScreen(
                         )
                         Spacer(Modifier.height(8.dp))
 
-                        // Quick Template Buttons
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -444,13 +612,13 @@ fun AgentDetailScreen(
                 Button(
                     onClick = {
                         val updatedConfig = agentState.config.copy(
-                            name = name,
+                            name = name.trim().ifBlank { agentState.config.slot.defaultName },
                             role = agentState.config.role.copy(
                                 type = selectedRoleType,
                                 title = selectedRoleType.defaultTitle,
                                 systemInstructions = systemPrompt,
                             ),
-                            modelId = selectedModel,
+                            modelId = selectedModel.trim().ifBlank { agentState.config.modelId },
                             providerId = selectedProvider,
                             isEnabled = isEnabled,
                             temperature = temperature,

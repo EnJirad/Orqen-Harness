@@ -1,30 +1,20 @@
 # Task Queue
 
-## Part 01 Tasks (Completed)
-- [COMPLETED] **TASK-01-01: Codebase & Dependency Mapping** (Assigned: Agent 03 DevOps)
-- [COMPLETED] **TASK-01-02: Architecture & Core Runtime Diagnostic** (Assigned: Agent 02 Dev)
-- [COMPLETED] **TASK-01-03: Security, Safety & Resource Analysis** (Assigned: Agent 04 Reviewer)
-- [COMPLETED] **TASK-01-04: Comprehensive Baseline Report Synthesis** (Assigned: Agent 01 Lead)
-- [COMPLETED] **TASK-01-05: Initialize .agent/ GitHub Management Structure** (Assigned: Agent 01 Lead)
+## Part 01–03 Tasks (Completed)
+- [COMPLETED] **Part 01**: Project Analysis & `.agent/` Hub Baseline
+- [COMPLETED] **Part 02**: Architecture Contracts & State Machine Interfaces
+- [COMPLETED] **Part 03**: Multi-Agent Frontend Screens & Thai Localization
 
-## Part 02 Tasks (Completed)
-- [COMPLETED] **TASK-02-01: Formalize Provider & Concurrency API Interfaces** (Assigned: Agent 01 Lead)
-- [COMPLETED] **TASK-02-02: Implement AgentLifecycleStateMachine with 11 States** (Assigned: Agent 01 Lead)
-- [COMPLETED] **TASK-02-03: Implement IFileLockCoordinator & Conflict Resolution** (Assigned: Agent 02 Dev)
-- [COMPLETED] **TASK-02-04: Implement 3-Tier Quota Evaluator (USD & THB Rates)** (Assigned: Agent 03 DevOps)
-- [COMPLETED] **TASK-02-05: Unit Test Contracts Suite & Verification** (Assigned: Agent 04 Reviewer)
-- [COMPLETED] **TASK-02-06: Author Comprehensive Architecture Specification Document** (Assigned: Agent 01 Lead)
+## Part 04 Tasks (Completed)
+- [COMPLETED] **TASK-04-01: Autonomous Engine Loop & Enhanced ContinuousSupervisor (Retry-After + 45m Checkpoint)**
+- [COMPLETED] **TASK-04-02: ContextWindowPruner & Custom Team Name Roster Injection**
+- [COMPLETED] **TASK-04-03: HubExchangeService (.agent/ State Snapshots & Inbox/Outbox)**
+- [COMPLETED] **TASK-04-04: Solo Continuous Execution UI & Supervisor Integration**
+- [COMPLETED] **TASK-04-05: AI Team Top Inset Fix, 2 Default Agents (+Add up to 4), Custom Names, Git/Project Hub**
+- [COMPLETED] **TASK-04-06: Inline Antigravity CLI/OAuth in AI Team & All-Provider + Solo Quota Cards**
+- [COMPLETED] **TASK-04-07: System BackHandler Across All Tabs & Sub-Screens**
 
-## Part 03 Tasks (Completed)
-- [COMPLETED] **TASK-03-01: Build AgentDetailScreen with Full Slot Customization** (Assigned: Agent 02 Dev)
-- [COMPLETED] **TASK-03-02: Build QuotaManagementScreen with Dual-Currency & Budget Guard** (Assigned: Agent 02 Dev)
-- [COMPLETED] **TASK-03-03: Build ActivityFeedScreen with Prioritized Event Stream** (Assigned: Agent 02 Dev)
-- [COMPLETED] **TASK-03-04: Enhance TeamDashboardScreen with 7 Navigation Modes & Inline Controls** (Assigned: Agent 01 Lead)
-- [COMPLETED] **TASK-03-05: Integrate Full Thai Localization in strings_multiagent.xml** (Assigned: Agent 04 Reviewer)
-- [COMPLETED] **TASK-03-06: Verify Frontend State with Part03FrontendStateTest** (Assigned: Agent 03 DevOps)
-
-## Part 04 Upcoming Tasks (Backend Development)
-- [READY] **TASK-04-01: Implement Autonomous Engine Loop & Continuous Supervisor** (Assigned: Agent 02 Dev)
-- [READY] **TASK-04-02: Context Compression & Sliding Window Pruning Engine** (Assigned: Agent 02 Dev)
-- [READY] **TASK-04-03: PRoot Proactive Checkpoint & Session Recycling (45-min Boundary)** (Assigned: Agent 03 DevOps)
-- [READY] **TASK-04-04: Multi-Agent Hub Inbox/Outbox Event Exchange Engine** (Assigned: Agent 01 Lead)
+## Part 05 Upcoming Tasks (Shared Integration)
+- [READY] **TASK-05-01: Multi-Provider Live Model Routing & Smart Fallback**
+- [READY] **TASK-05-02: Automated GitHub Sync & Commit/PR Pipeline**
+- [READY] **TASK-05-03: Cross-Agent Shared Tool Execution Verification**

@@ -174,4 +174,18 @@
     <string name="nav_tab_quota">โควตา &amp; ค่าใช้จ่าย</string>
     <string name="nav_tab_feed">ฟีดกิจกรรม</string>
     <string name="nav_tab_chat">แชททีม</string>
+
+    <!-- Part 04 Additions (ภาษาไทย) -->
+    <string name="team_add_agent">เพิ่ม Agent</string>
+    <string name="team_remove_agent">ลบออก</string>
+    <string name="team_workspace_git_title">Workspace &amp; เชื่อมต่อ Git / โปรเจค</string>
+    <string name="team_workspace_git_desc">เลือกโปรเจค สร้างจากโฟลเดอร์ นำเข้า ZIP หรือเชื่อมต่อ GitHub</string>
+    <string name="team_all_providers_quota">โควตาของผู้ให้บริการทั้งหมด</string>
+    <string name="solo_continuous_title">การทำงานต่อเนื่องอัตโนมัติ</string>
+    <string name="solo_continuous_desc">ทำงานต่ออัตโนมัติ ลองใหม่เมื่อติด Rate Limit และบันทึก Checkpoint สำหรับโปรเจคเดี่ยว</string>
+    <string name="agent_antigravity_cli_needed">จำเป็นต้องติดตั้ง Antigravity CLI ก่อนเชื่อมต่อ OAuth</string>
+    <string name="agent_antigravity_install_cli">ติดตั้ง Antigravity CLI</string>
+    <string name="agent_antigravity_connect">เชื่อมต่อด้วย Antigravity (Google OAuth)</string>
+    <string name="agent_antigravity_connected">เชื่อมต่อ Antigravity แล้ว</string>
+    <string name="agent_quota_card_title">โควตาและการใช้งานของตัวที่เชื่อมต่ออยู่</string>
 </resources>

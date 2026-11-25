@@ -174,4 +174,18 @@
     <string name="nav_tab_quota">Quota</string>
     <string name="nav_tab_feed">Feed</string>
     <string name="nav_tab_chat">Team Chat</string>
+
+    <!-- Part 04 Additions -->
+    <string name="team_add_agent">Add Agent</string>
+    <string name="team_remove_agent">Remove</string>
+    <string name="team_workspace_git_title">Workspace &amp; Git Repository</string>
+    <string name="team_workspace_git_desc">Switch project, create folder, import ZIP, or connect GitHub</string>
+    <string name="team_all_providers_quota">All Connected Providers Quota</string>
+    <string name="solo_continuous_title">Solo Continuous Execution</string>
+    <string name="solo_continuous_desc">Auto-resume, rate-limit backoff, and milestone checkpoints for solo projects</string>
+    <string name="agent_antigravity_cli_needed">Antigravity CLI required before OAuth login</string>
+    <string name="agent_antigravity_install_cli">Install Antigravity CLI</string>
+    <string name="agent_antigravity_connect">Connect Antigravity (Google OAuth)</string>
+    <string name="agent_antigravity_connected">Connected to Antigravity</string>
+    <string name="agent_quota_card_title">Connected Provider Quota &amp; Usage</string>
 </resources>

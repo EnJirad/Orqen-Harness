@@ -1,11 +1,11 @@
 package com.jarves.mh.multiagent.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -25,6 +25,7 @@ import com.jarves.mh.multiagent.model.AgentState
 import com.jarves.mh.provider.core.EstimatedUsage
 import com.jarves.mh.provider.core.LocalUsage
 import com.jarves.mh.provider.core.OfficialQuota
+import com.jarves.mh.provider.core.ProviderConfig
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,23 +34,44 @@ fun QuotaManagementScreen(
     estimatedUsage: EstimatedUsage?,
     localUsage: LocalUsage,
     agents: List<AgentState>,
+    providerConfigs: List<ProviderConfig> = emptyList(),
+    allProviderQuotas: Map<String, OfficialQuota> = emptyMap(),
+    allProviderEstimated: Map<String, EstimatedUsage> = emptyMap(),
+    allProviderLocal: Map<String, LocalUsage> = emptyMap(),
     budgetLimitUsd: Double = 10.0,
     isAutoPauseEnabled: Boolean = true,
+    onRefreshQuotas: () -> Unit = {},
     onUpdateBudget: (Double, Boolean) -> Unit = { _, _ -> },
     onBack: () -> Unit,
 ) {
+    BackHandler(onBack = onBack)
+
     var showThbFirst by remember { mutableStateOf(true) }
     var autoPause by remember { mutableStateOf(isAutoPauseEnabled) }
     var budgetLimit by remember { mutableDoubleStateOf(budgetLimitUsd) }
 
-    val totalCostUsd = estimatedUsage?.estimatedCostUsd ?: 0.0
-    val totalCostThb = estimatedUsage?.estimatedCostThb ?: (totalCostUsd * 35.0)
-    val totalTokens = estimatedUsage?.estimatedTokens ?: 0L
+    val totalCostUsd = if (allProviderEstimated.isNotEmpty()) {
+        allProviderEstimated.values.sumOf { it.estimatedCostUsd }
+    } else {
+        estimatedUsage?.estimatedCostUsd ?: 0.0
+    }
+    val totalCostThb = totalCostUsd * 35.0
+    val totalTokens = if (allProviderEstimated.isNotEmpty()) {
+        allProviderEstimated.values.sumOf { it.estimatedTokens }
+    } else {
+        estimatedUsage?.estimatedTokens ?: 0L
+    }
+    val totalRequests = if (allProviderLocal.isNotEmpty()) {
+        allProviderLocal.values.sumOf { it.totalRequests }
+    } else {
+        localUsage.totalRequests
+    }
     val budgetProgress = (totalCostUsd / budgetLimit.coerceAtLeast(0.01)).toFloat().coerceIn(0f, 1f)
 
     Scaffold(
         topBar = {
             TopAppBar(
+                modifier = Modifier.padding(top = 4.dp),
                 title = {
                     Column {
                         Text(
@@ -58,7 +80,7 @@ fun QuotaManagementScreen(
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            text = "3-Tier Quota Tracking · Real-time Valuation",
+                            text = "All Providers · 3-Tier Quota Tracking",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -70,6 +92,9 @@ fun QuotaManagementScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onRefreshQuotas) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh Quotas")
+                    }
                     TextButton(onClick = { showThbFirst = !showThbFirst }) {
                         Text(
                             text = if (showThbFirst) "฿ THB" else "$ USD",
@@ -99,7 +124,7 @@ fun QuotaManagementScreen(
                 ) {
                     Column(Modifier.padding(20.dp)) {
                         Text(
-                            text = "TOTAL ESTIMATED EXPENSE",
+                            text = "TOTAL ESTIMATED EXPENSE (ALL PROVIDERS)",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
@@ -137,11 +162,11 @@ fun QuotaManagementScreen(
                             }
                             Column {
                                 Text("Requests", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
-                                Text("${localUsage.totalRequests} API calls", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text("$totalRequests API calls", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                             Column {
-                                Text("Tasks Completed", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
-                                Text("${localUsage.completedTasks} done", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text("Providers", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                                Text("${providerConfigs.size.coerceAtLeast(1)} active", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                         }
                     }
@@ -163,7 +188,7 @@ fun QuotaManagementScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                 Icon(Icons.Default.Security, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(8.dp))
                                 Column {
@@ -220,34 +245,50 @@ fun QuotaManagementScreen(
                 }
             }
 
-            // 3. Tier 1 — Official Provider Quotas Card
+            // 3. ALL Connected Providers Quota Breakdown
             item {
+                Text(
+                    text = stringResource(R.string.team_all_providers_quota),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+
+            items(providerConfigs) { cfg ->
+                val pQuota = allProviderQuotas[cfg.id]
+                val pEst = allProviderEstimated[cfg.id]
+                val pLocal = allProviderLocal[cfg.id] ?: LocalUsage()
+                val isAvail = pQuota?.isAvailable == true
+                val healthColor = if (isAvail) {
+                    if ((pQuota?.remainingPercent ?: 1f) > 0.2f) Color(0xFF2E7D32) else Color(0xFFC62828)
+                } else Color.Gray
+
                 Card(
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(14.dp)),
                 ) {
-                    Column(Modifier.padding(16.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = "TIER 1 — OFFICIAL PROVIDER QUOTA",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (officialQuota?.isAvailable == true) Color(0xFF2E7D32).copy(alpha = 0.15f) else Color.Gray.copy(alpha = 0.15f),
-                            ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(cfg.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                                 Text(
-                                    text = if (officialQuota?.isAvailable == true) "VERIFIED SOURCE" else "UNAVAILABLE",
-                                    color = if (officialQuota?.isAvailable == true) Color(0xFF2E7D32) else Color.Gray,
+                                    "${cfg.type.displayName} · ${cfg.selectedModelId.ifBlank { "Default" }}",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Surface(shape = RoundedCornerShape(10.dp), color = healthColor.copy(alpha = 0.15f)) {
+                                Text(
+                                    text = if (isAvail) "${((pQuota?.remainingPercent ?: 1f) * 100).toInt()}% LEFT" else "ESTIMATED",
+                                    color = healthColor,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
@@ -255,29 +296,31 @@ fun QuotaManagementScreen(
                             }
                         }
 
-                        Spacer(Modifier.height(10.dp))
-
-                        if (officialQuota?.isAvailable == true) {
+                        if (isAvail && pQuota != null) {
                             Text(
-                                text = "Source: ${officialQuota.source}",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Text(
-                                text = "Remaining Quota: ${(officialQuota.remainingPercent?.times(100))?.toInt() ?: 100}%",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF2E7D32),
-                            )
-                            officialQuota.resetTime?.let {
-                                Text("Window Resets: $it", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        } else {
-                            Text(
-                                text = officialQuota?.unavailableReason ?: stringResource(R.string.quota_unavailable),
-                                fontSize = 12.sp,
+                                text = "Source: ${pQuota.source}${pQuota.resetTime?.let { " · Reset: $it" } ?: ""}",
+                                fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        } else {
+                            Text(
+                                text = pQuota?.unavailableReason ?: stringResource(R.string.quota_unavailable),
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text("Tokens: ${pEst?.estimatedTokens ?: 0}", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                text = if (showThbFirst) "฿${String.format("%.2f", pEst?.estimatedCostThb ?: 0.0)}" else "$${String.format("%.4f", pEst?.estimatedCostUsd ?: 0.0)}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text("Requests: ${pLocal.totalRequests}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -310,7 +353,7 @@ fun QuotaManagementScreen(
                 }
             }
 
-            // 5. Tier 3 — Per-Agent Cost Allocation Header
+            // 5. Tier 3 — Per-Agent Cost Allocation
             item {
                 Text(
                     text = stringResource(R.string.quota_per_agent_breakdown),
@@ -320,12 +363,11 @@ fun QuotaManagementScreen(
                 )
             }
 
-            // 6. Agent Cost Cards
             items(agents) { agent ->
-                // Approximate 25% share per active agent as baseline
-                val agentTokens = (totalTokens / agents.size.coerceAtLeast(1))
-                val agentUsd = (totalCostUsd / agents.size.coerceAtLeast(1))
-                val agentThb = (totalCostThb / agents.size.coerceAtLeast(1))
+                val pEst = allProviderEstimated[agent.config.providerId]
+                val agentTokens = pEst?.estimatedTokens ?: (totalTokens / agents.size.coerceAtLeast(1))
+                val agentUsd = pEst?.estimatedCostUsd ?: (totalCostUsd / agents.size.coerceAtLeast(1))
+                val agentThb = agentUsd * 35.0
 
                 Card(
                     shape = RoundedCornerShape(14.dp),
@@ -341,7 +383,7 @@ fun QuotaManagementScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column {
+                        Column(Modifier.weight(1f)) {
                             Text(
                                 text = agent.config.name,
                                 style = MaterialTheme.typography.titleSmall,

@@ -1,5 +1,6 @@
 package com.jarves.mh.multiagent.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -33,6 +34,7 @@ fun PrivateAgentChatScreen(
     onSendMessage: (String) -> Unit,
     onBack: () -> Unit,
 ) {
+    BackHandler(onBack = onBack)
     var inputText by remember { mutableStateOf("") }
     val activity = agentState.activityState.activity
     val activityColor = ActivityVisuals.colorFor(activity)
