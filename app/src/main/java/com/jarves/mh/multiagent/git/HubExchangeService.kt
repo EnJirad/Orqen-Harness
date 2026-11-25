@@ -60,22 +60,29 @@ class HubExchangeService(private val workspaceDir: File) {
         return runCatching { JSONObject(file.readText()) }.getOrNull()
     }
 
+    private fun sanitizeSegment(raw: String): String {
+        return raw.replace(Regex("[^a-zA-Z0-9._-]"), "_").replace("..", "_").ifBlank { "unknown" }
+    }
+
     fun dispatchMessage(envelope: HubEnvelope): File {
         ensureHubStructure()
-        val targetInbox = File(inboxDir, envelope.toSlot).apply { mkdirs() }
-        val senderOutbox = File(outboxDir, envelope.fromSlot).apply { mkdirs() }
+        val safeTo = sanitizeSegment(envelope.toSlot)
+        val safeFrom = sanitizeSegment(envelope.fromSlot)
+        val safeId = sanitizeSegment(envelope.id)
+        val targetInbox = File(inboxDir, safeTo).apply { mkdirs() }
+        val senderOutbox = File(outboxDir, safeFrom).apply { mkdirs() }
         val payload = JSONObject().apply {
-            put("id", envelope.id)
-            put("fromSlot", envelope.fromSlot)
+            put("id", safeId)
+            put("fromSlot", safeFrom)
             put("fromName", envelope.fromName)
-            put("toSlot", envelope.toSlot)
+            put("toSlot", safeTo)
             put("subject", envelope.subject)
             put("body", envelope.body)
             put("timestamp", envelope.timestamp)
         }.toString(2)
 
-        File(senderOutbox, "${envelope.id}.json").writeText(payload)
-        val inboxFile = File(targetInbox, "${envelope.id}.json")
+        File(senderOutbox, "$safeId.json").writeText(payload)
+        val inboxFile = File(targetInbox, "$safeId.json")
         inboxFile.writeText(payload)
         return inboxFile
     }

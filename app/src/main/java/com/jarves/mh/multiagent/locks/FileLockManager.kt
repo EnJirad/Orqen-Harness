@@ -33,6 +33,9 @@ class FileLockManager : IFileLockCoordinator {
     ): LockAcquisitionResult {
         cleanExpiredLocks()
         val normalized = normalizePath(filePath)
+        if (normalized.isBlank() || normalized.split('/').any { it == ".." }) {
+            return LockAcquisitionResult.Error("Invalid path traversal or blank path: $filePath")
+        }
         val existing = locks[normalized]
 
         if (existing != null && !existing.isExpired && existing.agentSlot != slot) {
@@ -103,6 +106,9 @@ class FileLockManager : IFileLockCoordinator {
     override fun isLockedByOther(filePath: String, slot: AgentSlot): Boolean {
         cleanExpiredLocks()
         val normalized = normalizePath(filePath)
+        if (normalized.isBlank() || normalized.split('/').any { it == ".." }) {
+            return false
+        }
         val existing = locks[normalized] ?: return false
         return !existing.isExpired && existing.agentSlot != slot
     }

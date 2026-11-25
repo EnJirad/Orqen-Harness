@@ -1,14 +1,14 @@
 # Task Queue
 
-## Part 01–06 Tasks (Completed)
-- [COMPLETED] **Part 01–06**: Analysis, Architecture, Frontend, Backend, Orchestration, Concurrency & APK Verification
+## Part 01–07 Tasks (Completed)
+- [COMPLETED] **Part 01–07**: Full Multi-Agent Architecture, UI, Backend, Orchestration, Verification & Hardening
 
-## Part 07 Tasks (Completed)
-- [COMPLETED] **TASK-07-01: Eliminate Kotlin Compiler & Deprecation Warnings in Multi-Agent & Provider Modules**
-- [COMPLETED] **TASK-07-02: Bound State Machine History (100 max) & Add Force Quota Cache Invalidation**
-- [COMPLETED] **TASK-07-03: Hardening Regression Tests (Part07HardeningTest)**
+## Part 08 Tasks (Completed)
+- [COMPLETED] **TASK-08-01: Repository-Wide Secret & Credential Leak Scan (0 Findings)**
+- [COMPLETED] **TASK-08-02: Path Traversal Hardening in FileLockManager & HubExchangeService**
+- [COMPLETED] **TASK-08-03: Security Audit Regression Tests (Part08SecurityAuditTest) & Final Sign-Off**
 
-## Part 08 Upcoming Tasks (Security Audit & Final Review)
-- [READY] **TASK-08-01: Credential & Secret Scanning Audit (Zero Hardcoded Keys/Tokens)**
-- [READY] **TASK-08-02: Multi-Agent Workspace Boundary & Path Traversal Audit**
-- [READY] **TASK-08-03: Final Code Review Sign-Off**
+## Part 09 Upcoming Tasks (Git Release & Deployment)
+- [READY] **TASK-09-01: Final Verified Debug APK Build (`assembleDebug`)**
+- [READY] **TASK-09-02: Author Release Notes & Changelog (`CHANGELOG_ORQEN.md`)**
+- [READY] **TASK-09-03: Create Git Release Tag `v1.0.0-orqen-multiagent` & Push to GitHub**
