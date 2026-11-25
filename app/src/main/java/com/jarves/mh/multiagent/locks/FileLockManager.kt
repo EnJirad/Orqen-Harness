@@ -23,6 +23,7 @@ data class FileLock(
 class FileLockManager : IFileLockCoordinator {
     private val locks = ConcurrentHashMap<String, FileLock>()
 
+    @Synchronized
     override fun tryAcquire(
         filePath: String,
         slot: AgentSlot,
@@ -55,6 +56,7 @@ class FileLockManager : IFileLockCoordinator {
         return LockAcquisitionResult.Success(newLock)
     }
 
+    @Synchronized
     override fun renewLock(filePath: String, slot: AgentSlot, extendByMs: Long): Boolean {
         val normalized = normalizePath(filePath)
         val existing = locks[normalized] ?: return false
