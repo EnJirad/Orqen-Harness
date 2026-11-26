@@ -502,7 +502,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val providerManager = ProviderManager(application, vault, preferences)
     val fileLockManager = FileLockManager()
     val teamEventBus = TeamEventBus()
-    val taskManager by lazy { TaskManager(durableStore = orqenTaskStore) }
+    val taskManager by lazy {
+        val defaultWs = File(getApplication<Application>().filesDir, "team_workspaces/${TaskManager.DEFAULT_PROJECT_ID}")
+            .apply { mkdirs() }
+            .canonicalFile
+            .absolutePath
+        TaskManager(durableStore = orqenTaskStore, defaultWorkspacePath = defaultWs)
+    }
     val continuousSupervisor = ContinuousSupervisor()
     val soloSupervisor = ContinuousSupervisor()
     val autonomousEngine = AutonomousExecutionEngine(fileLockManager)
@@ -6694,7 +6700,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun syncTeamProfilesForProject(project: Project): com.jarves.mh.multiagent.collab.AgentTeamEntity {
-        val wsDir = File(File(getApplication<Application>().filesDir, "team_workspaces"), project.id).apply { mkdirs() }
+        val wsDir = File(File(getApplication<Application>().filesDir, "team_workspaces"), project.id)
+            .apply { mkdirs() }
+            .canonicalFile
         orqenTaskStore.upsertProject(
             com.jarves.mh.multiagent.persistence.ProjectEntity(
                 projectId = project.id,
@@ -6702,6 +6710,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 workspacePath = wsDir.absolutePath,
             ),
         )
+        // Self-heal any legacy "default-team-project" row with empty workspacePath (which caused PRoot to bind-mount "/")
+        val defaultProjId = com.jarves.mh.multiagent.tasks.TaskManager.DEFAULT_PROJECT_ID
+        orqenTaskStore.getProject(defaultProjId)?.let { defProj ->
+            if (defProj.workspacePath.isBlank() || defProj.workspacePath == "/") {
+                orqenTaskStore.upsertProject(defProj.copy(workspacePath = wsDir.absolutePath))
+            }
+        }
         val registered = _state.value.teamAgents.map { state ->
             autonomousSupervisorEngine.registry.register(
                 com.jarves.mh.multiagent.collab.AgentProfileMapper.fromAgentConfig(state.config),

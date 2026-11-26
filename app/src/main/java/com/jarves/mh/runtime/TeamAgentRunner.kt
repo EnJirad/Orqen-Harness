@@ -55,6 +55,42 @@ class TeamAgentRunner(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedTurnEntry>?): Boolean = size > 40
     }
 
+    /**
+     * Ensures the host workspace directory is a real, readable, writable directory inside app storage
+     * (self-healing legacy empty/root paths like File("") -> "/" that cause PRoot EACCES / Permission denied)
+     * and returns a sanitized guest slug valid for RuntimeInstaller.process().
+     */
+    private fun resolveSafeWorkspace(requestedDir: File, requestedSlug: String): Pair<File, String> {
+        val safeSlug = requestedSlug
+            .trim()
+            .lowercase()
+            .replace(Regex("[^a-z0-9-]"), "-")
+            .replace(Regex("-+"), "-")
+            .trim('-')
+            .take(60)
+            .ifBlank { "team-project" }
+
+        val rawPath = requestedDir.path.trim()
+        val isBogusRoot = rawPath.isBlank() || requestedDir.absolutePath == "/" || rawPath.startsWith("/workspace")
+        val candidate = if (isBogusRoot) {
+            File(context.filesDir, "team_workspaces/$safeSlug")
+        } else {
+            requestedDir
+        }
+        candidate.mkdirs()
+        val resolved = if (candidate.isDirectory && candidate.canRead() && candidate.canWrite()) {
+            candidate.canonicalFile
+        } else {
+            File(context.filesDir, "team_workspaces/$safeSlug").apply { mkdirs() }.canonicalFile
+        }
+        runCatching {
+            resolved.setReadable(true, false)
+            resolved.setWritable(true, true)
+            resolved.setExecutable(true, false)
+        }
+        return resolved to safeSlug
+    }
+
     suspend fun executeTurn(
         agent: AgentState,
         providerConfig: ProviderConfig?,
@@ -68,10 +104,10 @@ class TeamAgentRunner(
         knownAgyModels: List<String> = emptyList(),
         onProgress: suspend (String) -> Unit,
     ): TeamAgentExecutionResult = withContext(Dispatchers.IO) {
-        workspaceDir.mkdirs()
+        val (safeWorkspaceDir, safeSlug) = resolveSafeWorkspace(workspaceDir, projectSlug)
         val validImages = imageFiles.filter { it.isFile && it.length() > 0L }.take(3)
         val cacheKey = if (enableCache && validImages.isEmpty()) {
-            val wsSig = snapshotWorkspaceFiles(workspaceDir).hashCode()
+            val wsSig = snapshotWorkspaceFiles(safeWorkspaceDir).hashCode()
             "${agent.config.slot.id}|${agent.config.providerId}|${agent.config.modelId}|${prompt.hashCode()}|$wsSig"
         } else null
 
@@ -87,9 +123,9 @@ class TeamAgentRunner(
             providerConfig?.type == ProviderType.ANTIGRAVITY
 
         val result = if (isAntigravity) {
-            val agyPrompt = if (validImages.isNotEmpty()) {
+            val bodyWithImages = if (validImages.isNotEmpty()) {
                 val guestPaths = validImages.mapNotNull { img ->
-                    runCatching { "/workspace/$projectSlug/${img.relativeTo(workspaceDir).path}" }.getOrNull()
+                    runCatching { "/workspace/$safeSlug/${img.relativeTo(safeWorkspaceDir).path}" }.getOrNull()
                 }
                 buildString {
                     appendLine("ATTACHED REFERENCE IMAGES FROM OWNER (inspect them visually with read_file to match the exact UI, layout, colors, and requirements):")
@@ -98,10 +134,11 @@ class TeamAgentRunner(
                     append(prompt)
                 }
             } else prompt
+            val agyPrompt = antigravityWorkspacePrompt(safeSlug, bodyWithImages)
             val agyRes = runAntigravityCli(
                 agent = agent,
-                workspaceDir = workspaceDir,
-                projectSlug = projectSlug,
+                workspaceDir = safeWorkspaceDir,
+                projectSlug = safeSlug,
                 prompt = agyPrompt,
                 useIsolatedHome = useIsolatedAgyHome,
                 knownAgyModels = knownAgyModels,
@@ -116,8 +153,8 @@ class TeamAgentRunner(
                 onProgress("Retrying with account's valid default model…")
                 runAntigravityCli(
                     agent = agent.copy(config = agent.config.copy(modelId = "")),
-                    workspaceDir = workspaceDir,
-                    projectSlug = projectSlug,
+                    workspaceDir = safeWorkspaceDir,
+                    projectSlug = safeSlug,
                     prompt = agyPrompt,
                     useIsolatedHome = useIsolatedAgyHome,
                     knownAgyModels = emptyList(),
@@ -131,7 +168,7 @@ class TeamAgentRunner(
             runApiProvider(
                 agent = agent,
                 providerConfig = providerConfig,
-                workspaceDir = workspaceDir,
+                workspaceDir = safeWorkspaceDir,
                 prompt = prompt,
                 imageFiles = validImages,
                 onProgress = onProgress,

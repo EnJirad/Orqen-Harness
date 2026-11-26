@@ -80,8 +80,10 @@ class TeamAgentRunnerRuntimeAdapter(
         onProgress: suspend (String) -> Unit,
     ): RuntimeExecutionResponse {
         val started = System.currentTimeMillis()
+        val isAntigravity = request.agent.config.providerId == "preset-antigravity" ||
+            request.providerConfig?.type == com.jarves.mh.provider.core.ProviderType.ANTIGRAVITY
         val effectiveSkipPerms = request.allowSkipPermissions ||
-            (allowSandboxedCliTools && request.agent.config.providerId == "preset-antigravity")
+            (allowSandboxedCliTools && isAntigravity)
         val res = runner.executeTurn(
             agent = request.agent,
             providerConfig = request.providerConfig,

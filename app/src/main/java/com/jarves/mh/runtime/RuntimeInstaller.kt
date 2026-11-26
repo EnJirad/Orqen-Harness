@@ -1601,8 +1601,16 @@ class RuntimeInstaller(private val context: Context) {
             guestWorkspacePath == "/workspace" ||
                 Regex("^/workspace/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$").matches(guestWorkspacePath),
         ) { "Invalid project workspace path" }
-        workspace.mkdirs()
-        File(rootfs, guestWorkspacePath.removePrefix("/")).mkdirs()
+        // Guard against empty/root host paths (e.g. File("") -> "/") which cause PRoot EACCES ("Permission denied")!
+        val effectiveHostWorkspace = if (workspace.path.isBlank() || workspace.absolutePath == "/") {
+            val fallbackName = guestWorkspacePath.substringAfterLast('/').ifBlank { "default-team-project" }
+            File(context.filesDir, "team_workspaces/$fallbackName")
+        } else {
+            workspace
+        }.apply { mkdirs() }.canonicalFile
+        runCatching { Os.chmod(effectiveHostWorkspace.absolutePath, 0b111101101) }
+        val guestMountPoint = File(rootfs, guestWorkspacePath.removePrefix("/")).apply { mkdirs() }
+        runCatching { Os.chmod(guestMountPoint.absolutePath, 0b111101101) }
         // Self-heal devices whose Android tools were installed by an older app
         // version before the global AAPT2 override was persisted.
         writeAndroidGradleConfiguration(rootfs)
@@ -1630,7 +1638,7 @@ class RuntimeInstaller(private val context: Context) {
                 }
             }
             add("-b")
-            add("${workspace.absolutePath}:$guestWorkspacePath")
+            add("${effectiveHostWorkspace.absolutePath}:$guestWorkspacePath")
             add("-b")
             add("${bridge.absolutePath}:/pocket-bridge")
             add("-w")

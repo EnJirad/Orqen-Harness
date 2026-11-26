@@ -41,7 +41,13 @@ class RuntimeStepExecutionAdapter(
     override suspend fun executeStep(input: StepExecutionInput): StepExecutionOutput {
         val agentState = toAgentState(input.agent)
         val providerConfig = providerConfigResolver(input.agent.providerId)
-        val projectSlug = input.workspaceDir.name.ifBlank { input.task.projectId }
+        val rawSlug = input.workspaceDir.name.ifBlank { input.task.projectId }
+        val projectSlug = rawSlug.lowercase()
+            .replace(Regex("[^a-z0-9-]"), "-")
+            .replace(Regex("-+"), "-")
+            .trim('-')
+            .take(60)
+            .ifBlank { "team-project" }
         val request = RuntimeExecutionRequest(
             agent = agentState,
             providerConfig = providerConfig,

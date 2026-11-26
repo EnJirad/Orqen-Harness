@@ -53,6 +53,7 @@ data class ProjectPart(
 class TaskManager(
     private val durableStore: OrqenTaskStore? = null,
     private val projectId: String = DEFAULT_PROJECT_ID,
+    private val defaultWorkspacePath: String = "",
 ) {
     private val _tasks = MutableStateFlow<List<TeamTask>>(emptyList())
     val tasks: StateFlow<List<TeamTask>> = _tasks.asStateFlow()
@@ -71,14 +72,17 @@ class TaskManager(
     }
 
     private fun ensureProjectRow(store: OrqenTaskStore) {
-        if (store.getProject(projectId) == null) {
+        val existing = store.getProject(projectId)
+        if (existing == null) {
             store.upsertProject(
                 ProjectEntity(
                     projectId = projectId,
                     projectName = "ORQEN Team Project",
-                    workspacePath = "",
+                    workspacePath = defaultWorkspacePath,
                 ),
             )
+        } else if (existing.workspacePath.isBlank() && defaultWorkspacePath.isNotBlank()) {
+            store.upsertProject(existing.copy(workspacePath = defaultWorkspacePath))
         }
     }
 
