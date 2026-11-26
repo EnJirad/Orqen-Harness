@@ -555,7 +555,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         com.jarves.mh.multiagent.recovery.ExecutionLivenessMonitor(orqenTaskStore)
     }
     private val teamRuntimeAdapter by lazy {
-        com.jarves.mh.multiagent.engine.TeamAgentRunnerRuntimeAdapter(teamAgentRunner)
+        com.jarves.mh.multiagent.engine.TeamAgentRunnerRuntimeAdapter(
+            runner = teamAgentRunner,
+            allowSandboxedCliTools = true,
+        )
     }
     val autonomousSupervisorEngine by lazy {
         com.jarves.mh.multiagent.supervisor.AutonomousSupervisorEngine(
@@ -580,6 +583,76 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 providerManager.configs.value.firstOrNull { it.id == providerId }
             },
             chatProjectionSink = com.jarves.mh.multiagent.collab.TeamChatManagerBridge.createSink(teamChatManager),
+            onStepLifecycleUpdate = { upd ->
+                viewModelScope.launch(Dispatchers.Main.immediate) {
+                    val slot = AgentSlot.fromId(upd.agentId) ?: AgentSlot.AGENT_1
+                    val displayName = agentNameFor(slot).ifBlank { upd.agentDisplayName }
+                    when (upd.phase) {
+                        "PLANNED" -> {
+                            updateAgentActivity(AgentSlot.AGENT_1, ActivityType.PLANNING, upd.stepTitle, "วางแผนและแบ่งงาน")
+                            appendProjectTeamMessage(
+                                projectId = upd.projectId,
+                                senderSlot = AgentSlot.AGENT_1,
+                                senderName = agentNameFor(AgentSlot.AGENT_1),
+                                text = upd.detail,
+                                messageType = GroupMessageType.TASK_ASSIGNMENT,
+                            )
+                        }
+                        "STARTED" -> {
+                            val act = when {
+                                upd.stepTitle.contains("verify", ignoreCase = true) || upd.stepTitle.contains("review", ignoreCase = true) -> ActivityType.REVIEWING
+                                upd.stepTitle.contains("inspect", ignoreCase = true) || upd.stepTitle.contains("plan", ignoreCase = true) -> ActivityType.ANALYZING
+                                upd.stepTitle.contains("fix", ignoreCase = true) -> ActivityType.FIXING_BUG
+                                else -> ActivityType.WRITING_CODE
+                            }
+                            clearAgentLiveLog(slot)
+                            updateAgentActivity(slot, act, upd.stepTitle, upd.detail)
+                            _state.update { it.copy(teamTypingAgentName = displayName) }
+                            updateTeamForegroundNotification(
+                                _state.value.activeTeamProject?.name ?: "ORQEN",
+                                "$displayName: ${upd.stepTitle.take(50)}",
+                            )
+                            appendProjectTeamMessage(
+                                projectId = upd.projectId,
+                                senderSlot = slot,
+                                senderName = displayName,
+                                text = upd.detail,
+                                messageType = GroupMessageType.PROGRESS_UPDATE,
+                                workStatus = "Working",
+                            )
+                        }
+                        "PROGRESS" -> {
+                            if (upd.detail.isNotBlank()) {
+                                appendAgentLiveLog(slot, upd.detail)
+                            }
+                        }
+                        "COMPLETED" -> {
+                            updateAgentActivity(slot, ActivityType.COMPLETED, upd.stepTitle, "เสร็จสิ้น")
+                            _state.update { it.copy(teamTypingAgentName = null) }
+                            appendProjectTeamMessage(
+                                projectId = upd.projectId,
+                                senderSlot = slot,
+                                senderName = displayName,
+                                text = upd.detail.ifBlank { "ทำงาน '${upd.stepTitle}' เสร็จแล้ว" },
+                                messageType = GroupMessageType.COMPLETION_REPORT,
+                                workStatus = "Done",
+                                workDetails = upd.modifiedFiles.map { "Modified: $it" },
+                            )
+                        }
+                        "RECOVERING", "FAILED" -> {
+                            updateAgentActivity(slot, ActivityType.ERROR, upd.stepTitle, upd.detail.take(80))
+                            _state.update { it.copy(teamTypingAgentName = null) }
+                            appendProjectTeamMessage(
+                                projectId = upd.projectId,
+                                senderSlot = slot,
+                                senderName = displayName,
+                                text = "พบปัญหา (${upd.phase}): ${upd.detail} — Supervisor กำลังกู้คืน/สลับโมเดลอัตโนมัติ",
+                                messageType = GroupMessageType.BUG_REPORT,
+                            )
+                        }
+                    }
+                }
+            },
         )
     }
     private var activeSupervisedTaskId: String? = null
@@ -6255,7 +6328,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } finally {
-                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null) }
+                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null, teamTypingAgentName = null) }
+                updateAgentActivities(ActivityType.WAITING)
                 if (serviceStarted) {
                     stopTeamForegroundService()
                 }
@@ -6525,7 +6599,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } finally {
-                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null) }
+                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null, teamTypingAgentName = null) }
+                updateAgentActivities(ActivityType.WAITING)
                 if (serviceStarted) {
                     stopTeamForegroundService()
                 }

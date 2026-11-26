@@ -73,12 +73,15 @@ interface AIExecutionRuntime {
  */
 class TeamAgentRunnerRuntimeAdapter(
     private val runner: TeamAgentRunner,
+    private val allowSandboxedCliTools: Boolean = false,
 ) : AIExecutionRuntime {
     override suspend fun execute(
         request: RuntimeExecutionRequest,
         onProgress: suspend (String) -> Unit,
     ): RuntimeExecutionResponse {
         val started = System.currentTimeMillis()
+        val effectiveSkipPerms = request.allowSkipPermissions ||
+            (allowSandboxedCliTools && request.agent.config.providerId == "preset-antigravity")
         val res = runner.executeTurn(
             agent = request.agent,
             providerConfig = request.providerConfig,
@@ -87,7 +90,7 @@ class TeamAgentRunnerRuntimeAdapter(
             prompt = request.prompt,
             useIsolatedAgyHome = request.useIsolatedAgyHome,
             enableCache = true,
-            allowSkipPermissions = request.allowSkipPermissions,
+            allowSkipPermissions = effectiveSkipPerms,
             imageFiles = request.imageFiles,
             knownAgyModels = request.knownAgyModels,
             onProgress = onProgress,

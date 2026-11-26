@@ -117,6 +117,13 @@ object TaskContextBuilder {
             if (step.inputContext.isNotBlank()) {
                 appendLine("Expected Output: ${step.inputContext}")
             }
+            if (step.requiresReview) {
+                appendLine()
+                appendLine("## Required Review & Verification Output Format")
+                appendLine("- Inspect the actual workspace files and verify acceptance criteria.")
+                appendLine("- If all requirements and tests pass, include `REVIEW_APPROVED` and `TESTS_PASSED` in your response.")
+                appendLine("- If defects or missing work remain, include `REVIEW_REJECTED: <specific actionable feedback>` in your response.")
+            }
         }.take(maxChars)
     }
 

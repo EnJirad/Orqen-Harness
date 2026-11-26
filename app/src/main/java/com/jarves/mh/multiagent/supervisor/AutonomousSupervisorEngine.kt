@@ -43,6 +43,18 @@ data class SupervisorUiSnapshot(
     val totalSteps: Int,
 )
 
+data class StepLifecycleUpdate(
+    val projectId: String,
+    val taskId: String,
+    val stepId: String,
+    val stepTitle: String,
+    val agentId: String,
+    val agentDisplayName: String,
+    val phase: String, // PLANNED, STARTED, PROGRESS, COMPLETED, REVIEW_REJECTED, FAILED, RECOVERING
+    val detail: String = "",
+    val modifiedFiles: List<String> = emptyList(),
+)
+
 /**
  * AI Supervisor Advisory Layer (strictly separated from the Deterministic Control Layer).
  * If the primary Supervisor model fails or times out, the Deterministic Control Layer
@@ -97,6 +109,7 @@ class AutonomousSupervisorEngine(
         collabStore.listApprovalsForTask(tid).any { it.status == ApprovalStatus.PENDING }
     },
     private val chatProjectionSink: TeamChatProjectionSink? = null,
+    private val onStepLifecycleUpdate: (StepLifecycleUpdate) -> Unit = {},
     private val delayFn: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
     private val nowProvider: () -> Long = { System.currentTimeMillis() },
 ) {
@@ -196,6 +209,22 @@ class AutonomousSupervisorEngine(
             updated
         }
         updateSnapshot(plannedTask.taskId, SupervisorOperationalStatus.PLANNING, "Plan created with ${assignedSteps.size} steps")
+        val planSummary = assignedSteps.joinToString("\n") { s ->
+            val name = candidates.firstOrNull { it.agentId == s.assignedAgentId }?.displayName ?: s.assignedAgentId
+            "• #${s.sequenceNumber} ${s.title} → $name"
+        }
+        onStepLifecycleUpdate(
+            StepLifecycleUpdate(
+                projectId = projectId,
+                taskId = plannedTask.taskId,
+                stepId = assignedSteps.firstOrNull()?.stepId.orEmpty(),
+                stepTitle = plannedTask.title,
+                agentId = candidates.first().agentId,
+                agentDisplayName = candidates.first().displayName,
+                phase = "PLANNED",
+                detail = "วางแผนงานเสร็จแล้ว (${assignedSteps.size} ขั้นตอน):\n$planSummary",
+            ),
+        )
         return plannedTask
     }
 
@@ -598,6 +627,18 @@ class AutonomousSupervisorEngine(
 
                 // 8. Execute step via real RuntimeStepExecutionAdapter with HealthMonitor + Watchdog
                 updateSnapshot(taskId, SupervisorOperationalStatus.SUPERVISING, "Executing #${nextStep.sequenceNumber} '${nextStep.title}' (${agentProfile.displayName} / ${agentProfile.modelId})")
+                onStepLifecycleUpdate(
+                    StepLifecycleUpdate(
+                        projectId = task.projectId,
+                        taskId = taskId,
+                        stepId = nextStep.stepId,
+                        stepTitle = nextStep.title,
+                        agentId = agentProfile.agentId,
+                        agentDisplayName = agentProfile.displayName,
+                        phase = "STARTED",
+                        detail = "เริ่มทำงาน #${nextStep.sequenceNumber}: ${nextStep.title} (${agentProfile.modelId})",
+                    ),
+                )
                 val runningStep = nextStep.copy(status = StepStatus.RUNNING, startedAt = nextStep.startedAt ?: nowProvider())
                 val execRecord = AgentExecutionEntity(
                     executionId = executionId,
@@ -672,6 +713,18 @@ class AutonomousSupervisorEngine(
                                 providerId = agentProfile.providerId,
                                 modelId = agentProfile.modelId,
                                 timestampMs = nowProvider(),
+                            ),
+                        )
+                        onStepLifecycleUpdate(
+                            StepLifecycleUpdate(
+                                projectId = task.projectId,
+                                taskId = tid,
+                                stepId = sid,
+                                stepTitle = runningStep.title,
+                                agentId = aid,
+                                agentDisplayName = agentProfile.displayName,
+                                phase = "PROGRESS",
+                                detail = cleanDetails,
                             ),
                         )
                     },
@@ -863,6 +916,19 @@ class AutonomousSupervisorEngine(
                             resultSummary = output.summary.take(500),
                         ),
                     )
+                    onStepLifecycleUpdate(
+                        StepLifecycleUpdate(
+                            projectId = task.projectId,
+                            taskId = taskId,
+                            stepId = runningStep.stepId,
+                            stepTitle = runningStep.title,
+                            agentId = agentProfile.agentId,
+                            agentDisplayName = agentProfile.displayName,
+                            phase = "COMPLETED",
+                            detail = output.summary.take(400),
+                            modifiedFiles = changedFiles,
+                        ),
+                    )
                 } else {
                     // Failure OR Failed Test Verification!
                     if (verificationFailed && output.verificationSpec?.mode == VerificationMode.TEST_VERIFICATION) {
@@ -954,6 +1020,18 @@ class AutonomousSupervisorEngine(
                     )
 
                     updateSnapshot(taskId, SupervisorOperationalStatus.RECOVERING, "Recovering from ${err.category} on ${agentProfile.displayName}")
+                    onStepLifecycleUpdate(
+                        StepLifecycleUpdate(
+                            projectId = task.projectId,
+                            taskId = taskId,
+                            stepId = runningStep.stepId,
+                            stepTitle = runningStep.title,
+                            agentId = agentProfile.agentId,
+                            agentDisplayName = agentProfile.displayName,
+                            phase = "RECOVERING",
+                            detail = "${err.category}: ${err.userExplanation}",
+                        ),
+                    )
                     val requiredCaps = inferRequiredCapabilities(runningStep)
                     val recoveryPlan = recoveryEngine.planRecovery(
                         task = task,
@@ -1119,6 +1197,8 @@ class AutonomousSupervisorEngine(
                 task.status == PersistentTaskStatus.BLOCKED
             ) continue
             if (task.taskId in activeSupervisedTasks) continue
+            // Skip legacy unplanned tasks with 0 steps (e.g. sample tasks from TaskManager)
+            if (taskStore.listStepsForTask(task.taskId).isEmpty() && task.status != PersistentTaskStatus.RECOVERING) continue
 
             if (task.taskId in expiredLeaseTasks || task.status == PersistentTaskStatus.QUEUED || task.status == PersistentTaskStatus.RECOVERING || task.status == PersistentTaskStatus.READY) {
                 // Reset any abandoned RUNNING steps back to READY (never resetting COMPLETED steps)
