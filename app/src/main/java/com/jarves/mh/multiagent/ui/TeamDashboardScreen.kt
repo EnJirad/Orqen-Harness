@@ -81,6 +81,8 @@ fun TeamDashboardScreen(
     allProviderQuotas: Map<String, OfficialQuota> = emptyMap(),
     allProviderEstimated: Map<String, EstimatedUsage> = emptyMap(),
     continuousConfig: ContinuousExecutionConfig = ContinuousExecutionConfig(),
+    autoPushGitEnabled: Boolean = false,
+    onToggleAutoPushGit: (Boolean) -> Unit = {},
     isTeamRunning: Boolean,
     runningTeamProjectId: String? = null,
     runningTeamProjectName: String? = null,
@@ -476,7 +478,35 @@ fun TeamDashboardScreen(
                         .fillMaxWidth()
                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
                 ) {
-                    Column(Modifier.padding(14.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        // Auto-Push to Git Toggle Switch
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "Push ขึ้น Git อัตโนมัติเมื่องานเสร็จ",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                    Text(
+                                        text = if (autoPushGitEnabled) "เปิดใช้งาน — ระบบจะ commit & push ให้อัตโนมัติ" else "ปิดใช้งาน — กดปุ่ม Push ที่มุมขวาบนแชทเอง",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = autoPushGitEnabled,
+                                onCheckedChange = onToggleAutoPushGit,
+                            )
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()

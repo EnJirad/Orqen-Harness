@@ -125,6 +125,9 @@ fun TeamWorkspaceScreen(
     streamingAgentSlot: AgentSlot? = null,
     streamingText: String = "",
     awaitingStartConfirmation: Boolean = false,
+    hasGitRemote: Boolean = false,
+    gitPushRunning: Boolean = false,
+    autoPushGitEnabled: Boolean = false,
     collaborationEvents: List<com.jarves.mh.multiagent.model.PrioritizedCollaborationEvent> = emptyList(),
     runningTeamProjectId: String?,
     runningTeamProjectName: String?,
@@ -153,6 +156,8 @@ fun TeamWorkspaceScreen(
     onSendGroupMessage: (text: String, type: GroupMessageType, targetSlot: AgentSlot?) -> Unit,
     onSendGroupMessageWithImages: ((text: String, type: GroupMessageType, targetSlot: AgentSlot?, imageUris: List<Uri>) -> Unit)? = null,
     onClearGroupChat: () -> Unit = {},
+    onPushToGit: (gitUrl: String?, apiKey: String?) -> Unit = { _, _ -> },
+    onToggleAutoPushGit: (Boolean) -> Unit = {},
     onRunTeamTerminalCommand: (String) -> Unit,
     onClearTeamTerminal: () -> Unit,
     onJumpToRunningProject: () -> Unit,
@@ -279,6 +284,9 @@ fun TeamWorkspaceScreen(
                         initialScrollDone = chatInitialScrollDone,
                         onInitialScrollDone = { chatInitialScrollDone = true },
                         onClearChat = onClearGroupChat,
+                        hasGitRemote = hasGitRemote,
+                        gitPushRunning = gitPushRunning,
+                        onPushToGit = onPushToGit,
                         onOpenFile = { path ->
                             pendingFileToOpen = path
                             activeTab = TeamWorkspaceTab.FILES
@@ -359,6 +367,8 @@ fun TeamWorkspaceScreen(
                     allProviderQuotas = allProviderQuotas,
                     allProviderEstimated = allProviderEstimated,
                     continuousConfig = continuousConfig,
+                    autoPushGitEnabled = autoPushGitEnabled,
+                    onToggleAutoPushGit = onToggleAutoPushGit,
                     isTeamRunning = isTeamRunning || awaitingStartConfirmation,
                     runningTeamProjectId = runningTeamProjectId,
                     runningTeamProjectName = runningTeamProjectName,

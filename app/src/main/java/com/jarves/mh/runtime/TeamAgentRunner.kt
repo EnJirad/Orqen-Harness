@@ -55,6 +55,10 @@ class TeamAgentRunner(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedTurnEntry>?): Boolean = size > 40
     }
 
+    fun clearResponseCache() {
+        synchronized(localResponseCache) { localResponseCache.clear() }
+    }
+
     /**
      * Ensures the host workspace directory is a real, readable, writable directory inside app storage
      * (self-healing legacy empty/root paths like File("") -> "/" that cause PRoot EACCES / Permission denied)

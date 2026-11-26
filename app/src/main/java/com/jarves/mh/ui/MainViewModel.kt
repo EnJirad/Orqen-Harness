@@ -319,6 +319,9 @@ data class AppUiState(
     val teamStreamingAgentSlot: AgentSlot? = null,
     val teamStreamingText: String = "",
     val teamAwaitingStartConfirmation: Boolean = false,
+    val teamGitPushRunning: Boolean = false,
+    val teamActiveProjectHasGitRemote: Boolean = false,
+    val teamAutoPushGitEnabled: Boolean = false,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
@@ -3721,6 +3724,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val projectRunning = _state.value.runningTeamProjectId == project.id && _state.value.teamIsRunning
         val projectAwaitingConfirm = pendingStartConfirmation?.projectId == project.id
         val projectActiveTaskId = if (projectRunning) activeSupervisedTaskId else null
+        val hasRemote = detectTeamProjectGitRemote(project.id)
         _state.update {
             it.copy(
                 activeTeamProject = project,
@@ -3733,6 +3737,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 teamStreamingAgentSlot = if (projectRunning) it.teamStreamingAgentSlot else null,
                 teamStreamingText = if (projectRunning) it.teamStreamingText else "",
                 teamAwaitingStartConfirmation = projectAwaitingConfirm,
+                teamActiveProjectHasGitRemote = hasRemote,
                 activeSupervisedTaskId = projectActiveTaskId,
             )
         }
@@ -6372,6 +6377,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val activeTeamId = _state.value.activeTeamProject?.id
         val initialTeamMessages = if (activeTeamId != null) loadProjectTeamChat(activeTeamId).toList() else emptyList()
+        val initialHasGitRemote = activeTeamId?.let { detectTeamProjectGitRemote(it) } ?: false
+        val initialAutoPushGit = teamGitPrefs.getBoolean("auto_push_git_enabled", false)
         _state.update {
             it.copy(
                 teamAgents = initialAgents,
@@ -6380,6 +6387,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 teamCurrentPartNumber = taskManager.currentPartNumber.value,
                 providerConfigs = providerManager.configs.value,
                 teamGroupMessages = initialTeamMessages,
+                teamActiveProjectHasGitRemote = initialHasGitRemote,
+                teamAutoPushGitEnabled = initialAutoPushGit,
             )
         }
 
@@ -7082,6 +7091,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                         notifyTeamTaskCompleted(activeProj.name, formatTeamTaskCompletionNotifDetail(activeProj.name, result.title))
+                        if (_state.value.teamAutoPushGitEnabled) {
+                            pushTeamProjectToGit(isAuto = true)
+                        }
                     }
                 }
                 // Phase 1 (Part A.5.1): Automatically continue with any remaining queued tasks for this project!
@@ -7243,6 +7255,144 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             persistProjectTeamChat(projectId, list)
             if (_state.value.activeTeamProject?.id == projectId) {
                 _state.update { it.copy(teamGroupMessages = list.toList()) }
+            }
+        }
+    }
+
+    private val teamGitPrefs by lazy {
+        getApplication<Application>().getSharedPreferences("orqen_team_git_prefs", android.content.Context.MODE_PRIVATE)
+    }
+
+    private fun detectTeamProjectGitRemote(projectId: String): Boolean {
+        if (teamGitPrefs.getString("git_url_$projectId", "").orEmpty().isNotBlank()) return true
+        val gitConfig = File(getApplication<Application>().filesDir, "team_workspaces/$projectId/.git/config")
+        if (!gitConfig.isFile) return false
+        return runCatching { gitConfig.readText().contains("[remote \"origin\"]") }.getOrDefault(false)
+    }
+
+    fun setTeamAutoPushGitEnabled(enabled: Boolean) {
+        teamGitPrefs.edit().putBoolean("auto_push_git_enabled", enabled).apply()
+        _state.update {
+            it.copy(
+                teamAutoPushGitEnabled = enabled,
+                toastMessage = if (enabled) "เปิด Push ขึ้น Git อัตโนมัติแล้ว" else "ปิด Push ขึ้น Git อัตโนมัติแล้ว",
+            )
+        }
+    }
+
+    fun pushTeamProjectToGit(gitUrl: String? = null, apiKey: String? = null, isAuto: Boolean = false) {
+        val project = _state.value.activeTeamProject ?: return
+        if (_state.value.teamGitPushRunning) return
+
+        val savedUrl = gitUrl?.trim()?.takeIf { it.isNotBlank() }
+            ?: teamGitPrefs.getString("git_url_${project.id}", "")?.trim()?.takeIf { it.isNotBlank() }
+        val savedKey = apiKey?.trim()?.takeIf { it.isNotBlank() }
+            ?: teamGitPrefs.getString("git_key_${project.id}", "")?.trim()?.takeIf { it.isNotBlank() }
+
+        if (!gitUrl.isNullOrBlank()) {
+            teamGitPrefs.edit().putString("git_url_${project.id}", gitUrl.trim()).apply()
+        }
+        if (!apiKey.isNullOrBlank()) {
+            teamGitPrefs.edit().putString("git_key_${project.id}", apiKey.trim()).apply()
+        }
+
+        val hasLocalRemote = detectTeamProjectGitRemote(project.id)
+        if (!hasLocalRemote && savedUrl.isNullOrBlank()) {
+            if (!isAuto) {
+                _state.update { it.copy(toastMessage = "กรุณากรอก Git URL ก่อนทำการ Push") }
+            }
+            return
+        }
+
+        _state.update {
+            it.copy(
+                teamGitPushRunning = true,
+                teamActiveProjectHasGitRemote = true,
+                toastMessage = if (isAuto) "กำลัง Auto-Push โปรเจกต์ ${project.name} ขึ้น Git…" else "กำลัง Push โค้ดขึ้น Git…",
+            )
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val installed = installer.installedRuntime()
+                val workspace = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}")
+                    .apply { mkdirs() }
+                    .canonicalFile
+                val safeSlug = project.slug.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "team-project" }
+
+                // Inject API key / PAT safely into https URL only inside the push command (never logged)
+                val authRemoteUrl = if (!savedUrl.isNullOrBlank() && !savedKey.isNullOrBlank() && savedUrl.startsWith("https://") && !savedUrl.contains("@")) {
+                    val encodedKey = java.net.URLEncoder.encode(savedKey, "UTF-8")
+                    savedUrl.replaceFirst("https://", "https://x-access-token:$encodedKey@")
+                } else {
+                    savedUrl
+                }
+
+                val script = buildString {
+                    appendLine("set -e")
+                    appendLine("if [ ! -d .git ]; then git init -b main || git init; fi")
+                    appendLine("git config user.name \"ORQEN AI Team\" || true")
+                    appendLine("git config user.email \"orqen@local\" || true")
+                    if (!authRemoteUrl.isNullOrBlank()) {
+                        val esc = authRemoteUrl.replace("'", "'\"'\"'")
+                        appendLine("if git remote get-url origin >/dev/null 2>&1; then git remote set-url origin '$esc'; else git remote add origin '$esc'; fi")
+                    }
+                    appendLine("git add -A")
+                    appendLine("git diff --cached --quiet || git commit -m 'chore: sync from ORQEN AI Team'")
+                    appendLine("BRANCH=\$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)")
+                    appendLine("git push -u origin \"\$BRANCH\"")
+                }
+                val outFile = File(getApplication<Application>().cacheDir, "team-git-push-${System.nanoTime()}.log")
+                val proc = installer.process(
+                    proot = installed.proot,
+                    rootfs = installed.rootfs,
+                    workspace = workspace,
+                    environment = emptyMap(),
+                    guestCommand = listOf("/bin/sh", "-lc", script),
+                    guestWorkspacePath = "/workspace/$safeSlug",
+                    emulateHardLinks = false,
+                    outputFile = outFile,
+                )
+                val exit = proc.waitFor()
+                val rawLog = runCatching { outFile.readText() }.getOrDefault("")
+                runCatching { outFile.delete() }
+                val sanitizedLog = if (!savedKey.isNullOrBlank()) rawLog.replace(savedKey, "***") else rawLog
+
+                withContext(Dispatchers.Main) {
+                    if (exit == 0) {
+                        _state.update {
+                            it.copy(
+                                teamGitPushRunning = false,
+                                teamActiveProjectHasGitRemote = true,
+                                toastMessage = "✅ Push โปรเจกต์ '${project.name}' ขึ้น Git เรียบร้อยแล้ว",
+                            )
+                        }
+                        appendProjectTeamMessage(
+                            projectId = project.id,
+                            senderSlot = AgentSlot.AGENT_1,
+                            senderName = agentNameFor(AgentSlot.AGENT_1),
+                            text = "✅ Push โค้ดโปรเจกต์ '${project.name}' ขึ้น Git เรียบร้อยแล้วครับ",
+                            messageType = GroupMessageType.SYSTEM,
+                        )
+                    } else {
+                        val errSnippet = sanitizedLog.lines().lastOrNull { it.isNotBlank() }?.take(140) ?: "exit code $exit"
+                        _state.update {
+                            it.copy(
+                                teamGitPushRunning = false,
+                                toastMessage = "Push ขึ้น Git ไม่สำเร็จ: $errSnippet",
+                            )
+                        }
+                    }
+                }
+            } catch (err: Throwable) {
+                withContext(Dispatchers.Main) {
+                    _state.update {
+                        it.copy(
+                            teamGitPushRunning = false,
+                            toastMessage = "Push ขึ้น Git ไม่สำเร็จ: ${err.message?.take(120) ?: err.javaClass.simpleName}",
+                        )
+                    }
+                }
             }
         }
     }
@@ -7649,11 +7799,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val old = current[index]
             current[index] = old.copy(config = config)
             saveTeamAgents(current)
-            _state.update { it.copy(teamAgents = current) }
+            _state.update {
+                it.copy(
+                    teamAgents = current,
+                    toastMessage = "อัปเดต ${config.name} (${config.modelId.ifBlank { config.providerId }}) พร้อมใช้งานในแชทนี้ทันที",
+                )
+            }
+            // Instant hot-swap: re-register updated profile in AutonomousSupervisorEngine & clear response cache
+            // so the new model, provider, or agent is used immediately on the very next turn in the SAME chat!
+            runCatching {
+                autonomousSupervisorEngine.registry.register(
+                    com.jarves.mh.multiagent.collab.AgentProfileMapper.fromAgentConfig(config),
+                )
+            }
+            teamAgentRunner.clearResponseCache()
             recordCollaborationEvent(
                 type = TeamEventType.TASK_ASSIGNED,
                 senderSlot = slot,
-                message = "Agent configuration updated for ${config.name} (${config.role.title})",
+                message = "Hot-swapped ${config.name} -> ${config.providerId}/${config.modelId} (${config.role.title})",
                 priority = EventPriority.NORMAL,
             )
         }
@@ -7668,6 +7831,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current[index] = old.copy(config = updatedConfig)
             saveTeamAgents(current)
             _state.update { it.copy(teamAgents = current) }
+            runCatching {
+                autonomousSupervisorEngine.registry.register(
+                    com.jarves.mh.multiagent.collab.AgentProfileMapper.fromAgentConfig(updatedConfig),
+                )
+            }
+            teamAgentRunner.clearResponseCache()
             recordCollaborationEvent(
                 type = TeamEventType.TASK_ASSIGNED,
                 senderSlot = slot,

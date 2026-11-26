@@ -2689,6 +2689,9 @@ private fun RootScreenHost(
                                 streamingAgentSlot = state.teamStreamingAgentSlot,
                                 streamingText = state.teamStreamingText,
                                 awaitingStartConfirmation = state.teamAwaitingStartConfirmation,
+                                hasGitRemote = state.teamActiveProjectHasGitRemote,
+                                gitPushRunning = state.teamGitPushRunning,
+                                autoPushGitEnabled = state.teamAutoPushGitEnabled,
                                 collaborationEvents = state.teamCollaborationEvents,
                                 runningTeamProjectId = state.runningTeamProjectId,
                                 runningTeamProjectName = state.teamProjects.firstOrNull { it.id == state.runningTeamProjectId }?.name,
@@ -2721,6 +2724,8 @@ private fun RootScreenHost(
                                     viewModel.postTeamChatMessageWithImages(text, type, targetSlot, uris)
                                 },
                                 onClearGroupChat = viewModel::clearTeamChat,
+                                onPushToGit = { url, apiKey -> viewModel.pushTeamProjectToGit(url, apiKey) },
+                                onToggleAutoPushGit = viewModel::setTeamAutoPushGitEnabled,
                                 onRunTeamTerminalCommand = viewModel::runTeamTerminalCommand,
                                 onClearTeamTerminal = viewModel::clearTeamTerminal,
                                 onJumpToRunningProject = {
@@ -2836,6 +2841,9 @@ private fun RootScreenHost(
                             awaitingStartConfirmation = state.teamAwaitingStartConfirmation,
                             pendingDirectivesCount = state.teamPriorityDirectivesCount,
                             onClearChat = viewModel::clearTeamChat,
+                            hasGitRemote = state.teamActiveProjectHasGitRemote,
+                            gitPushRunning = state.teamGitPushRunning,
+                            onPushToGit = { url, apiKey -> viewModel.pushTeamProjectToGit(url, apiKey) },
                             onSendMessageWithImages = { text, type, targetSlot, uris ->
                                 viewModel.postTeamChatMessageWithImages(text, type, targetSlot, uris)
                             },

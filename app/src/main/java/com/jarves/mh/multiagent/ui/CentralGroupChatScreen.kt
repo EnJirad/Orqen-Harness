@@ -95,6 +95,9 @@ fun CentralGroupChatScreen(
     initialScrollDone: Boolean = false,
     onInitialScrollDone: () -> Unit = {},
     onClearChat: (() -> Unit)? = null,
+    hasGitRemote: Boolean = false,
+    gitPushRunning: Boolean = false,
+    onPushToGit: ((gitUrl: String?, apiKey: String?) -> Unit)? = null,
     onOpenFile: ((String) -> Unit)? = null,
     onSendMessageWithImages: ((text: String, type: GroupMessageType, targetSlot: AgentSlot?, imageUris: List<Uri>) -> Unit)? = null,
     onSendMessage: (text: String, type: GroupMessageType, targetSlot: AgentSlot?) -> Unit,
@@ -107,6 +110,9 @@ fun CentralGroupChatScreen(
     var targetSlot by remember { mutableStateOf<AgentSlot?>(null) }
     var selectedImageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var showClearConfirm by remember { mutableStateOf(false) }
+    var showGitPushDialog by remember { mutableStateOf(false) }
+    var gitPushUrlInput by remember { mutableStateOf("") }
+    var gitPushApiKeyInput by remember { mutableStateOf("") }
     var pendingUserSendScroll by remember { mutableStateOf(false) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         if (uris.isNotEmpty()) {
@@ -183,19 +189,88 @@ fun CentralGroupChatScreen(
             title = { Text(stringResource(R.string.chat_clear_confirm_title), fontWeight = FontWeight.Bold) },
             text = { Text(stringResource(R.string.chat_clear_confirm_desc), fontSize = 13.sp) },
             confirmButton = {
-                Button(
-                    onClick = {
-                        showClearConfirm = false
-                        onClearChat()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                // Confirm button on the LEFT, Cancel button on the RIGHT
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Text(stringResource(R.string.chat_clear_confirm_btn), color = Color.White)
+                    Button(
+                        onClick = {
+                            showClearConfirm = false
+                            onClearChat()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.chat_clear_confirm_btn), color = Color.White)
+                    }
+                    OutlinedButton(
+                        onClick = { showClearConfirm = false },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) {
-                    Text(stringResource(R.string.action_cancel))
+        )
+    }
+
+    if (showGitPushDialog && onPushToGit != null) {
+        AlertDialog(
+            onDismissRequest = { if (!gitPushRunning) showGitPushDialog = false },
+            icon = { Icon(Icons.Default.CloudUpload, contentDescription = null, tint = OrqenMint) },
+            title = { Text("เชื่อมต่อและ Push ขึ้น Git", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "โปรเจกต์นี้ยังไม่ได้เชื่อมต่อกับ Git Repository กรุณากรอก URL ของ Git และ API Key / Access Token เพื่อ Push โค้ดขึ้นทันที",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = gitPushUrlInput,
+                        onValueChange = { gitPushUrlInput = it },
+                        label = { Text("Git Repository URL") },
+                        placeholder = { Text("https://github.com/user/repo.git", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = gitPushApiKeyInput,
+                        onValueChange = { gitPushApiKeyInput = it },
+                        label = { Text("API Key / Personal Access Token") },
+                        placeholder = { Text("ghp_xxxxxxxxxxxx", fontSize = 12.sp) },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Button(
+                        onClick = {
+                            val cleanUrl = gitPushUrlInput.trim()
+                            val cleanKey = gitPushApiKeyInput.trim().takeIf { it.isNotBlank() }
+                            if (cleanUrl.isNotBlank()) {
+                                showGitPushDialog = false
+                                onPushToGit(cleanUrl, cleanKey)
+                            }
+                        },
+                        enabled = gitPushUrlInput.isNotBlank() && !gitPushRunning,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("บันทึก & Push")
+                    }
+                    OutlinedButton(
+                        onClick = { showGitPushDialog = false },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
                 }
             },
         )
@@ -218,6 +293,7 @@ fun CentralGroupChatScreen(
                     }
                 },
                 actions = {
+                    // Trash button shifted to the left of the Git Push button
                     if (onClearChat != null && messages.isNotEmpty()) {
                         IconButton(onClick = { showClearConfirm = true }) {
                             Icon(
@@ -225,6 +301,33 @@ fun CentralGroupChatScreen(
                                 contentDescription = stringResource(R.string.chat_clear_all),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+                    }
+                    // Git Push button on the far right!
+                    if (onPushToGit != null) {
+                        IconButton(
+                            onClick = {
+                                if (hasGitRemote) {
+                                    onPushToGit(null, null)
+                                } else {
+                                    showGitPushDialog = true
+                                }
+                            },
+                            enabled = !gitPushRunning,
+                        ) {
+                            if (gitPushRunning) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = OrqenMint,
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.CloudUpload,
+                                    contentDescription = "Push to Git",
+                                    tint = if (hasGitRemote) OrqenMint else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                 },
