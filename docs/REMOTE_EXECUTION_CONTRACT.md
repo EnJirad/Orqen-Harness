@@ -1,50 +1,65 @@
-# ORQEN Remote Execution Host Contract
+# ORQEN Remote Execution Implementation & API Contract (Phase 6)
 
-## Status
-- **Implemented in this repository**:
-  - `ExecutionHost` abstraction (`app/src/main/java/com/jarves/mh/multiagent/host/ExecutionHost.kt`)
-  - `LocalAndroidExecutionHost` (production on-device execution)
-  - `RemoteExecutionHost` mobile client adapter + `RemoteExecutionTransport` interface (supports disconnect/reconnect with preserved `taskId` and progress)
-- **Not deployed in this repository** (requires external server infrastructure):
-  - Remote worker daemon, PostgreSQL/Redis durable queue, and remote container workspace host.
+## Implementation & Deployment Status
 
-## Backend API Contract (HTTP/JSON + SSE/WebSocket)
+| Component | Status | Location |
+| :--- | :--- | :--- |
+| **Durable SQLite WAL Queue & Fencing Leases** | **Implemented & Tested Locally** | `remote-executor/orqen_queue.py` |
+| **Authenticated Remote Execution HTTP API** | **Implemented & Tested Locally** | `remote-executor/orqen_api.py` |
+| **Authenticated Remote Worker Daemon** | **Implemented & Tested Locally** | `remote-executor/orqen_worker.py` |
+| **Isolated Task Workspace (`POSIX_ISOLATED_DIRECTORY`)** | **Implemented & Tested Locally** | `remote-executor/orqen_worker.py` (`IsolatedTaskWorkspace`) |
+| **Android HTTP Client Transport** | **Implemented & Tested Locally** | `app/src/main/java/com/jarves/mh/multiagent/host/HttpRemoteExecutionTransport.kt` |
+| **Docker Compose Deployment Config** | **Implemented (NOT DEPLOYED)** | `remote-executor/Dockerfile`, `remote-executor/docker-compose.yml` |
+| **External Cloud / Production Server** | **NOT DEPLOYED** | Requires owner-provisioned host & TLS reverse proxy |
 
-All endpoints require `Authorization: Bearer <user_scoped_token>` stored in Android Keystore/EncryptedSharedPreferences. Provider API keys remain server-side or encrypted per-user vault and are never hardcoded.
+---
 
-### 1. Submit / Attach Task
-`POST /v1/tasks`
-- Request: `{ "taskId": "T-...", "projectId": "...", "title": "...", "steps": [...], "budget": {...}, "completionCriteria": {...} }`
-- Response `202 Accepted`: `{ "taskId": "T-...", "leaseId": "lease-...", "status": "QUEUED" }`
+## Workspace Isolation Model (Honest Guarantees)
+- **Inside Docker (`DOCKER_CONTAINER`)**: `remote-executor/docker-compose.yml` runs the worker as non-root (`uid 10001`) with `mem_limit: 1g` and `cpus: 1.0`.
+- **Native POSIX without Docker (`POSIX_ISOLATED_DIRECTORY`)**: Creates per-task directories with `os.path.realpath` traversal blocking, allowlisted non-shell commands (`shell=False`), and POSIX `resource.setrlimit` (`RLIMIT_CPU`, `RLIMIT_FSIZE`). It explicitly reports `POSIX_ISOLATED_DIRECTORY` and never claims container isolation when Docker is unavailable.
 
-### 2. Query Task Progress (Disconnect/Reconnect Safe)
-`GET /v1/tasks/{taskId}`
-- Response `200 OK`:
-  ```json
-  {
-    "taskId": "T-...",
-    "status": "RUNNING",
-    "completedSteps": 14,
-    "totalSteps": 22,
-    "currentStepTitle": "Implement auth middleware",
-    "latestCheckpointId": "chk-...",
-    "actualCostUsd": 0.42,
-    "lastHeartbeatAt": 1764080000000,
-    "lastError": null
-  }
-  ```
+---
 
-### 3. Stream Live Events (Optional SSE)
-`GET /v1/tasks/{taskId}/events?afterEventId=...`
-- Reconnectable Server-Sent Events stream for step completions, agent messages, checkpoints, and errors.
+## Implemented HTTP API Endpoints
 
-### 4. Owner Execution Controls
-- `POST /v1/tasks/{taskId}/pause` — stops scheduling new steps, preserves checkpoint
-- `POST /v1/tasks/{taskId}/resume` — resumes from next safe step after workspace verification
-- `POST /v1/tasks/{taskId}/stop` — sets `ownerStopRequested=true`, cancels active worker lease, never auto-restarts
-- `POST /v1/tasks/stop-all` — cancels all active tasks owned by the authenticated user
+### Health & Observability
+- `GET /v1/health` — Returns online/offline worker counts, queue depth, running/completed/failed counts.
 
-### 5. Worker Lease & Heartbeat Semantics
-- Workers acquire time-bounded leases (`leaseTtlMs = 60_000`) and renew heartbeats every `15_000ms`.
-- If a worker crashes and misses 3 heartbeats, the server supervisor reconciles the workspace against the latest checkpoint, checks the idempotency ledger (`idempotencyKey`), and reassigns only uncompleted steps.
-- Every model request is an individual bounded step — never a single long-lived HTTP call for the entire task.
+### Authenticated Client Endpoints (`Authorization: Bearer <user_token>`)
+- `POST /v1/tasks` (requires `Idempotency-Key` header) — Idempotent task submission (`202` created / `200` existing).
+- `GET /v1/tasks` — Lists tasks owned by the authenticated user only.
+- `GET /v1/tasks/{taskId}` — Returns task status, progress, lease info (`403` for other users).
+- `POST /v1/tasks/{taskId}/cancel` — Persists cancellation (`owner_user_id` verified).
+- `POST /v1/tasks/{taskId}/pause` / `POST /v1/tasks/{taskId}/resume` — Owner-verified pause/resume.
+- `GET /v1/tasks/{taskId}/logs` — Returns secret-redacted chronological execution logs.
+- `GET /v1/tasks/{taskId}/artifacts` — Returns SHA-256 artifact manifests.
+
+### Authenticated Worker Endpoints
+- `POST /v1/workers/register` (`Authorization: Bearer <ORQEN_WORKER_REG_SECRET>`) — Registers worker and issues per-worker token.
+- `POST /v1/workers/{workerId}/revoke` — Revokes worker token immediately.
+- `POST /v1/workers/{workerId}/heartbeat` (`Authorization: Bearer <worker_token>`) — Updates worker liveness.
+- `POST /v1/workers/{workerId}/claim` — Atomically claims 1 eligible task (`BEGIN IMMEDIATE`), reclaims expired leases, increments monotonic `leaseToken`.
+- `POST /v1/workers/{workerId}/tasks/{taskId}/lease` — Renews lease & returns `cancelRequested`.
+- `POST /v1/workers/{workerId}/tasks/{taskId}/progress` — Commits progress, logs, and checkpoints (validates `leaseToken`, rejects stale workers with `409`).
+- `POST /v1/workers/{workerId}/tasks/{taskId}/complete` — Idempotent completion with `leaseToken` fencing.
+- `POST /v1/workers/{workerId}/tasks/{taskId}/fail` — Records failure with bounded retry backoff.
+
+---
+
+## Running Locally
+
+```bash
+# Terminal 1: Start Remote Execution API
+export ORQEN_CLIENT_TOKENS="owner:replace-with-strong-user-token"
+export ORQEN_WORKER_REG_SECRET="replace-with-strong-worker-secret"
+python3 remote-executor/orqen_api.py
+
+# Terminal 2: Start Authenticated Remote Worker Daemon
+export ORQEN_API_URL="http://127.0.0.1:8787"
+export ORQEN_WORKER_ID="worker-1"
+export ORQEN_WORKER_REG_SECRET="replace-with-strong-worker-secret"
+python3 remote-executor/orqen_worker.py
+
+# Run Python End-to-End Integration Tests
+python3 -m unittest discover -s remote-executor -p "test_*.py" -v
+```

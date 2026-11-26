@@ -1,0 +1,41 @@
+services:
+  orqen-api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      ORQEN_BIND_HOST: "0.0.0.0"
+      ORQEN_BIND_PORT: "8787"
+      ORQEN_DB_PATH: "/data/orqen_remote.db"
+      ORQEN_CLIENT_TOKENS: "${ORQEN_CLIENT_TOKENS:?Set ORQEN_CLIENT_TOKENS=user:token}"
+      ORQEN_WORKER_REG_SECRET: "${ORQEN_WORKER_REG_SECRET:?Set ORQEN_WORKER_REG_SECRET}"
+    volumes:
+      - orqen_data:/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/v1/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  orqen-worker-1:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      orqen-api:
+        condition: service_healthy
+    command: ["python3", "orqen_worker.py"]
+    environment:
+      ORQEN_API_URL: "http://orqen-api:8787"
+      ORQEN_WORKER_ID: "worker-1"
+      ORQEN_WORKER_NAME: "ORQEN Worker 1"
+      ORQEN_WORKER_REG_SECRET: "${ORQEN_WORKER_REG_SECRET:?Set ORQEN_WORKER_REG_SECRET}"
+      ORQEN_WORKSPACE_ROOT: "/data/workspaces"
+    volumes:
+      - orqen_workspaces:/data/workspaces
+    mem_limit: 1g
+    cpus: 1.0
+
+volumes:
+  orqen_data:
+  orqen_workspaces:

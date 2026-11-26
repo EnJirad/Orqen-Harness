@@ -1,356 +1,170 @@
 <div align="center">
 
-  <img src="assets/readme/logo.svg" alt="ORQEN Logo" width="104" height="104" style="border-radius: 24px;" />
+  <img src="assets/readme/logo.svg" alt="ORQEN Logo" width="104" height="104" />
 
   # ORQEN
 
-  ### *Think Together. Build Anything.*
+  ### *Persistent Multi-Agent AI Development Platform for Android*
 
-  **A Premium AI Collaboration Workspace for Android.**
-
-  Chat with coding agents, manage workspaces, execute real Linux commands, and preview live web servers — directly on your mobile device.
+  **Application ID:** `com.orqen.app` &nbsp;•&nbsp; **Platform:** Android 9+ (`arm64-v8a`) &nbsp;•&nbsp; **License:** [MIT](LICENSE)
 
   <br />
 
-  [![Android 9+](https://img.shields.io/badge/Android-9%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#system-requirements)
-  [![ARM64](https://img.shields.io/badge/CPU-ARM64-5B8DEF?style=flat-square)](#system-requirements)
-  [![MIT License](https://img.shields.io/badge/License-MIT-8B7CF6?style=flat-square&logo=opensourceinitiative&logoColor=white)](LICENSE)
-  [![Brand Identity](https://img.shields.io/badge/Brand-ORQEN-F28C52?style=flat-square)](BRAND_IDENTITY.md)
-
-  <br />
-
-  [**Download Online APK**](https://github.com/techjarves/Mobile-Harness/releases/latest/download/mobile-harness-online.apk) &nbsp;•&nbsp;
-  [**Quickstart Guide**](#quickstart) &nbsp;•&nbsp;
+  [**Core Features**](#core-features) &nbsp;•&nbsp;
   [**Architecture**](#architecture) &nbsp;•&nbsp;
-  [**Build from Source**](#developer-guides) &nbsp;•&nbsp;
-  [**Rebranding Report**](REBRANDING_REPORT.md)
+  [**System Requirements**](#system-requirements) &nbsp;•&nbsp;
+  [**Build from Source**](#build-from-source) &nbsp;•&nbsp;
+  [**Security & Limitations**](#security--limitations) &nbsp;•&nbsp;
+  [**License & Attribution**](#license--attribution)
 
 </div>
 
-<br />
+---
+
+## Introduction
+
+**ORQEN** is a local-first, autonomous AI Agent Development Platform for ARM64 Android devices. It combines a Jetpack Compose workspace, a durable SQLite task orchestration engine, dynamic multi-agent collaboration, multi-session project chats, and a rootless Ubuntu 20.04 LTS subsystem running via PRoot — allowing developers to plan, build, review, test, and preview software directly on Android.
+
+ORQEN separates four independent lifecycles — **Project**, **Conversation**, **Task**, and **Model Request** — so closing a chat or encountering a single model request timeout does not destroy ongoing work.
 
 ---
 
-> [!IMPORTANT]
-> **Environment Security Notice**  
-> ORQEN runs on **ARM64 Android devices** using a private userspace PRoot layer. While isolated from other apps via standard Android sandbox permissions, PRoot is not a virtualization boundary or hardened security jail. Only execute projects and dependencies you own or trust.
+## Core Features
 
-<br />
+### Implemented Capabilities
 
-## About ORQEN
+- **Durable Task Foundation (SQLite WAL v4)**: Persists projects, conversations, tasks, many-to-many task-conversation links, ordered DAG steps, agent execution records, SHA-256 checkpoint metadata, structured agent messages, append-only task events, and an idempotency ledger with non-destructive migrations (`v1 → v4`).
+- **Stateful Step Execution Engine**: Structured `TaskPlanner` & `PlanValidator`, `DependencyResolver` (sequential & diamond DAGs with cycle detection), `StepScheduler` with atomic lease claiming, configurable per-request `RequestExecutionPolicy`, `StructuredErrorClassifier`, `ResultVerifier`, and Pause / Resume / Stop / Retry controls.
+- **Dynamic Multi-Agent Collaboration**: Configurable team sizes (not hardcoded to 2 or 4 agents), `AgentRegistry`, capability-based `AgentCapabilityResolver`, `AgentDelegationManager`, `AgentCommunicationManager` with per-agent context isolation, independent `AgentReviewManager` (blocks self-approval), evidence-based `AgentConsensusManager`, `AgentWorkspaceCoordinator` file locks, and `AgentResourceManager` concurrency limits.
+- **Multi-Session Project Chat**: Multiple independent conversations per project, `TaskReferenceResolver` for continuing an existing `Task ID` from a new chat without duplicating work, 4-tier `HierarchicalMemoryManager` with automatic context compaction, project-scoped search, and paginated history.
+- **Android Process Resilience & Recovery**: `ProcessRecoveryCoordinator`, `ExecutionLivenessMonitor`, `RuntimeExecutionService` (Foreground Service with Pause/Resume/Stop notification actions and bounded WakeLock), native Android `JobScheduler` reconciliation (`TaskRecoveryJobService`), and Play-Store-compliant `BootRecoveryReceiver`.
+- **Command Center & Workspace UI**: Responsive Jetpack Compose UI (Bottom Navigation on phones, NavigationRail on tablets), Solo & AI Team Workspaces, live Web & App Preview, real Linux PRoot terminal, file explorer, and English + Thai localization.
+- **Provider & Agent Integrations**: Supports Antigravity CLI, Claude Code, DeepSeek Harness, Anthropic API, OpenAI-compatible APIs, OpenRouter, Gemini, and custom endpoints with hardware-backed Android Keystore encryption.
 
-**ORQEN** is a premium, local-first AI collaboration workspace engineered for ARM64 Android devices. It unites a modern Jetpack Compose interface with a self-contained, rootless **Ubuntu 20.04 LTS subsystem** running via PRoot. ORQEN enables software engineering workflows on Android without requiring root access, unlocked bootloaders, or external applications like Termux.
+### Infrastructure-Dependent / Not Yet Deployed
 
-ORQEN is an independent product and fork originating from the open-source [Mobile Harness](https://github.com/techjarves/Mobile-Harness) project by TechJarves. See [Upstream Attribution & Open Source](#upstream-attribution--open-source) below.
+- **Remote Execution Host**: The mobile client abstraction (`ExecutionHost`, `LocalAndroidExecutionHost`, `RemoteExecutionHost`, `RemoteExecutionTransport`) and protocol specification ([docs/REMOTE_EXECUTION_CONTRACT.md](docs/REMOTE_EXECUTION_CONTRACT.md)) are implemented and unit-tested, **but no external remote worker server is deployed in this repository**. Off-device execution while the phone is powered off or force-stopped requires deploying a compatible remote backend.
 
-<br />
-
-## Verified Capabilities
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>Autonomous Agent Coding</h3>
-      <p>Native integrations with Claude Code, DeepSeek Harness, and Antigravity CLI. Each agent has an isolated driver, settings, and resumable project conversations.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>Isolated Linux Subsystem</h3>
-      <p>A full Ubuntu 20.04 ARM64 userspace running inside PRoot. Includes Node.js, npm, Git, OpenSSL, and essential shell tooling out of the box.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>Instant Web Preview</h3>
-      <p>Spun up a Vite, Next.js, or Express server? Test web interfaces in real-time within a restricted, sandboxed mobile WebView with console telemetry.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>Keystore-Grade Encryption</h3>
-      <p>Your API keys and credentials are encrypted using Android Keystore-backed AES-256 GCM. No telemetry, no remote proxies, and zero plain-text leaks.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>Persistent Project Sessions</h3>
-      <p>Keep projects, chat history, files, and task context together so work can continue across app sessions.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>Native File Workflow</h3>
-      <p>Browse, edit, search, and attach files directly from the app interface. Interoperate with system storage via Android Storage Access Framework (SAF).</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>On-device Android Builds</h3>
-      <p>Build, install, and launch Android APKs directly on the phone without USB or wireless ADB pairing.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>Optional Toolchains</h3>
-      <p>Add Python, Android, C/C++, and PHP tooling only when a project needs it.</p>
-    </td>
-  </tr>
-</table>
-
-<br />
-
-## Workspace Interface
-
-<table>
-  <tr>
-    <th width="33%" align="center">Projects</th>
-    <th width="33%" align="center">Terminal</th>
-    <th width="33%" align="center">Settings</th>
-  </tr>
-  <tr>
-    <td align="center" valign="top">
-      <img src="assets/readme/projects.png" alt="Projects workspace overview" width="100%" />
-    </td>
-    <td align="center" valign="top">
-      <img src="assets/readme/terminal.png" alt="Linux terminal execution" width="100%" />
-    </td>
-    <td align="center" valign="top">
-      <img src="assets/readme/settings.png" alt="Runtime and provider configuration" width="100%" />
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Create, organize, and resume isolated workspace sessions.</sub></td>
-    <td align="center"><sub>Execute real Linux commands and scripts with instant output.</sub></td>
-    <td align="center"><sub>Manage AI providers, installed toolchains, themes, and runtime health.</sub></td>
-  </tr>
-</table>
-
-<br />
-
-## Quickstart
-
-Get up and running in 3 guided steps:
-
-### 1. Download & Install
-Install the signed debug or release APK on your ARM64 Android phone.
-
-```text
-Target Architecture : ARM64 (arm64-v8a)
-Application ID      : com.orqen.app
-Minimum OS Level    : Android 9.0 (API 28)
-```
-
-### 2. Guided Bootstrap (~10 Minutes)
-Launch ORQEN and follow the interactive setup wizard:
-
-<table>
-  <tr>
-    <th width="33%" align="center">1 · System Readiness</th>
-    <th width="33%" align="center">2 · Toolchains</th>
-    <th width="33%" align="center">3 · AI Provider</th>
-  </tr>
-  <tr>
-    <td align="center" valign="top">
-      <img src="assets/readme/setup-notifications.png" alt="System compatibility check" width="100%" />
-    </td>
-    <td align="center" valign="top">
-      <img src="assets/readme/setup-toolchains.png" alt="Toolchain selection" width="100%" />
-    </td>
-    <td align="center" valign="top">
-      <img src="assets/readme/setup-provider.png" alt="Provider connection" width="100%" />
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Verifies device storage, CPU architecture, and background service permissions.</sub></td>
-    <td align="center"><sub>Select core Ubuntu runtime and optional development stacks.</sub></td>
-    <td align="center"><sub>Securely store your API keys in Android Keystore.</sub></td>
-  </tr>
-</table>
-
-### 3. Create & Build
-1. Tap **New Project** or launch an instant **Quick Project**.
-2. Open the **AI Workspace** and describe what you want to build.
-3. Watch the agent inspect files, draft code, run builds, and launch local web previews.
-
-<br />
-
-## Model Providers & Agents
-
-ORQEN supports direct API keys, compatibility gateways, and CLI agent backends:
-
-| Provider | Integration Type | Streaming | Tool Calling | Status | Notes |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| **Anthropic API** | Direct Key | Supported | Supported | `Recommended` | Primary supported backend |
-| **OpenRouter** | Gateway | Supported | Supported | `Supported` | Routes compatible models through one API key |
-| **DeepSeek** | Direct Key | Supported | Supported | `Supported` | Anthropic-compatible endpoint |
-| **Kimi** | Direct Key | Supported | Supported | `Supported` | Anthropic-compatible Moonshot endpoint |
-| **Custom API** | Endpoint Override | Compatible | Compatible | `Experimental` | User-configured gateway |
-
-> [!NOTE]
-> API keys are stored with hardware-backed Android Keystore AES-256-GCM encryption. Antigravity Google OAuth credentials are created and retained only by the official `agy` CLI in its persistent Linux home; ORQEN never reads or copies its tokens.
-
-### Supported Coding Agents
-
-| Agent | Authentication | Installation | Isolation |
-| :--- | :--- | :--- | :--- |
-| **Claude Code** | Claude account or API-key providers | Included in Core | Existing Claude bridge and settings |
-| **DeepSeek Harness** | API-key providers | On demand | Existing DSH bridge and settings |
-| **Antigravity CLI** | Official Google OAuth flow | Version-pinned online download | Dedicated `agy` bridge, model, effort, and conversation IDs |
-
-For Antigravity, select **Antigravity CLI**, install it, and tap **Sign in with Google**. ORQEN starts the official CLI login, opens the freshly generated Google URL in the system browser, and sends the returned one-time code back to that waiting process. The app does not embed Google login in a WebView and does not construct its own OAuth request.
-
-<br />
+---
 
 ## Architecture
 
-ORQEN bridges native Android Jetpack Compose to an isolated PRoot Linux execution layer via an optimized C++ JNI bridge:
-
 ```mermaid
 flowchart TB
-    subgraph Host[" Android Native Host (Kotlin + Jetpack Compose) "]
-        UI["Modern UI Layer<br/>Projects • Chat • Terminal • Web Preview"]
-        Service["Foreground Runtime Service<br/>Process Lifecycle & WakeLocks"]
-        Keystore["Android Keystore<br/>AES-256 GCM Credentials"]
-        Bridge["C++ JNI Process Bridge<br/>Native Launcher & Pipe Multiplexer"]
+    subgraph Android["ORQEN Android App (Kotlin + Jetpack Compose)"]
+        UI["Command Center & Team Workspace UI<br/>Solo Chat • Multi-Session Team Chat • Files • Preview • Terminal"]
+        Orch["Persistent Orchestration Layer<br/>TaskPlanner • StepScheduler • PersistentTaskOrchestrator"]
+        Collab["Multi-Agent Collaboration<br/>Registry • Delegation • Independent Review • File Locks"]
+        DB["Durable SQLite WAL Store (v4)<br/>Projects • Conversations • Tasks • Steps • Checkpoints • Events"]
+        Recovery["Android Recovery Layer<br/>Foreground Service • JobScheduler • BootRecoveryReceiver"]
+        Vault["Android Keystore<br/>AES-256-GCM Credential Vault"]
     end
 
-    subgraph Subsystem[" Private Linux Subsystem (PRoot ARM64) "]
-        Ubuntu["Ubuntu 20.04 LTS Subsystem<br/>Rootless Userspace Environment"]
-        Agent["Agent Registry<br/>Claude • DeepSeek • Antigravity"]
-        Tools["Development Toolchains<br/>Node.js • Git • Python • C++"]
-        Workspace["Local Project Workspace<br/>Files • Git History • Checkpoints"]
+    subgraph Runtime["Local Linux Subsystem (PRoot ARM64)"]
+        Ubuntu["Ubuntu 20.04 LTS Userspace<br/>Node.js • Git • Optional Python / C++ / Android / PHP"]
+        CLI["CLI Agent Bridges<br/>Antigravity CLI • Claude Code • DeepSeek Harness"]
+        WS["Isolated Project Workspaces"]
     end
 
-    subgraph Cloud[" Model Providers "]
-        Anthropic["Anthropic / API Gateways"]
-        Gateways["Google Antigravity Service"]
+    subgraph Remote["Remote Execution (Contract Only — Not Deployed)"]
+        RemoteAPI["RemoteExecutionTransport<br/>See docs/REMOTE_EXECUTION_CONTRACT.md"]
     end
 
-    UI <--> Service
-    Service <--> Bridge
-    Bridge <--> Subsystem
-    Keystore -.-> UI
-    Agent <--> Cloud
-    Agent --> Tools
-    Tools <--> Workspace
-    UI -.-> Workspace
-
-    classDef hostStyle fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#f8fafc;
-    classDef subStyle fill:#1e1b4b,stroke:#818cf8,stroke-width:1.5px,color:#f8fafc;
-    classDef cloudStyle fill:#18181b,stroke:#f59e0b,stroke-width:1.5px,color:#f8fafc;
-
-    class UI,Service,Keystore,Bridge hostStyle;
-    class Ubuntu,Agent,Tools,Workspace subStyle;
-    class Anthropic,Gateways cloudStyle;
+    UI <--> Orch
+    Orch <--> Collab
+    Orch <--> DB
+    Recovery <--> DB
+    Orch --> CLI
+    CLI --> Ubuntu
+    Ubuntu <--> WS
+    Vault -.-> Orch
+    Orch -.-> RemoteAPI
 ```
 
-### Core Runtime Components
-* **Base Environment**: Ubuntu 20.04 ARM64 verified rootfs
-* **Agent Engine**: Registry-selected, isolated drivers for Claude Code, DeepSeek Harness, and the official Antigravity CLI
-* **Native Tooling**: Node.js LTS, npm, Git, OpenSSL, curl, and GNU coreutils
-* **Process Virtualization**: PRoot user-space architecture emulation with zero kernel modifications
-
-<br />
+---
 
 ## System Requirements
 
-| Metric | Minimum Specification | Recommended Specification |
+| Requirement | Minimum | Recommended |
 | :--- | :--- | :--- |
-| **Operating System** | Android 9.0 (API level 28) | Android 13.0+ (API level 33+) |
-| **CPU Architecture** | 64-bit ARM (`arm64-v8a`) | High-performance 8-Core ARM64 (Snapdragon 8 Gen 1+ / Dimensity) |
-| **RAM** | 4 GB | 8 GB or more |
-| **Free Storage** | 2.5 GB (Base Runtime) | 8.0 GB+ (For multi-language toolchains and build caches) |
-| **Network** | Stable connection for setup & API | High-speed Wi-Fi during initial rootfs provisioning |
-
-<br />
+| **Operating System** | Android 9.0 (API 28) | Android 13+ (API 33+) |
+| **CPU Architecture** | 64-bit ARM (`arm64-v8a`) | 8-core ARM64 |
+| **Compile / Target SDK** | `compileSdk 36`, `minSdk 28` | `targetSdk 28` (direct APK) / `36` (`-PplayBuild=true`) |
+| **RAM** | 4 GB | 8 GB+ |
+| **Storage** | 2.5 GB free | 8 GB+ (for optional toolchains & caches) |
 
 ---
 
-## Developer Guides
+## Installation
 
-<details>
-<summary><b>Building from source (Android Studio & NDK)</b></summary>
+ORQEN does not currently publish prebuilt GitHub release APKs from this repository. Build the debug APK directly from source using the instructions below.
 
-<br />
+---
+
+## Build from Source
 
 ### Prerequisites
-* **Android SDK**: API Level 36 (`compileSdk 36`)
-* **Java Development Kit**: JDK 17 (Eclipse Temurin or OpenJDK)
-* **Android NDK**: `28.2.13676358` (or configured via `-PmhNdkVersion`)
-* **CMake**: `3.22.1`
+- **JDK**: 17
+- **Android SDK**: API Level 36 (`compileSdk = 36`)
+- **Android NDK**: `28.2.13676358` (supports 16 KB page-size alignment for the static PRoot loader; override with `-PmhNdkVersion=<version>`)
+- **CMake**: `3.22.1`
 
-### Build Debug APK
+### Build & Test Commands
+
 ```bash
-# Build the standard ARM64 debug binary
-./gradlew assembleDebug
+# Build the online-flavor debug APK
+./gradlew assembleOnlineDebug
 
-# Deploy directly to a connected test device
-adb install -r app/build/outputs/apk/online/debug/ORQEN-online-debug.apk
+# Output APK path:
+# app/build/outputs/apk/online/debug/app-online-debug.apk
+
+# Install onto a connected ARM64 Android device
+adb install -r app/build/outputs/apk/online/debug/app-online-debug.apk
+
+# Run unit tests (including Phases 1–7 Multi-Agent & Persistence suites)
+./gradlew testOnlineDebugUnitTest
+
+# Run Android Lint checks
+./gradlew lintOnlineDebug
 ```
 
-### Quality Assurance & Testing
-```bash
-# Run unit tests
-./gradlew testDebugUnitTest
-
-# Run static analysis linter
-./gradlew lintDebug
-```
-
-</details>
-
-<details>
-<summary><b>Optional toolchains and development stacks</b></summary>
-
-<br />
-
-ORQEN allows downloading optional developer packs on demand to conserve space:
-
-* **Python Suite**: Python 3.10+, pip, virtualenv, and essential scientific C-extensions.
-* **Android & JVM**: OpenJDK 17 headless runtime and Gradle build tools.
-* **C / C++ Compiler Suite**: GCC/G++, Clang, Make, and CMake for native tool compilation.
-* **PHP Development**: PHP CLI runtime, Composer, and standard database extensions.
-
-> *Note: Kernel-level virtualization technologies such as Docker, KVM, systemd services, and nested hardware emulators are not supported under PRoot.*
-
-</details>
-
-<details>
-<summary><b>Security model and data privacy</b></summary>
-
-<br />
-
-* **Zero Cloud Intermediaries**: ORQEN connects your device directly to your chosen AI endpoint. No intermediate relays or telemetry servers collect your prompts or code.
-* **Scoped Storage**: Project imports and exports utilize Android's official Storage Access Framework (SAF) instead of broad shared storage access.
-* **Cryptographic Checksums**: Root filesystem archives and Claude Code CLI packages are verified via SHA-256 checksums prior to extraction.
-* **Encrypted Secrets**: API tokens are encrypted in hardware-backed storage via Android Keystore.
-
-Read our complete [Privacy Policy](PRIVACY.md).
-
-</details>
-
-<br />
-
-## Upstream Attribution & Open Source
-
-ORQEN is built upon the open-source foundation of **Mobile Harness**, originally developed and maintained by **TechJarves** ([github.com/techjarves/Mobile-Harness](https://github.com/techjarves/Mobile-Harness)).
-
-We acknowledge and credit the original creators and contributors of Mobile Harness for their architectural work, PRoot Android port, and local-first AI development tools. ORQEN is an independent product and fork; it is not affiliated with, endorsed by, or sponsored by TechJarves.
-
-- Original Codebase: [https://github.com/techjarves/Mobile-Harness](https://github.com/techjarves/Mobile-Harness)
-- Original Copyright: Copyright (c) 2026 Mobile Harness Contributors / TechJarves
-- License: MIT License (see [LICENSE](LICENSE))
-
-## Legal & Trademarks
-
-* **Claude** and **Claude Code** are trademarks of Anthropic, PBC. Claude Code CLI is downloaded directly from Anthropic's official distribution endpoints during setup and remains governed by Anthropic's license terms.
-* **Antigravity CLI** and Android are trademarks of Google LLC.
-* **DeepSeek** and DeepSeek Harness are property of their respective owners.
-* Ubuntu, Linux, Kotlin, Node.js, Git, and other registered trademarks belong to their respective copyright holders.
-* Third-party open-source licenses are compiled in [`app/src/main/assets/licenses`](app/src/main/assets/licenses).
-
-<br />
-
-## License
-
-This project is licensed under the [MIT License](LICENSE). Third-party runtime binaries and packages remain governed by their respective upstream licenses.
+> Note: Building the `offline` flavor (`assembleOfflineDebug`) requires the pre-packaged `.tar.zst` runtime archives inside `dist/runtime-bundles/`.
 
 ---
 
-<div align="center">
-  <strong>ORQEN</strong> — <em>Think Together. Build Anything.</em><br />
-  <sub>Premium AI Collaboration Workspace for Android</sub>
-</div>
+## Configuration
+
+1. Launch ORQEN and complete the initial runtime setup.
+2. Open **Settings → Providers** to configure your API keys (Anthropic, OpenRouter, OpenAI-compatible, Gemini, DeepSeek, or Custom) or sign in via the official **Antigravity CLI** / **Claude Code** flows.
+3. API keys are encrypted via Android Keystore (`ApiKeyVault`) and masked in UI display (`SecretSanitizer` redacts keys/tokens before any task metadata, error message, or event log is persisted). Never commit real API keys to the repository.
+
+---
+
+## Project Structure
+
+- [`app/src/main/java/com/jarves/mh/multiagent/persistence/`](app/src/main/java/com/jarves/mh/multiagent/persistence) — Durable SQLite v4 database, entities, repositories, and legacy migration
+- [`app/src/main/java/com/jarves/mh/multiagent/engine/`](app/src/main/java/com/jarves/mh/multiagent/engine) — Task planner, DAG dependency resolver, atomic scheduler, verifier, checkpoints, and orchestrator
+- [`app/src/main/java/com/jarves/mh/multiagent/collab/`](app/src/main/java/com/jarves/mh/multiagent/collab) — Dynamic multi-agent registry, delegation, peer review, consensus, and file locking
+- [`app/src/main/java/com/jarves/mh/multiagent/session/`](app/src/main/java/com/jarves/mh/multiagent/session) — Multi-session chat controller, task reference resolver, and hierarchical memory compaction
+- [`app/src/main/java/com/jarves/mh/multiagent/recovery/`](app/src/main/java/com/jarves/mh/multiagent/recovery) — Android process recovery coordinator, liveness monitor, and recovery policy
+- [`app/src/main/java/com/jarves/mh/multiagent/host/`](app/src/main/java/com/jarves/mh/multiagent/host) — `ExecutionHost` abstraction (`LocalAndroidExecutionHost` and `RemoteExecutionHost` client adapter)
+- [`app/src/main/java/com/jarves/mh/multiagent/ui/`](app/src/main/java/com/jarves/mh/multiagent/ui) — Command Center UI, design system, team workspace, and group chat screens
+- [`app/src/main/java/com/jarves/mh/runtime/`](app/src/main/java/com/jarves/mh/runtime) — PRoot runtime bridges, `TeamAgentRunner`, `RuntimeExecutionService`, `TaskRecoveryJobService`, and `BootRecoveryReceiver`
+- [`docs/REMOTE_EXECUTION_CONTRACT.md`](docs/REMOTE_EXECUTION_CONTRACT.md) — Remote Execution Host backend API contract
+
+---
+
+## Security & Limitations
+
+- **PRoot Boundary**: PRoot runs in Android userspace without root privileges; it is **not** a hardware VM or hardened kernel sandbox. Only run repositories and build scripts you trust.
+- **Android Force-Stop & Power-Off**: Android blocks all background services, jobs, and boot receivers if a user explicitly **Force Stops** the app or powers off the device. ORQEN does not attempt to bypass OS restrictions; eligible tasks reconcile automatically when the app is launched again.
+- **Credential Protection**: Secrets are stored in Android Keystore (`ApiKeyVault`) and automatically redacted by `SecretSanitizer` prior to persistence in task logs or events.
+- **Privacy Policy**: See [PRIVACY.md](PRIVACY.md).
+
+---
+
+## License & Attribution
+
+Licensed under the [MIT License](LICENSE).
+
+ORQEN originated as an independent fork of the open-source [Mobile Harness](https://github.com/techjarves/Mobile-Harness) project by TechJarves (Copyright © 2026 Mobile Harness Contributors / TechJarves, MIT License). ORQEN is an independent product and is not affiliated with, endorsed by, or sponsored by TechJarves. Third-party open-source licenses are included in [`app/src/main/assets/licenses`](app/src/main/assets/licenses).
