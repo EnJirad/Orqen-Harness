@@ -145,6 +145,15 @@ class TeamAgentRunner(
                 allowSkipPermissions = allowSkipPermissions,
                 onProgress = onProgress,
             )
+            // Record real Antigravity usage (tokens & requests) into ProviderManager for accurate Quota & Cost tracking!
+            val usedModelId = agent.config.modelId.ifBlank { knownAgyModels.firstOrNull().orEmpty() }
+            providerManager.recordUsage(
+                configId = agent.config.providerId.ifBlank { "preset-antigravity" },
+                modelId = usedModelId,
+                promptTokens = (prompt.length / 4).coerceAtLeast(1),
+                completionTokens = (agyRes.responseText.length / 4).coerceAtLeast(0),
+                isError = agyRes.isError,
+            )
             // If agy rejected a stale/invalid --model flag, immediately retry once with the account's own default model!
             if (agyRes.isError &&
                 (agyRes.responseText.contains("invalid model selection", ignoreCase = true) ||

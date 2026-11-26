@@ -3787,6 +3787,97 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun createQuickTeamProject() {
+        val identity = generateQuickChatIdentity(_state.value.teamProjects.mapTo(mutableSetOf()) { it.slug })
+        val project = Project(
+            name = identity.displayName,
+            description = "Quick AI Team workspace",
+            language = str(R.string.vm_language_general),
+            slug = identity.slug,
+            kind = ProjectKind.QUICK_PROJECT,
+        )
+        _state.value.activeTeamProject?.id?.let { prevId ->
+            teamProjectTerminals[prevId] = _state.value.teamTerminalOutput
+        }
+        File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").mkdirs()
+        teamProjectChats[project.id] = mutableListOf()
+        teamProjectTerminals[project.id] = ""
+        val updated = listOf(project) + _state.value.teamProjects
+        preferences.saveTeamProjects(updated)
+        preferences.activeTeamProjectId = project.id
+        _state.update {
+            it.copy(
+                teamProjects = updated,
+                activeTeamProject = project,
+                teamGroupMessages = emptyList(),
+                teamTerminalOutput = "",
+                teamAgentLiveLogs = emptyMap(),
+                teamTypingAgentName = null,
+                teamTypingAgentSlot = null,
+                teamStreamingAgentName = null,
+                teamStreamingAgentSlot = null,
+                teamStreamingText = "",
+                teamAwaitingStartConfirmation = false,
+                activeSupervisedTaskId = null,
+                toastMessage = "Created Quick AI Team project: ${project.name}",
+            )
+        }
+    }
+
+    fun createAndroidTeamProject(name: String, template: AndroidTemplate) {
+        val resolvedName = name.replace(Regex("\\s+"), " ").trim().take(60).ifBlank {
+            generateAutoProjectName(_state.value.teamProjects.map { it.name })
+        }
+        val baseSlug = projectSlug(resolvedName)
+        val usedSlugs = _state.value.teamProjects.mapTo(mutableSetOf()) { it.slug }
+        val slug = generateSequence(1) { it + 1 }
+            .map { number -> if (number == 1) baseSlug else "$baseSlug-$number" }
+            .first { it !in usedSlugs }
+        val project = Project(
+            name = resolvedName,
+            description = if (template == AndroidTemplate.COMPOSE) "Android · Jetpack Compose (AI Team)" else "Android · Kotlin + XML (AI Team)",
+            language = "Kotlin",
+            slug = slug,
+            type = ProjectType.ANDROID,
+            androidTemplate = template,
+        )
+        val workspace = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}")
+        runCatching { AndroidProjectTemplateGenerator.generate(workspace, resolvedName, template) }
+            .onFailure {
+                _state.update { it.copy(toastMessage = str(R.string.an_could_not_create_android_project)) }
+                return
+            }
+        _state.value.activeTeamProject?.id?.let { prevId ->
+            teamProjectTerminals[prevId] = _state.value.teamTerminalOutput
+        }
+        teamProjectChats[project.id] = mutableListOf()
+        teamProjectTerminals[project.id] = ""
+        val updated = listOf(project) + _state.value.teamProjects
+        preferences.saveTeamProjects(updated)
+        preferences.activeTeamProjectId = project.id
+        _state.update {
+            it.copy(
+                teamProjects = updated,
+                activeTeamProject = project,
+                teamGroupMessages = emptyList(),
+                teamTerminalOutput = "",
+                teamAgentLiveLogs = emptyMap(),
+                teamTypingAgentName = null,
+                teamTypingAgentSlot = null,
+                teamStreamingAgentName = null,
+                teamStreamingAgentSlot = null,
+                teamStreamingText = "",
+                teamAwaitingStartConfirmation = false,
+                activeSupervisedTaskId = null,
+                toastMessage = if (!installer.isStackInstalled(DevStack.ANDROID)) {
+                    str(R.string.an_android_project_created_install_tools)
+                } else {
+                    "Created Android AI Team project: ${project.name}"
+                },
+            )
+        }
+    }
+
     fun renameTeamProject(projectId: String, newName: String) {
         val cleanName = newName.trim()
         if (cleanName.isBlank()) return
@@ -7344,8 +7435,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLine("Reply naturally in the same language as $ownerName, addressing them as $ownerName, clearly explaining the current project status or answering their question concisely.")
                 }
                 val providerCfg = _state.value.providerConfigs.firstOrNull { it.id == responder.config.providerId }
-                val streamBuffer = StringBuilder()
-                var lastStreamUiUpdateMs = 0L
                 val res = teamAgentRunner.executeTurn(
                     agent = responder,
                     providerConfig = providerCfg,
@@ -7356,27 +7445,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     enableCache = false,
                     knownAgyModels = _state.value.antigravityModels,
                     onProgress = { chunk ->
+                        // Keep internal background activity inside the agent's live log dropdown —
+                        // do NOT clutter the main Group Chat with raw background progress!
                         val cleanedChunk = chunk.trim()
-                        if (cleanedChunk.isNotBlank() &&
-                            !cleanedChunk.startsWith("Cache hit") &&
-                            !cleanedChunk.startsWith("Updating workspace")
-                        ) {
-                            if (streamBuffer.isNotEmpty() && !streamBuffer.endsWith("\n")) {
-                                streamBuffer.append("\n")
-                            }
-                            streamBuffer.append(cleanedChunk)
-                            val now = System.currentTimeMillis()
-                            if (now - lastStreamUiUpdateMs >= 85L) {
-                                lastStreamUiUpdateMs = now
-                                val snapshot = streamBuffer.toString().takeLast(4000)
-                                _state.update {
-                                    it.copy(
-                                        teamStreamingAgentName = responder.config.name,
-                                        teamStreamingAgentSlot = responder.config.slot,
-                                        teamStreamingText = snapshot,
-                                    )
-                                }
-                            }
+                        if (cleanedChunk.isNotBlank() && !cleanedChunk.startsWith("Cache hit")) {
+                            appendAgentLiveLog(responder.config.slot, cleanedChunk)
                         }
                     },
                 )
@@ -7467,8 +7540,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        // Chat-driven Auto-Start: if Owner types an actionable task in default Chat mode (without @mentioning
+        // a specific agent for Q&A), immediately let SPV plan and launch the team — no manual Start button needed!
+        val enabledAgents = _state.value.teamAgents.filter { it.config.isEnabled }
+        val explicitMention = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.resolveMentionedSlot(text, targetSlot, enabledAgents)
+        val shouldAutoDispatchTask = type == GroupMessageType.NORMAL &&
+            explicitMention == null &&
+            isActionableTaskIntent(text) &&
+            projectId != null
+
         // CHAT mode (GroupMessageType.NORMAL): converse with an IDLE agent (or @mentioned agent) without interrupting others!
-        if (type == GroupMessageType.NORMAL) {
+        if (type == GroupMessageType.NORMAL && !shouldAutoDispatchTask) {
             appendProjectTeamMessage(
                 projectId = projectId,
                 senderSlot = null,

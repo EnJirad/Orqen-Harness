@@ -430,13 +430,6 @@ fun TeamDashboardScreen(
                             leadingIcon = { Icon(Icons.Default.Paid, contentDescription = null, Modifier.size(16.dp)) },
                         )
                     }
-                    item {
-                        AssistChip(
-                            onClick = onOpenGroupChat,
-                            label = { Text(stringResource(R.string.nav_tab_chat)) },
-                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, Modifier.size(16.dp)) },
-                        )
-                    }
                 }
             }
 
@@ -643,23 +636,11 @@ fun TeamDashboardScreen(
 
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (!isTeamRunning || isLockedByOtherProject) {
-                            Button(
-                                onClick = onStartTeam,
-                                enabled = !isLockedByOtherProject,
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp),
-                            ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(stringResource(R.string.team_start))
-                            }
-                        } else {
+                    if (isTeamRunning && !isLockedByOtherProject) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
                             OutlinedButton(
                                 onClick = onPauseTeam,
                                 modifier = Modifier.weight(1f),
@@ -680,15 +661,25 @@ fun TeamDashboardScreen(
                                 Text(stringResource(R.string.team_stop))
                             }
                         }
-                    }
-                    FilledTonalButton(
-                        onClick = onOpenGroupChat,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(stringResource(R.string.team_open_group_chat_btn), fontWeight = FontWeight.Bold)
+                    } else if (!isLockedByOtherProject) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                Text(
+                                    text = "พิมพ์สั่งงานในแท็บแชทด้านล่างเพื่อเริ่มการทำงานของทีม AI (ปุ่มพัก/หยุดจะแสดงเมื่อทีมเริ่มทำงาน)",
+                                    fontSize = 11.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     }
                 }
             }

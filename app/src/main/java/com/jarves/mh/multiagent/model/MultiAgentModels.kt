@@ -58,6 +58,7 @@ data class AgentConfig(
     val maxTokens: Int = 8192,
     val customPrompt: String = "",
     val personality: String = "", // blank = Auto distinct employee persona per slot
+    val iconKey: String = "", // blank = Auto role-appropriate icon
 ) {
     fun effectivePersonality(): String = personality.trim().ifBlank { defaultEmployeePersonality(slot) }
 

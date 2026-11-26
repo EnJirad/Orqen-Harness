@@ -56,7 +56,9 @@ fun TeamProjectsHomeScreen(
     gitCloneRunning: Boolean,
     projectImporting: Boolean,
     onOpenTeamProject: (Project) -> Unit,
+    onCreateQuickTeamProject: () -> Unit = {},
     onCreateTeamProject: (String) -> Unit,
+    onCreateAndroidTeamProject: (String, com.jarves.mh.model.AndroidTemplate) -> Unit = { name, _ -> onCreateTeamProject(name) },
     onRenameTeamProject: (String, String) -> Unit = { _, _ -> },
     onCloneFromSolo: (Project) -> Unit,
     onDeleteTeamProject: (Project) -> Unit,
@@ -73,6 +75,7 @@ fun TeamProjectsHomeScreen(
     var showGitCloneDialog by remember { mutableStateOf(false) }
     var showGitHubDialog by remember { mutableStateOf(false) }
     var folderNameInput by remember { mutableStateOf("") }
+    var selectedAndroidTemplate by remember { mutableStateOf<com.jarves.mh.model.AndroidTemplate?>(null) }
     var gitUrlInput by remember { mutableStateOf("") }
     var repositorySearch by remember { mutableStateOf("") }
 
@@ -87,30 +90,69 @@ fun TeamProjectsHomeScreen(
     if (showNewFolderDialog) {
         AlertDialog(
             onDismissRequest = { showNewFolderDialog = false },
-            icon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null, tint = PocketOrange) },
-            title = { Text(stringResource(R.string.team_new_folder_title)) },
+            icon = { Icon(Icons.Default.AddCircleOutline, contentDescription = null, tint = PocketOrange) },
+            title = { Text(stringResource(R.string.an_create_project)) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = folderNameInput,
                         onValueChange = { folderNameInput = it },
-                        label = { Text(stringResource(R.string.team_folder_name_hint)) },
+                        label = { Text(stringResource(R.string.ws_project_name)) },
+                        placeholder = { Text(stringResource(R.string.project_auto_name_hint), fontSize = 11.sp) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    Text(stringResource(R.string.project_type), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        AssistChip(
+                            onClick = { selectedAndroidTemplate = null },
+                            label = { Text(stringResource(R.string.project_type_general), fontSize = 11.sp) },
+                            leadingIcon = { if (selectedAndroidTemplate == null) Icon(Icons.Default.Check, null, Modifier.size(15.dp)) },
+                        )
+                        AssistChip(
+                            onClick = { selectedAndroidTemplate = com.jarves.mh.model.AndroidTemplate.COMPOSE },
+                            label = { Text(stringResource(R.string.project_type_compose), fontSize = 11.sp) },
+                            leadingIcon = { if (selectedAndroidTemplate == com.jarves.mh.model.AndroidTemplate.COMPOSE) Icon(Icons.Default.Check, null, Modifier.size(15.dp)) },
+                        )
+                        AssistChip(
+                            onClick = { selectedAndroidTemplate = com.jarves.mh.model.AndroidTemplate.XML },
+                            label = { Text(stringResource(R.string.project_type_xml), fontSize = 11.sp) },
+                            leadingIcon = { if (selectedAndroidTemplate == com.jarves.mh.model.AndroidTemplate.XML) Icon(Icons.Default.Check, null, Modifier.size(15.dp)) },
+                        )
+                    }
                     Text(
-                        text = stringResource(R.string.project_auto_name_hint),
+                        stringResource(
+                            when (selectedAndroidTemplate) {
+                                com.jarves.mh.model.AndroidTemplate.COMPOSE -> R.string.project_type_compose_desc
+                                com.jarves.mh.model.AndroidTemplate.XML -> R.string.project_type_xml_desc
+                                null -> R.string.project_type_general_desc
+                            },
+                        ),
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (selectedAndroidTemplate != null) {
+                        Text(
+                            stringResource(R.string.an_template_info, 28, 36),
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             },
             confirmButton = {
                 Button(onClick = {
-                    onCreateTeamProject(folderNameInput.trim())
+                    val clean = folderNameInput.trim()
+                    val tmpl = selectedAndroidTemplate
+                    if (tmpl != null) {
+                        onCreateAndroidTeamProject(clean, tmpl)
+                    } else {
+                        onCreateTeamProject(clean)
+                    }
                     folderNameInput = ""
+                    selectedAndroidTemplate = null
                     showNewFolderDialog = false
-                }) { Text(stringResource(R.string.action_ok)) }
+                }) { Text(stringResource(R.string.ws_create)) }
             },
             dismissButton = {
                 TextButton(onClick = { showNewFolderDialog = false }) { Text(stringResource(R.string.action_cancel)) }
@@ -382,48 +424,65 @@ fun TeamProjectsHomeScreen(
                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
                 ) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Row 1: โปรเจคด่วน | โปรเจคใหม่ | โคลนจากงานเดี่ยว
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Button(
+                                onClick = onCreateQuickTeamProject,
+                                enabled = !projectImporting && !gitCloneRunning,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                            ) {
+                                Icon(Icons.Default.Bolt, contentDescription = null, Modifier.size(15.dp))
+                                Spacer(Modifier.width(3.dp))
+                                Text(stringResource(R.string.projects_quick_project), fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            FilledTonalButton(
                                 onClick = { showNewFolderDialog = true },
                                 enabled = !projectImporting && !gitCloneRunning,
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                             ) {
-                                Icon(Icons.Default.CreateNewFolder, contentDescription = null, Modifier.size(16.dp))
-                                Spacer(Modifier.width(5.dp))
-                                Text(stringResource(R.string.team_new_folder_btn), fontSize = 11.sp, maxLines = 1)
+                                Icon(Icons.Default.Add, contentDescription = null, Modifier.size(15.dp))
+                                Spacer(Modifier.width(3.dp))
+                                Text(stringResource(R.string.projects_new_project), fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             FilledTonalButton(
                                 onClick = { showCloneSoloDialog = true },
                                 enabled = !projectImporting && !gitCloneRunning,
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                             ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null, Modifier.size(16.dp))
-                                Spacer(Modifier.width(5.dp))
-                                Text(stringResource(R.string.team_clone_from_solo), fontSize = 11.sp, maxLines = 1)
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, Modifier.size(14.dp))
+                                Spacer(Modifier.width(3.dp))
+                                Text(stringResource(R.string.team_clone_from_solo), fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Row 2: Zip | Git URL | GitHub
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             OutlinedButton(
                                 onClick = { importZipLauncher.launch("*/*") },
                                 enabled = !projectImporting && !gitCloneRunning,
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                             ) {
-                                Icon(Icons.Default.Download, contentDescription = null, Modifier.size(15.dp))
+                                Icon(Icons.Default.Download, contentDescription = null, Modifier.size(14.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("ZIP", fontSize = 11.sp)
+                                Text("ZIP", fontSize = 11.sp, maxLines = 1)
                             }
                             OutlinedButton(
                                 onClick = { showGitCloneDialog = true },
                                 enabled = !gitCloneRunning,
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                             ) {
-                                Icon(Icons.Default.Code, contentDescription = null, Modifier.size(15.dp))
+                                Icon(Icons.Default.Code, contentDescription = null, Modifier.size(14.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Git", fontSize = 11.sp)
+                                Text("Git URL", fontSize = 11.sp, maxLines = 1)
                             }
                             OutlinedButton(
                                 onClick = {
@@ -435,10 +494,11 @@ fun TeamProjectsHomeScreen(
                                 enabled = !gitCloneRunning,
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                             ) {
-                                Icon(Icons.Default.CloudSync, contentDescription = null, Modifier.size(15.dp))
+                                Icon(Icons.Default.CloudSync, contentDescription = null, Modifier.size(14.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text(githubLogin?.take(8) ?: "GitHub", fontSize = 11.sp, maxLines = 1)
+                                Text(githubLogin?.take(8) ?: "GitHub", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                         if (projectImporting || gitCloneRunning) {

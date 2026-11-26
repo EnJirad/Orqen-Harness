@@ -471,11 +471,6 @@ private fun TeamSupervisorTab(
                         Text("ศูนย์ติดตามแผนงานและการสั่งการของ SPV", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
-                actions = {
-                    TextButton(onClick = onOpenChat) {
-                        Text("ไปแชทกลุ่ม", fontWeight = FontWeight.SemiBold)
-                    }
-                },
             )
         },
     ) { pad ->

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import com.jarves.mh.multiagent.model.ActivityType
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -126,10 +127,19 @@ fun CentralGroupChatScreen(
     val totalItems = messages.size + workingAgents.size + (if (hasStreaming) 1 else 0) + (if (!hasStreaming && !typingAgentName.isNullOrBlank()) 1 else 0)
     var prevTotalCount by remember { mutableIntStateOf(totalItems) }
 
-    // Smart Scroll Memory:
-    // - First visit to this project's chat: jump INSTANTLY to bottom (no top-to-bottom animation)
-    // - Returning from another tab: preserve exact scroll position (e.g. message #3)
-    // - New message arrives: scroll to bottom ONLY if user is already near bottom or just sent a message
+    val isPinnedToBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastIdx = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val count = info.totalItemsCount
+            count == 0 || lastIdx >= (count - 2).coerceAtLeast(0) || !listState.canScrollForward
+        }
+    }
+
+    // Smart Auto-Scroll & Push-Up:
+    // - First visit to this project's chat: jump INSTANTLY to bottom
+    // - New message or new streaming line arrives: push chat up smoothly ONLY if user is pinned near bottom or just sent a message
+    // - User can freely scroll up at any time to read earlier messages without being yanked back!
     LaunchedEffect(totalItems) {
         if (totalItems == 0) {
             prevTotalCount = 0
@@ -141,24 +151,30 @@ fun CentralGroupChatScreen(
             prevTotalCount = totalItems
             return@LaunchedEffect
         }
-        if (totalItems > prevTotalCount) {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            val isNearBottom = lastVisible >= (prevTotalCount - 2).coerceAtLeast(0)
-            if (pendingUserSendScroll || isNearBottom) {
-                listState.scrollToItem(totalItems - 1)
-                pendingUserSendScroll = false
-            }
+        if (totalItems > prevTotalCount && (pendingUserSendScroll || isPinnedToBottom)) {
+            listState.scrollToItem(totalItems - 1)
+            pendingUserSendScroll = false
         }
         prevTotalCount = totalItems
     }
 
+    // Push chat up smoothly as each new line of AI response appears!
+    LaunchedEffect(streamingText.length) {
+        if (hasStreaming && totalItems > 0 && (isPinnedToBottom || pendingUserSendScroll)) {
+            listState.scrollToItem(totalItems - 1, scrollOffset = 10_000)
+        }
+    }
+
+    // Push chat up whenever keyboard opens so messages stay visible above the input bar!
+    var prevImeBottom by remember { mutableIntStateOf(0) }
     LaunchedEffect(imeBottom) {
-        if (imeBottom > 0 && totalItems > 0) {
+        if (imeBottom > prevImeBottom && totalItems > 0) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            if (lastVisible >= (totalItems - 2).coerceAtLeast(0)) {
-                listState.scrollToItem(totalItems - 1)
+            if (lastVisible >= (totalItems - 4).coerceAtLeast(0) || !listState.canScrollForward) {
+                listState.scrollToItem(totalItems - 1, scrollOffset = 10_000)
             }
         }
+        prevImeBottom = imeBottom
     }
 
     if (showClearConfirm && onClearChat != null) {
@@ -246,7 +262,7 @@ fun CentralGroupChatScreen(
                     isAnyTyping && activeWorkingAgents.isEmpty() -> Triple(
                         Color(0xFF06B6D4).copy(alpha = 0.14f),
                         Color(0xFF06B6D4),
-                        "${typingAgentName ?: "AI"} กำลังพิมพ์ตอบ...",
+                        "${typingAgentName ?: "AI"} กำลังคิด...",
                     )
                     activeWorkingAgents.isNotEmpty() -> {
                         val lead = activeWorkingAgents.first()
@@ -300,7 +316,7 @@ fun CentralGroupChatScreen(
                         ) {
                             when {
                                 isAnyTyping && activeWorkingAgents.isEmpty() -> {
-                                    BouncingWaveDots(color = bannerFg, dotSize = 4.dp, bounceHeight = -3f)
+                                    ThinkingPulseSpark(color = bannerFg, size = 14.dp)
                                 }
                                 activeWorkingAgents.isNotEmpty() -> {
                                     CircularProgressIndicator(
@@ -344,7 +360,7 @@ fun CentralGroupChatScreen(
                                     val isWorkingThis = agent.isWorking && !isTypingThis
                                     val act = agent.activityState.activity
                                     val statusLabel = when {
-                                        isTypingThis -> "กำลังตอบ..."
+                                        isTypingThis -> "กำลังคิด..."
                                         !agent.config.isEnabled -> stringResource(R.string.team_overlay_paused)
                                         else -> stringResource(act.labelRes)
                                     }
@@ -356,19 +372,17 @@ fun CentralGroupChatScreen(
                                         horizontalArrangement = Arrangement.spacedBy(7.dp),
                                     ) {
                                         when {
-                                            isTypingThis -> BouncingWaveDots(color = accent, dotSize = 3.8.dp, bounceHeight = -3f)
+                                            isTypingThis -> ThinkingPulseSpark(color = accent, size = 13.dp)
                                             isWorkingThis -> CircularProgressIndicator(
                                                 modifier = Modifier.size(11.dp),
                                                 strokeWidth = 1.6.dp,
                                                 color = accent,
                                             )
-                                            else -> Box(
-                                                Modifier
-                                                    .size(7.dp)
-                                                    .clip(CircleShape)
-                                                    .background(
-                                                        if (!agent.config.isEnabled || act == ActivityType.PAUSED) Color(0xFFF59E0B) else accent.copy(alpha = 0.7f),
-                                                    ),
+                                            else -> Icon(
+                                                imageVector = AgentIconCatalog.iconFor(agent.config),
+                                                contentDescription = null,
+                                                tint = if (!agent.config.isEnabled || act == ActivityType.PAUSED) Color(0xFFF59E0B) else accent,
+                                                modifier = Modifier.size(13.dp),
                                             )
                                         }
                                         Text(
@@ -423,8 +437,10 @@ fun CentralGroupChatScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(messages, key = { it.id }) { msg ->
+                    val senderAgent = msg.senderSlot?.let { slot -> agents.firstOrNull { it.config.slot == slot } }
                     GroupChatBubble(
                         message = msg,
+                        senderIcon = senderAgent?.let { AgentIconCatalog.iconFor(it.config) },
                         onOpenFile = onOpenFile,
                         onSendAsTask = { taskPrompt ->
                             pendingUserSendScroll = true
@@ -440,17 +456,21 @@ fun CentralGroupChatScreen(
                 }
                 if (hasStreaming) {
                     item(key = "streaming-live-bubble") {
+                        val streamAgent = streamingAgentSlot?.let { slot -> agents.firstOrNull { it.config.slot == slot } }
                         AiStreamingBubble(
                             agentName = streamingAgentName!!,
                             agentSlot = streamingAgentSlot,
+                            agentIcon = streamAgent?.let { AgentIconCatalog.iconFor(it.config) },
                             text = streamingText,
                         )
                     }
                 } else if (!typingAgentName.isNullOrBlank()) {
                     item(key = "typing-wave-indicator") {
+                        val thinkAgent = typingAgentSlot?.let { slot -> agents.firstOrNull { it.config.slot == slot } }
                         AiTypingWaveBubble(
                             agentName = typingAgentName,
                             agentSlot = typingAgentSlot,
+                            agentIcon = thinkAgent?.let { AgentIconCatalog.iconFor(it.config) },
                         )
                     }
                 }
@@ -708,10 +728,38 @@ internal fun agentAccentColor(slot: AgentSlot?): Color = when (slot) {
     null -> OrqenMint
 }
 
+/**
+ * Sleek pulsing sparkle indicator used while AI is thinking/preparing its reply
+ * (replaces bouncing wave dots for a cleaner, calmer visual).
+ */
+@Composable
+internal fun ThinkingPulseSpark(
+    color: Color,
+    size: Dp = 15.dp,
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "thinkingSpark")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 750),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "sparkAlpha",
+    )
+    Icon(
+        imageVector = Icons.Default.AutoAwesome,
+        contentDescription = "Thinking",
+        tint = color.copy(alpha = alpha),
+        modifier = Modifier.size(size),
+    )
+}
+
 @Composable
 private fun AiStreamingBubble(
     agentName: String,
     agentSlot: AgentSlot? = null,
+    agentIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     text: String,
 ) {
     val accent = agentAccentColor(agentSlot)
@@ -723,24 +771,28 @@ private fun AiStreamingBubble(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Icon(
-                painter = painterResource(id = R.drawable.ic_orqen_mark),
-                contentDescription = null,
-                tint = accent,
-                modifier = Modifier.size(13.dp),
-            )
+            if (agentIcon != null) {
+                Icon(
+                    imageVector = agentIcon,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(14.dp),
+                )
+            } else {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_orqen_mark),
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(13.dp),
+                )
+            }
             Text(
                 text = agentName,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = accent,
             )
-            BouncingWaveDots(
-                color = accent,
-                dotSize = 4.dp,
-                bounceHeight = -3f,
-                modifier = Modifier.padding(start = 2.dp, top = 1.dp),
-            )
+            ThinkingPulseSpark(color = accent, size = 12.dp)
         }
         Spacer(Modifier.height(4.dp))
         Column(
@@ -766,6 +818,7 @@ private fun AiStreamingBubble(
 private fun AiTypingWaveBubble(
     agentName: String,
     agentSlot: AgentSlot? = null,
+    agentIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
 ) {
     val accent = agentAccentColor(agentSlot)
     Row(
@@ -786,23 +839,33 @@ private fun AiTypingWaveBubble(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_orqen_mark),
-                    contentDescription = "ORQEN",
-                    tint = accent,
-                    modifier = Modifier.size(15.dp),
-                )
+                if (agentIcon != null) {
+                    Icon(
+                        imageVector = agentIcon,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(15.dp),
+                    )
+                } else {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_orqen_mark),
+                        contentDescription = "ORQEN",
+                        tint = accent,
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
                 Text(
                     text = agentName,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     color = accent,
                 )
-                BouncingWaveDots(
-                    color = accent,
-                    dotSize = 6.dp,
-                    bounceHeight = -6f,
-                    modifier = Modifier.padding(start = 2.dp, top = 2.dp),
+                ThinkingPulseSpark(color = accent, size = 14.dp)
+                Text(
+                    text = "กำลังคิด...",
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = accent.copy(alpha = 0.9f),
                 )
             }
         }
@@ -924,6 +987,7 @@ private fun LiveAgentWorkingBubble(
 @Composable
 fun GroupChatBubble(
     message: GroupChatMessage,
+    senderIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     onOpenFile: ((String) -> Unit)? = null,
     onSendAsTask: ((String) -> Unit)? = null,
 ) {
@@ -963,12 +1027,21 @@ fun GroupChatBubble(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (!isUser) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_orqen_mark),
-                    contentDescription = null,
-                    tint = agentColor,
-                    modifier = Modifier.size(13.dp),
-                )
+                if (senderIcon != null) {
+                    Icon(
+                        imageVector = senderIcon,
+                        contentDescription = null,
+                        tint = agentColor,
+                        modifier = Modifier.size(14.dp),
+                    )
+                } else {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_orqen_mark),
+                        contentDescription = null,
+                        tint = agentColor,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
             }
             Text(
                 text = message.senderName,

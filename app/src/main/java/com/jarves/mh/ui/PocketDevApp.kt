@@ -2636,8 +2636,16 @@ private fun RootScreenHost(
                             gitCloneRunning = state.gitCloneRunning,
                             projectImporting = state.projectImporting,
                             onOpenTeamProject = viewModel::openTeamProject,
+                            onCreateQuickTeamProject = {
+                                viewModel.createQuickTeamProject()
+                                viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD)
+                            },
                             onCreateTeamProject = { name ->
                                 viewModel.createTeamProject(name)
+                                viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD)
+                            },
+                            onCreateAndroidTeamProject = { name, template ->
+                                viewModel.createAndroidTeamProject(name, template)
                                 viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD)
                             },
                             onRenameTeamProject = viewModel::renameTeamProject,

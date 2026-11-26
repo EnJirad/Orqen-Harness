@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -77,6 +78,7 @@ fun AgentDetailScreen(
 
     var name by remember(agentState) { mutableStateOf(agentState.config.name) }
     var selectedRoleType by remember(agentState) { mutableStateOf(agentState.config.role.type) }
+    var iconKey by remember(agentState) { mutableStateOf(agentState.config.iconKey) }
     var isEnabled by remember(agentState) { mutableStateOf(agentState.config.isEnabled) }
     var selectedProvider by remember(agentState) { mutableStateOf(agentState.config.providerId) }
     var selectedModel by remember(agentState) { mutableStateOf(agentState.config.modelId) }
@@ -463,9 +465,76 @@ fun AgentDetailScreen(
                                         text = { Text(role.defaultTitle) },
                                         onClick = {
                                             selectedRoleType = role
+                                            if (iconKey.isBlank()) {
+                                                iconKey = AgentIconCatalog.defaultKeyForRole(role)
+                                            }
                                             roleMenuExpanded = false
                                         },
                                     )
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        // Per-Agent Icon Picker + Role-Appropriate Randomize
+                        val activeIconKey = iconKey.ifBlank { AgentIconCatalog.defaultKeyForRole(selectedRoleType) }
+                        val agentColor = agentAccentColor(agentState.config.slot)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "ไอคอนประจำตัว AI",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            TextButton(
+                                onClick = {
+                                    iconKey = AgentIconCatalog.randomKeyForRole(selectedRoleType, activeIconKey)
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            ) {
+                                Icon(Icons.Default.Shuffle, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("สุ่มให้เหมาะกับบทบาท", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            items(AgentIconCatalog.allOptions, key = { it.key }) { option ->
+                                val isSelected = activeIconKey == option.key
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (isSelected) agentColor.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                    border = BorderStroke(
+                                        width = if (isSelected) 1.5.dp else 1.dp,
+                                        color = if (isSelected) agentColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                    ),
+                                    modifier = Modifier.clickable { iconKey = option.key },
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = option.icon,
+                                            contentDescription = option.label,
+                                            tint = if (isSelected) agentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Text(
+                                            text = option.label,
+                                            fontSize = 10.5.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) agentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1092,6 +1161,7 @@ fun AgentDetailScreen(
                             maxTokens = maxTokens,
                             customPrompt = systemPrompt,
                             personality = employeePersonality.trim(),
+                            iconKey = iconKey.trim(),
                         )
                         onSaveConfig(updatedConfig)
                         onBack()

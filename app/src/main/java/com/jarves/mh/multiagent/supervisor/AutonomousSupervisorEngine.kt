@@ -191,7 +191,32 @@ class AutonomousSupervisorEngine(
 
         val rawPlan = planner.planTask(project, normalizedObj, requestedSubtasks, acceptanceCriteria)
         val workloads = mutableMapOf<String, Int>()
-        val assignedSteps = rawPlan.steps.map { step ->
+        val baseSteps = rawPlan.steps.ifEmpty {
+            // Guarantee at least 2 concrete steps so a task NEVER enters supervision with "No steps planned"!
+            val dev = capabilityResolver.selectBestAgent(candidates, setOf("code")) ?: candidates.first()
+            val reviewer = capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"), excludeAgentIds = setOf(dev.agentId)) ?: dev
+            val impl = com.jarves.mh.multiagent.engine.PlannedStep(
+                sequenceNumber = 1,
+                title = "วิเคราะห์และพัฒนา: ${normalizedObj.take(56)}",
+                description = normalizedObj,
+                expectedOutput = "Implemented changes in project workspace",
+                requiredCapabilities = setOf("code"),
+                assignedAgentId = dev.agentId,
+                requiresReview = false,
+            )
+            val verify = com.jarves.mh.multiagent.engine.PlannedStep(
+                sequenceNumber = 2,
+                title = "ตรวจสอบโค้ดและยืนยันผลทดสอบ",
+                description = "Review implemented changes and verify tests pass for: $normalizedObj",
+                expectedOutput = "REVIEW_APPROVED and TESTS_PASSED",
+                dependencies = listOf(impl.stepId),
+                requiredCapabilities = setOf("review", "qa"),
+                assignedAgentId = reviewer.agentId,
+                requiresReview = true,
+            )
+            listOf(impl, verify)
+        }
+        val assignedSteps = baseSteps.map { step ->
             val selected = capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities, activeWorkloads = workloads)
                 ?: candidates.first()
             workloads[selected.agentId] = (workloads[selected.agentId] ?: 0) + 1

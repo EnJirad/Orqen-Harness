@@ -204,6 +204,99 @@ fun QuotaManagementScreen(
                 }
             }
 
+            // 1.5 Per-Agent / Per-Model Real Quota Breakdown (shows real Antigravity & Provider quota per model)
+            if (agents.isNotEmpty()) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f), RoundedCornerShape(16.dp)),
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "โควต้าจริงแยกตามโมเดลของทีม AI",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Text(
+                                    text = "${agents.count { it.config.isEnabled }}/${agents.size} ใช้งาน",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            agents.forEach { agent ->
+                                val cfg = agent.config
+                                val q = allProviderQuotas[cfg.providerId]
+                                val est = allProviderEstimated[cfg.providerId]
+                                val loc = allProviderLocal[cfg.providerId]
+                                val rem = q?.remainingPercent?.coerceIn(0f, 1f)
+                                val accent = agentAccentColor(cfg.slot)
+                                val barColor = when {
+                                    rem == null -> accent
+                                    rem > 0.25f -> Color(0xFF16A34A)
+                                    rem > 0.12f -> Color(0xFFD97706)
+                                    else -> Color(0xFFDC2626)
+                                }
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Icon(
+                                            imageVector = AgentIconCatalog.iconFor(cfg),
+                                            contentDescription = null,
+                                            tint = accent,
+                                            modifier = Modifier.size(15.dp),
+                                        )
+                                        Text(
+                                            text = "${cfg.name} · ${cfg.modelId.ifBlank { "default" }}",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            text = if (rem != null) "เหลือ ${(rem * 100).toInt()}%" else "${loc?.totalRequests ?: 0} req",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = barColor,
+                                        )
+                                    }
+                                    if (rem != null) {
+                                        LinearProgressIndicator(
+                                            progress = { rem },
+                                            modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp)),
+                                            color = barColor,
+                                            trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                                        )
+                                    }
+                                    val subInfo = buildList {
+                                        q?.resetTime?.takeIf { it.isNotBlank() }?.let { add("รีเซ็ต: $it") }
+                                        est?.let { add("${it.estimatedTokens} tokens · ฿${String.format("%.2f", it.estimatedCostUsd * 35.0)}") }
+                                        loc?.let { add("${it.totalRequests} ครั้ง") }
+                                    }.joinToString(" · ")
+                                    if (subInfo.isNotBlank()) {
+                                        Text(
+                                            text = subInfo,
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // 2. Budget Guard & Auto-Pause Card
             item {
                 Card(
