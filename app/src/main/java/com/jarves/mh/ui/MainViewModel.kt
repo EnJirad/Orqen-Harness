@@ -540,6 +540,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var teamCycleJob: kotlinx.coroutines.Job? = null
     private val pendingTeamDirectives = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private val teamProjectChats = mutableMapOf<String, MutableList<GroupChatMessage>>()
+    private val teamProjectTerminals = mutableMapOf<String, String>()
+
+    private fun projectChatFile(projectId: String): File =
+        File(File(getApplication<Application>().filesDir, "team_workspaces/$projectId").apply { mkdirs() }, ".orqen_chat.json")
+
+    private fun loadProjectTeamChat(projectId: String): MutableList<GroupChatMessage> {
+        teamProjectChats[projectId]?.let { return it }
+        val loaded = mutableListOf<GroupChatMessage>()
+        val file = projectChatFile(projectId)
+        if (file.isFile) {
+            runCatching {
+                val arr = org.json.JSONArray(file.readText())
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val slotId = obj.optString("senderSlot").takeIf { it.isNotBlank() }
+                    val typeName = obj.optString("messageType", GroupMessageType.NORMAL.name)
+                    val msgType = runCatching { GroupMessageType.valueOf(typeName) }.getOrDefault(GroupMessageType.NORMAL)
+                    val details = mutableListOf<String>()
+                    obj.optJSONArray("workDetails")?.let { dArr ->
+                        for (j in 0 until dArr.length()) details += dArr.optString(j)
+                    }
+                    val imgs = mutableListOf<String>()
+                    obj.optJSONArray("imagePaths")?.let { iArr ->
+                        for (j in 0 until iArr.length()) imgs += iArr.optString(j)
+                    }
+                    loaded += GroupChatMessage(
+                        id = obj.optString("id").ifBlank { java.util.UUID.randomUUID().toString() },
+                        senderSlot = slotId?.let { AgentSlot.fromId(it) },
+                        senderName = obj.optString("senderName"),
+                        text = obj.optString("text"),
+                        timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
+                        messageType = msgType,
+                        relatedFilePath = obj.optString("relatedFilePath").takeIf { it.isNotBlank() },
+                        workStatus = obj.optString("workStatus").takeIf { it.isNotBlank() },
+                        workDetails = details,
+                        imagePaths = imgs,
+                        suggestedTaskPrompt = obj.optString("suggestedTaskPrompt").takeIf { it.isNotBlank() },
+                    )
+                }
+            }
+        }
+        teamProjectChats[projectId] = loaded
+        return loaded
+    }
+
+    private fun persistProjectTeamChat(projectId: String, messages: List<GroupChatMessage>) {
+        val snapshot = messages.takeLast(200)
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val arr = org.json.JSONArray()
+                snapshot.forEach { msg ->
+                    arr.put(
+                        org.json.JSONObject().apply {
+                            put("id", msg.id)
+                            put("senderSlot", msg.senderSlot?.id.orEmpty())
+                            put("senderName", msg.senderName)
+                            put("text", msg.text)
+                            put("timestamp", msg.timestamp)
+                            put("messageType", msg.messageType.name)
+                            put("relatedFilePath", msg.relatedFilePath.orEmpty())
+                            put("workStatus", msg.workStatus.orEmpty())
+                            put("workDetails", org.json.JSONArray(msg.workDetails))
+                            put("imagePaths", org.json.JSONArray(msg.imagePaths))
+                            put("suggestedTaskPrompt", msg.suggestedTaskPrompt.orEmpty())
+                        },
+                    )
+                }
+                projectChatFile(projectId).writeText(arr.toString())
+            }
+        }
+    }
     private val teamAgentRunner by lazy {
         com.jarves.mh.runtime.TeamAgentRunner(getApplication(), installer, providerManager)
     }
@@ -653,19 +724,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 updateAgentActivity(AgentSlot.AGENT_1, ActivityType.WAITING, "", "กำลังติดตามงานของ $displayName")
                             }
                             updateAgentActivity(slot, act, upd.stepTitle, upd.detail)
+                            val actLabel = when (act) {
+                                ActivityType.REVIEWING -> "กำลังตรวจสอบ/รีวิว"
+                                ActivityType.ANALYZING -> "กำลังวิเคราะห์"
+                                ActivityType.FIXING_BUG -> "กำลังแก้บั๊ก"
+                                else -> "กำลังเขียนโค้ด"
+                            }
+                            val stepPrefix = if (upd.stepNumber > 0 && upd.totalSteps > 0) {
+                                "ขั้น ${upd.stepNumber}/${upd.totalSteps} · "
+                            } else ""
                             updateTeamForegroundNotification(
                                 _state.value.activeTeamProject?.name ?: "ORQEN",
-                                "$displayName: ${upd.stepTitle.take(50)}",
+                                "$stepPrefix$displayName ($actLabel): ${upd.stepTitle.take(60)}",
                             )
                         }
                         "PROGRESS" -> {
                             if (upd.detail.isNotBlank()) {
                                 appendAgentLiveLog(slot, upd.detail)
+                                val now = System.currentTimeMillis()
+                                if (now - lastNotifProgressUpdateMs >= 3_500L) {
+                                    lastNotifProgressUpdateMs = now
+                                    val stepPrefix = if (upd.stepNumber > 0 && upd.totalSteps > 0) {
+                                        "ขั้น ${upd.stepNumber}/${upd.totalSteps} · "
+                                    } else ""
+                                    updateTeamForegroundNotification(
+                                        _state.value.activeTeamProject?.name ?: "ORQEN",
+                                        "$stepPrefix$displayName: ${upd.detail.trim().take(70)}",
+                                    )
+                                }
                             }
                         }
                         "COMPLETED" -> {
                             updateAgentActivity(slot, ActivityType.COMPLETED, upd.stepTitle, "เสร็จสิ้น")
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                            val stepPrefix = if (upd.stepNumber > 0 && upd.totalSteps > 0) {
+                                "เสร็จขั้น ${upd.stepNumber}/${upd.totalSteps} · "
+                            } else "เสร็จสิ้น · "
+                            updateTeamForegroundNotification(
+                                _state.value.activeTeamProject?.name ?: "ORQEN",
+                                "$stepPrefix$displayName: ${upd.stepTitle.take(55)}",
+                            )
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
                                 senderSlot = slot,
@@ -693,6 +791,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
     private var activeSupervisedTaskId: String? = null
+    private var lastNotifProgressUpdateMs: Long = 0L
     private var supervisorSnapshotJob: kotlinx.coroutines.Job? = null
     private val multiSessionController by lazy {
         com.jarves.mh.multiagent.session.MultiSessionChatController(orqenTaskStore)
@@ -3610,12 +3709,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectTeamProject(project: Project) {
+        // Save outgoing project's terminal output so each project keeps its own isolated state
+        _state.value.activeTeamProject?.id?.let { prevId ->
+            if (prevId != project.id) {
+                teamProjectTerminals[prevId] = _state.value.teamTerminalOutput
+            }
+        }
         preferences.activeTeamProjectId = project.id
-        val projectHistory = teamProjectChats.getOrPut(project.id) { mutableListOf() }
+        val projectHistory = loadProjectTeamChat(project.id)
+        val projectTerminal = teamProjectTerminals[project.id].orEmpty()
+        val projectRunning = _state.value.runningTeamProjectId == project.id && _state.value.teamIsRunning
+        val projectAwaitingConfirm = pendingStartConfirmation?.projectId == project.id
+        val projectActiveTaskId = if (projectRunning) activeSupervisedTaskId else null
         _state.update {
             it.copy(
                 activeTeamProject = project,
                 teamGroupMessages = projectHistory.toList(),
+                teamTerminalOutput = projectTerminal,
+                teamAgentLiveLogs = if (projectRunning) it.teamAgentLiveLogs else emptyMap(),
+                teamTypingAgentName = if (projectRunning) it.teamTypingAgentName else null,
+                teamTypingAgentSlot = if (projectRunning) it.teamTypingAgentSlot else null,
+                teamStreamingAgentName = if (projectRunning) it.teamStreamingAgentName else null,
+                teamStreamingAgentSlot = if (projectRunning) it.teamStreamingAgentSlot else null,
+                teamStreamingText = if (projectRunning) it.teamStreamingText else "",
+                teamAwaitingStartConfirmation = projectAwaitingConfirm,
+                activeSupervisedTaskId = projectActiveTaskId,
             )
         }
     }
@@ -3640,7 +3758,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             language = "General",
             slug = slug,
         )
+        // Save previous project's terminal output before switching to brand-new isolated workspace
+        _state.value.activeTeamProject?.id?.let { prevId ->
+            teamProjectTerminals[prevId] = _state.value.teamTerminalOutput
+        }
         File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").mkdirs()
+        teamProjectChats[project.id] = mutableListOf()
+        teamProjectTerminals[project.id] = ""
         val updated = listOf(project) + _state.value.teamProjects
         preferences.saveTeamProjects(updated)
         preferences.activeTeamProjectId = project.id
@@ -3648,6 +3772,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 teamProjects = updated,
                 activeTeamProject = project,
+                teamGroupMessages = emptyList(),
+                teamTerminalOutput = "",
+                teamAgentLiveLogs = emptyMap(),
+                teamTypingAgentName = null,
+                teamTypingAgentSlot = null,
+                teamStreamingAgentName = null,
+                teamStreamingAgentSlot = null,
+                teamStreamingText = "",
+                teamAwaitingStartConfirmation = false,
+                activeSupervisedTaskId = null,
                 toastMessage = "Created AI Squad workspace: ${project.name}",
             )
         }
@@ -6145,6 +6279,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         defaultTasks.forEach { taskManager.addTask(it) }
 
+        val activeTeamId = _state.value.activeTeamProject?.id
+        val initialTeamMessages = if (activeTeamId != null) loadProjectTeamChat(activeTeamId).toList() else emptyList()
         _state.update {
             it.copy(
                 teamAgents = initialAgents,
@@ -6152,7 +6288,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 teamTasks = taskManager.tasks.value,
                 teamCurrentPartNumber = taskManager.currentPartNumber.value,
                 providerConfigs = providerManager.configs.value,
-                teamGroupMessages = teamChatManager.messages.value,
+                teamGroupMessages = initialTeamMessages,
             )
         }
 
@@ -6167,9 +6303,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             providerManager.configs.collect { configs -> _state.update { it.copy(providerConfigs = configs) } }
-        }
-        viewModelScope.launch {
-            teamChatManager.messages.collect { msgs -> _state.update { it.copy(teamGroupMessages = msgs) } }
         }
         viewModelScope.launch {
             // Immediate + periodic quota & file lock refresh across ALL providers and Solo agent
@@ -6868,6 +7001,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val projectId = _state.value.activeTeamProject?.id
         if (projectId != null) {
             teamProjectChats[projectId]?.clear()
+            persistProjectTeamChat(projectId, emptyList())
         }
         teamChatManager.clearHistory()
         _state.update { it.copy(teamGroupMessages = emptyList()) }
@@ -6966,22 +7100,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             suggestedTaskPrompt = suggestedTaskPrompt,
         )
         if (projectId != null) {
-            val list = teamProjectChats.getOrPut(projectId) { mutableListOf() }
+            val list = loadProjectTeamChat(projectId)
             list.add(msg)
+            persistProjectTeamChat(projectId, list)
             if (_state.value.activeTeamProject?.id == projectId) {
                 _state.update { it.copy(teamGroupMessages = list.toList()) }
             }
         }
-        teamChatManager.postMessage(
-            senderSlot = senderSlot,
-            senderName = senderName,
-            text = text,
-            messageType = messageType,
-            relatedFilePath = relatedFilePath,
-            workStatus = workStatus,
-            workDetails = workDetails,
-            imagePaths = imagePaths,
-        )
     }
 
     fun clearTeamTerminal() {

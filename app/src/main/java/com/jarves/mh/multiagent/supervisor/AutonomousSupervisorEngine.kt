@@ -53,6 +53,8 @@ data class StepLifecycleUpdate(
     val phase: String, // PLANNED, STARTED, PROGRESS, COMPLETED, REVIEW_REJECTED, FAILED, RECOVERING
     val detail: String = "",
     val modifiedFiles: List<String> = emptyList(),
+    val stepNumber: Int = 0,
+    val totalSteps: Int = 0,
 )
 
 /**
@@ -626,7 +628,9 @@ class AutonomousSupervisorEngine(
                 }
 
                 // 8. Execute step via real RuntimeStepExecutionAdapter with HealthMonitor + Watchdog
-                updateSnapshot(taskId, SupervisorOperationalStatus.SUPERVISING, "Executing #${nextStep.sequenceNumber} '${nextStep.title}' (${agentProfile.displayName} / ${agentProfile.modelId})")
+                val totalPlannedSteps = allSteps.size.coerceAtLeast(nextStep.sequenceNumber)
+                val retrySuffix = if (nextStep.retryCount > 0) " (ลองใหม่รอบที่ ${nextStep.retryCount + 1})" else ""
+                updateSnapshot(taskId, SupervisorOperationalStatus.SUPERVISING, "ขั้นตอน ${nextStep.sequenceNumber}/$totalPlannedSteps: ${nextStep.title}$retrySuffix (${agentProfile.displayName} / ${agentProfile.modelId})")
                 onStepLifecycleUpdate(
                     StepLifecycleUpdate(
                         projectId = task.projectId,
@@ -636,7 +640,9 @@ class AutonomousSupervisorEngine(
                         agentId = agentProfile.agentId,
                         agentDisplayName = agentProfile.displayName,
                         phase = "STARTED",
-                        detail = "เริ่มทำงาน #${nextStep.sequenceNumber}: ${nextStep.title} (${agentProfile.modelId})",
+                        detail = "📌 เริ่มขั้นตอนที่ ${nextStep.sequenceNumber}/$totalPlannedSteps: ${nextStep.title}$retrySuffix (ใช้โมเดล ${agentProfile.modelId})",
+                        stepNumber = nextStep.sequenceNumber,
+                        totalSteps = totalPlannedSteps,
                     ),
                 )
                 val runningStep = nextStep.copy(status = StepStatus.RUNNING, startedAt = nextStep.startedAt ?: nowProvider())
@@ -916,6 +922,25 @@ class AutonomousSupervisorEngine(
                             resultSummary = output.summary.take(500),
                         ),
                     )
+                    val completedTotalSteps = allSteps.size.coerceAtLeast(runningStep.sequenceNumber)
+                    val nextPendingStep = allSteps.firstOrNull {
+                        it.sequenceNumber > runningStep.sequenceNumber && it.status != StepStatus.COMPLETED
+                    }
+                    val completionDetail = buildString {
+                        appendLine("✅ ทำขั้นตอนที่ ${runningStep.sequenceNumber}/$completedTotalSteps เสร็จแล้ว: ${runningStep.title}")
+                        if (changedFiles.isNotEmpty()) {
+                            appendLine("📁 ไฟล์ที่อัปเดต (${changedFiles.size}): ${changedFiles.take(4).joinToString(", ")}")
+                        }
+                        val cleanOut = output.summary.trim().take(320)
+                        if (cleanOut.isNotBlank()) {
+                            appendLine(cleanOut)
+                        }
+                        if (nextPendingStep != null) {
+                            append("➡️ ขั้นตอนถัดไป (#${nextPendingStep.sequenceNumber}/$completedTotalSteps): ${nextPendingStep.title}")
+                        } else {
+                            append("🔍 ส่งต่อให้ Supervisor ตรวจสอบความครบถ้วนและผลทดสอบครับ")
+                        }
+                    }
                     onStepLifecycleUpdate(
                         StepLifecycleUpdate(
                             projectId = task.projectId,
@@ -925,8 +950,10 @@ class AutonomousSupervisorEngine(
                             agentId = agentProfile.agentId,
                             agentDisplayName = agentProfile.displayName,
                             phase = "COMPLETED",
-                            detail = output.summary.take(400),
+                            detail = completionDetail,
                             modifiedFiles = changedFiles,
+                            stepNumber = runningStep.sequenceNumber,
+                            totalSteps = completedTotalSteps,
                         ),
                     )
                 } else {
@@ -1398,10 +1425,37 @@ class AutonomousSupervisorEngine(
         val reviewer = capabilityResolver.selectBestAgent(profiles, setOf("review", "qa"), excludeAgentIds = setOf(dev.agentId)) ?: dev
         val nextSeq = (existingSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
         val lastStepIds = existingSteps.lastOrNull()?.let { listOf(it.stepId) }.orEmpty()
+        val roundNum = (existingSteps.size / 2) + 1
 
+        // If ALL missing criteria are strictly review/test sign-offs (no missing deliverables or code),
+        // go straight to the Reviewer/Test verification step instead of repeating Dev work!
+        val onlyReviewOrTestMissing = existingSteps.isNotEmpty() && missing.all { m ->
+            val lower = m.lowercase()
+            lower.contains("review") || lower.contains("test")
+        }
+        if (onlyReviewOrTestMissing) {
+            return listOf(
+                PlannedStep(
+                    sequenceNumber = nextSeq,
+                    title = "ตรวจสอบโค้ดและยืนยันผลทดสอบ (รอบที่ $roundNum)",
+                    description = "Verify completed work and run tests for: ${task.title}. Remaining checks: ${missing.joinToString("; ")}",
+                    expectedOutput = "REVIEW_APPROVED and TESTS_PASSED",
+                    dependencies = lastStepIds,
+                    requiredCapabilities = setOf("review", "qa"),
+                    assignedAgentId = reviewer.agentId,
+                    requiresReview = true,
+                ),
+            )
+        }
+
+        val implTitle = if (existingSteps.isEmpty()) {
+            "วิเคราะห์และพัฒนาตามคำสั่ง: ${task.title.take(48)}"
+        } else {
+            "พัฒนาและแก้ไขส่วนที่ยังขาดให้ครบ (รอบที่ $roundNum)"
+        }
         val implStep = PlannedStep(
             sequenceNumber = nextSeq,
-            title = "Complete missing deliverables",
+            title = implTitle,
             description = "Address missing requirements: ${missing.joinToString("; ")}",
             expectedOutput = "All required deliverables and fixes in place",
             dependencies = lastStepIds,
@@ -1412,8 +1466,8 @@ class AutonomousSupervisorEngine(
         )
         val verifyStep = PlannedStep(
             sequenceNumber = nextSeq + 1,
-            title = "Final independent review & test verification",
-            description = "Verify missing deliverables are complete and run tests for: ${task.title}",
+            title = "ตรวจสอบโค้ดและยืนยันผลทดสอบ (รอบที่ $roundNum)",
+            description = "Verify deliverables are complete and run tests for: ${task.title}",
             expectedOutput = "REVIEW_APPROVED and TESTS_PASSED",
             dependencies = listOf(implStep.stepId),
             requiredCapabilities = setOf("review", "qa"),
@@ -1432,16 +1486,19 @@ class AutonomousSupervisorEngine(
     ) {
         val profiles = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
         var seq = (existingSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
+        val createdSummary = mutableListOf<String>()
         taskStore.runInTransaction {
             newSteps.forEach { p ->
                 val assignee = profiles.firstOrNull { it.agentId == p.assignedAgentId }
                     ?: capabilityResolver.selectBestAgent(profiles, p.requiredCapabilities)
                     ?: profiles.first()
+                val assignedSeq = seq++
+                createdSummary += "#$assignedSeq ${p.title} (${assignee.displayName})"
                 taskStore.upsertStep(
                     TaskStepEntity(
                         stepId = p.stepId,
                         taskId = task.taskId,
-                        sequenceNumber = seq++,
+                        sequenceNumber = assignedSeq,
                         title = p.title,
                         description = p.description,
                         assignedAgentId = assignee.agentId,
@@ -1453,6 +1510,22 @@ class AutonomousSupervisorEngine(
                     ),
                 )
             }
+        }
+        if (createdSummary.isNotEmpty()) {
+            onStepLifecycleUpdate(
+                StepLifecycleUpdate(
+                    projectId = task.projectId,
+                    taskId = task.taskId,
+                    stepId = newSteps.first().stepId,
+                    stepTitle = newSteps.first().title,
+                    agentId = AgentSlot.AGENT_1.id,
+                    agentDisplayName = "Supervisor",
+                    phase = "PLANNED",
+                    detail = "📋 SPV วางแผนขั้นตอนเพิ่มเติม (${createdSummary.size} ขั้นตอน):\n" + createdSummary.joinToString("\n") { "• $it" },
+                    stepNumber = (existingSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1,
+                    totalSteps = seq - 1,
+                ),
+            )
         }
         recoveryEngine.recordDecision(
             SupervisorDecisionRecord(

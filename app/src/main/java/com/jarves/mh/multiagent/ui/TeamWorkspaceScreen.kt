@@ -691,6 +691,13 @@ private fun TeamFilesTab(
     onBack: () -> Unit,
 ) {
     var refreshTick by remember { mutableIntStateOf(0) }
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            nowMs = System.currentTimeMillis()
+        }
+    }
     var selectedFile by remember { mutableStateOf<File?>(null) }
     var fileContent by remember { mutableStateOf("") }
     var savedBanner by remember { mutableStateOf(false) }
@@ -756,7 +763,7 @@ private fun TeamFilesTab(
     var visibleNodes by remember { mutableStateOf<List<TeamFileNode>>(emptyList()) }
     LaunchedEffect(workspaceDir, refreshTick, expandedDirs) {
         visibleNodes = withContext(Dispatchers.IO) {
-            val ignored = setOf(".git", "node_modules", "build", ".gradle")
+            val ignored = setOf(".git", "node_modules", "build", ".gradle", ".orqen_chat.json")
             val result = mutableListOf<TeamFileNode>()
             fun latestModifiedInDir(dir: File): Long {
                 var latest = dir.lastModified()
@@ -974,21 +981,37 @@ private fun TeamFilesTab(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
-                                val relTime = formatRelativeUpdatedTime(node.lastModifiedMs)
-                                val isRecentlyUpdated = (System.currentTimeMillis() - node.lastModifiedMs) in 0L..(5 * 60_000L)
-                                val subtitle = if (node.isDirectory) {
-                                    "${node.childCount} items · $relTime"
-                                } else {
-                                    "${node.file.length()} bytes · $relTime"
+                                val relTime = formatRelativeUpdatedTime(node.lastModifiedMs, nowMs)
+                                val freshnessColor = fileFreshnessColor(node.lastModifiedMs, nowMs)
+                                val isFresh = (nowMs - node.lastModifiedMs) in 0L..(15 * 60_000L)
+                                val sizePrefix = if (node.isDirectory) "${node.childCount} items" else "${node.file.length()} bytes"
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        text = "$sizePrefix ·",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                    )
+                                    if (relTime.isNotBlank()) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(5.dp)
+                                                .clip(CircleShape)
+                                                .background(freshnessColor),
+                                        )
+                                        Text(
+                                            text = relTime,
+                                            fontSize = 10.sp,
+                                            fontWeight = if (isFresh) FontWeight.SemiBold else FontWeight.Medium,
+                                            color = freshnessColor,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                 }
-                                Text(
-                                    text = subtitle,
-                                    fontSize = 10.sp,
-                                    fontWeight = if (isRecentlyUpdated) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (isRecentlyUpdated) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
                             }
                             if (!node.isDirectory) {
                                 Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
@@ -1848,9 +1871,9 @@ private fun parseAppScreenWidgets(file: File): List<ParsedUiWidget> {
     return result
 }
 
-private fun formatRelativeUpdatedTime(lastModifiedMs: Long): String {
+private fun formatRelativeUpdatedTime(lastModifiedMs: Long, nowMs: Long = System.currentTimeMillis()): String {
     if (lastModifiedMs <= 0L) return ""
-    val diffMs = (System.currentTimeMillis() - lastModifiedMs).coerceAtLeast(0L)
+    val diffMs = (nowMs - lastModifiedMs).coerceAtLeast(0L)
     val seconds = diffMs / 1_000L
     val minutes = seconds / 60L
     val hours = minutes / 60L
@@ -1870,5 +1893,32 @@ private fun formatRelativeUpdatedTime(lastModifiedMs: Long): String {
             hours < 24L -> "Updated ${hours}h ago"
             else -> "Updated ${days}d ago"
         }
+    }
+}
+
+/**
+ * Smooth freshness color gradient based on how recently a file or folder was modified:
+ * - 0..5 min   : Emerald Green (#10B981) -> Lime (#84CC16)
+ * - 5..30 min  : Lime (#84CC16)          -> Amber (#F59E0B)
+ * - 30..120 min: Amber (#F59E0B)         -> Orange (#F97316)
+ * - 2..24 hr   : Orange (#F97316)        -> Coral Red (#EF4444)
+ * - > 24 hr    : Crimson Red (#DC2626)
+ */
+private fun fileFreshnessColor(lastModifiedMs: Long, nowMs: Long = System.currentTimeMillis()): Color {
+    val emerald = Color(0xFF10B981)
+    val lime = Color(0xFF84CC16)
+    val amber = Color(0xFFF59E0B)
+    val orange = Color(0xFFF97316)
+    val coralRed = Color(0xFFEF4444)
+    val crimsonRed = Color(0xFFDC2626)
+
+    if (lastModifiedMs <= 0L) return crimsonRed
+    val elapsedMinutes = ((nowMs - lastModifiedMs).coerceAtLeast(0L) / 60_000f)
+    return when {
+        elapsedMinutes <= 5f -> androidx.compose.ui.graphics.lerp(emerald, lime, (elapsedMinutes / 5f).coerceIn(0f, 1f))
+        elapsedMinutes <= 30f -> androidx.compose.ui.graphics.lerp(lime, amber, ((elapsedMinutes - 5f) / 25f).coerceIn(0f, 1f))
+        elapsedMinutes <= 120f -> androidx.compose.ui.graphics.lerp(amber, orange, ((elapsedMinutes - 30f) / 90f).coerceIn(0f, 1f))
+        elapsedMinutes <= 1440f -> androidx.compose.ui.graphics.lerp(orange, coralRed, ((elapsedMinutes - 120f) / 1320f).coerceIn(0f, 1f))
+        else -> crimsonRed
     }
 }
