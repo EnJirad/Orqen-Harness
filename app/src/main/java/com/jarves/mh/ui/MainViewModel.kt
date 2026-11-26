@@ -314,6 +314,7 @@ data class AppUiState(
     val languageCode: String = "system",
     val ownerDisplayName: String = "",
     val teamTypingAgentName: String? = null,
+    val teamTypingAgentSlot: AgentSlot? = null,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
@@ -589,14 +590,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val displayName = agentNameFor(slot).ifBlank { upd.agentDisplayName }
                     when (upd.phase) {
                         "PLANNED" -> {
-                            updateAgentActivity(AgentSlot.AGENT_1, ActivityType.PLANNING, upd.stepTitle, "วางแผนและแบ่งงาน")
+                            val supName = agentNameFor(AgentSlot.AGENT_1)
+                            // Acknowledge-first: show 3-dot typing wave while posting plan, then transition to working spinner
+                            _state.update {
+                                it.copy(
+                                    teamTypingAgentName = supName,
+                                    teamTypingAgentSlot = AgentSlot.AGENT_1,
+                                )
+                            }
+                            delay(250L)
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
                                 senderSlot = AgentSlot.AGENT_1,
-                                senderName = agentNameFor(AgentSlot.AGENT_1),
+                                senderName = supName,
                                 text = upd.detail,
                                 messageType = GroupMessageType.TASK_ASSIGNMENT,
                             )
+                            _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                            updateAgentActivity(AgentSlot.AGENT_1, ActivityType.PLANNING, upd.stepTitle, "วางแผนและแบ่งงาน")
                         }
                         "STARTED" -> {
                             val act = when {
@@ -606,19 +617,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 else -> ActivityType.WRITING_CODE
                             }
                             clearAgentLiveLog(slot)
-                            updateAgentActivity(slot, act, upd.stepTitle, upd.detail)
-                            _state.update { it.copy(teamTypingAgentName = displayName) }
-                            updateTeamForegroundNotification(
-                                _state.value.activeTeamProject?.name ?: "ORQEN",
-                                "$displayName: ${upd.stepTitle.take(50)}",
-                            )
+                            // Acknowledge-first: show 3-dot wave typing while posting what the agent is about to do,
+                            // then clear typing wave and transition to working spinner!
+                            _state.update {
+                                it.copy(
+                                    teamTypingAgentName = displayName,
+                                    teamTypingAgentSlot = slot,
+                                )
+                            }
+                            delay(300L)
+                            val ackText = upd.detail.takeIf { it.isNotBlank() }
+                                ?: "รับทราบครับ กำลังจะเริ่มทำ '${upd.stepTitle}' ตามแผนทันที"
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
                                 senderSlot = slot,
                                 senderName = displayName,
-                                text = upd.detail,
+                                text = ackText,
                                 messageType = GroupMessageType.PROGRESS_UPDATE,
                                 workStatus = "Working",
+                            )
+                            _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                            updateAgentActivity(slot, act, upd.stepTitle, upd.detail)
+                            updateTeamForegroundNotification(
+                                _state.value.activeTeamProject?.name ?: "ORQEN",
+                                "$displayName: ${upd.stepTitle.take(50)}",
                             )
                         }
                         "PROGRESS" -> {
@@ -628,7 +650,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         "COMPLETED" -> {
                             updateAgentActivity(slot, ActivityType.COMPLETED, upd.stepTitle, "เสร็จสิ้น")
-                            _state.update { it.copy(teamTypingAgentName = null) }
+                            _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
                                 senderSlot = slot,
@@ -641,7 +663,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         "RECOVERING", "FAILED" -> {
                             updateAgentActivity(slot, ActivityType.ERROR, upd.stepTitle, upd.detail.take(80))
-                            _state.update { it.copy(teamTypingAgentName = null) }
+                            _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
                                 senderSlot = slot,
@@ -6309,8 +6331,84 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }.onFailure { err ->
                     android.util.Log.w("OrqenMainViewModel", "Failed to schedule TaskRecoveryJobService", err)
                 }
-                withContext(Dispatchers.IO) {
+                val reconciled = withContext(Dispatchers.IO) {
                     autonomousSupervisorEngine.reconcileActiveTasksOnce(team)
+                }
+                if (reconciled.isEmpty()) {
+                    // Proactive Autonomous Continuation: when Start is pressed with no queued tasks,
+                    // Supervisor inspects the project workspace, determines what the project is building,
+                    // and plans/continues development until complete!
+                    val supName = agentNameFor(AgentSlot.AGENT_1)
+                    val ownerName = effectiveOwnerName()
+                    _state.update {
+                        it.copy(
+                            teamTypingAgentName = supName,
+                            teamTypingAgentSlot = AgentSlot.AGENT_1,
+                        )
+                    }
+                    delay(280L)
+                    appendProjectTeamMessage(
+                        projectId = activeProj.id,
+                        senderSlot = AgentSlot.AGENT_1,
+                        senderName = supName,
+                        text = "รับทราบครับ $ownerName! กำลังตรวจสอบไฟล์และโครงสร้างของโปรเจกต์ '${activeProj.name}' เพื่อวางแผนและพัฒนาต่อให้อัตโนมัติจนเสร็จสมบูรณ์ครับ",
+                        messageType = GroupMessageType.TASK_ASSIGNMENT,
+                    )
+                    _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                    val proactiveObjective = "วิเคราะห์โปรเจกต์ '${activeProj.name}' จากไฟล์ทั้งหมดใน workspace ปัจจุบัน ทำความเข้าใจว่ากำลังพัฒนาอะไร ตรวจสอบส่วนที่ยังไม่สมบูรณ์หรือยังไม่ได้ทดสอบ จากนั้นวางแผนและพัฒนาต่อจนโปรเจกต์สมบูรณ์และผ่านการตรวจสอบ"
+                    val result = withContext(Dispatchers.IO) {
+                        autonomousSupervisorEngine.submitAndSupervise(
+                            projectId = activeProj.id,
+                            team = team,
+                            objective = proactiveObjective,
+                            onTaskCreated = { created ->
+                                activeSupervisedTaskId = created.taskId
+                                _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
+                            },
+                        )
+                    }
+                    if (result != null) {
+                        activeSupervisedTaskId = result.taskId
+                        _state.update { it.copy(activeSupervisedTaskId = result.taskId) }
+                        appendProjectTeamMessage(
+                            projectId = activeProj.id,
+                            senderSlot = AgentSlot.AGENT_1,
+                            senderName = supName,
+                            text = "Autonomous Supervisor [${result.status.name}] (${result.taskId}): ${result.lastError ?: result.title}",
+                            messageType = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                                GroupMessageType.COMPLETION_REPORT
+                            } else {
+                                GroupMessageType.PROGRESS_UPDATE
+                            },
+                        )
+                        if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                            notifyTeamTaskCompleted(activeProj.name, result.title)
+                        }
+                    }
+                    withContext(Dispatchers.IO) {
+                        autonomousSupervisorEngine.superviseProjectQueue(
+                            projectId = activeProj.id,
+                            team = team,
+                            onTaskStarted = { queued ->
+                                activeSupervisedTaskId = queued.taskId
+                                _state.update { it.copy(activeSupervisedTaskId = queued.taskId) }
+                                updateTeamForegroundNotification(activeProj.name, "Continuing queued task: ${queued.title.take(50)}")
+                            },
+                            onTaskFinished = { finished ->
+                                appendProjectTeamMessage(
+                                    projectId = activeProj.id,
+                                    senderSlot = AgentSlot.AGENT_1,
+                                    senderName = supName,
+                                    text = "Autonomous Supervisor [${finished.status.name}] (${finished.taskId}): ${finished.lastError ?: finished.title}",
+                                    messageType = if (finished.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                                        GroupMessageType.COMPLETION_REPORT
+                                    } else {
+                                        GroupMessageType.PROGRESS_UPDATE
+                                    },
+                                )
+                            },
+                        )
+                    }
                 }
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 throw cancel
@@ -6328,7 +6426,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } finally {
-                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null, teamTypingAgentName = null) }
+                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null, teamTypingAgentName = null, teamTypingAgentSlot = null) }
                 updateAgentActivities(ActivityType.WAITING)
                 if (serviceStarted) {
                     stopTeamForegroundService()
@@ -6599,7 +6697,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } finally {
-                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null, teamTypingAgentName = null) }
+                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null, teamTypingAgentName = null, teamTypingAgentSlot = null) }
                 updateAgentActivities(ActivityType.WAITING)
                 if (serviceStarted) {
                     stopTeamForegroundService()
@@ -6867,15 +6965,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val enabledAgents = _state.value.teamAgents.filter { it.config.isEnabled }
         if (enabledAgents.isEmpty()) return
 
-        // Prefer an IDLE / resting agent so busy agents keep working untouched!
-        val responder = targetSlot?.let { slot -> enabledAgents.firstOrNull { it.config.slot == slot && !it.isWorking } }
-            ?: enabledAgents.firstOrNull { !it.isWorking }
-            ?: enabledAgents.first()
+        // Deterministic Owner Group Chat Priority Router:
+        // - Explicit @mention (via chip or @Name in text): exact agent replies; if busy, pause -> reply -> resume!
+        // - General message (no @mention): Supervisor (AGENT_1) if idle, else an idle agent so working agents stay uninterrupted.
+        val decision = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.selectResponder(
+            text = userMessage,
+            explicitTarget = targetSlot,
+            enabledAgents = enabledAgents,
+        ) ?: return
+        val responder = decision.responder
+        val shouldInterruptAndResume = decision.shouldInterruptAndResume && _state.value.teamIsRunning
 
         val looksLikeTask = isActionableTaskIntent(userMessage)
         val ownerName = effectiveOwnerName()
         viewModelScope.launch {
-            _state.update { it.copy(teamTypingAgentName = responder.config.name) }
+            var pausedForInterrupt = false
+            if (shouldInterruptAndResume) {
+                // Owner explicitly @mentioned a busy agent: cleanly pause active work first, answer Owner, then resume!
+                pauseTeamWork()
+                pausedForInterrupt = true
+                delay(150L)
+            }
+            _state.update {
+                it.copy(
+                    teamTypingAgentName = responder.config.name,
+                    teamTypingAgentSlot = responder.config.slot,
+                )
+            }
             try {
                 val workspaceDir = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").apply { mkdirs() }
                 val teamStatusSummary = enabledAgents.joinToString("\n") { a ->
@@ -6885,7 +7001,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLine("You are ${responder.config.name} (${responder.config.role.title}) on this AI Team.")
                     appendLine("Owner's name (address the user as): $ownerName")
                     appendLine("Your employee personality & tone: ${responder.config.effectivePersonality()}")
-                    appendLine("IMPORTANT: The Owner ($ownerName) is currently in CHAT mode (conversational Q&A only). DO NOT modify, create, or delete any files.")
+                    appendLine("IMPORTANT: The Owner ($ownerName) is currently talking to you in Group Chat (conversational Q&A). DO NOT modify, create, or delete any files during this reply.")
+                    if (pausedForInterrupt) {
+                        appendLine("NOTE: You temporarily paused your active task because $ownerName explicitly @mentioned you. Answer $ownerName clearly and concisely, and note that you will resume your work right after replying.")
+                    }
                     appendLine("Current team status:")
                     appendLine(teamStatusSummary)
                     appendLine("Current workspace files:")
@@ -6907,11 +7026,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     onProgress = {},
                 )
                 val replyBody = if (res.isError) {
-                    "ตอนนี้ทีมกำลังดูแลโปรเจกต์ ${project.name} อยู่ครับ $ownerName (สถานะทีม: ${enabledAgents.count { it.isWorking }}/${enabledAgents.size} กำลังทำงาน)"
+                    if (pausedForInterrupt) {
+                        "รับทราบครับ $ownerName ตอนนี้ผมพักงานชั่วคราวเพื่อมาตอบคำถามครับ (โปรเจกต์ ${project.name}) เสร็จแล้วจะกลับไปทำต่อทันทีครับ"
+                    } else {
+                        "ตอนนี้ทีมกำลังดูแลโปรเจกต์ ${project.name} อยู่ครับ $ownerName (สถานะทีม: ${enabledAgents.count { it.isWorking }}/${enabledAgents.size} กำลังทำงาน)"
+                    }
                 } else {
                     cleanChatSummary(res.responseText)
                 }
-                val finalReply = if (looksLikeTask) {
+                val finalReply = if (looksLikeTask && !pausedForInterrupt) {
                     "$replyBody\n\n💡 หากต้องการให้ทีมเริ่มวางแผนและลงมือทำตามคำสั่งนี้ กดปุ่ม \"ส่งเป็นงาน Task\" ด้านล่างได้เลยครับ"
                 } else {
                     replyBody
@@ -6922,10 +7045,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     senderName = responder.config.name,
                     text = finalReply,
                     messageType = GroupMessageType.NORMAL,
-                    suggestedTaskPrompt = if (looksLikeTask) userMessage else null,
+                    suggestedTaskPrompt = if (looksLikeTask && !pausedForInterrupt) userMessage else null,
                 )
             } finally {
-                _state.update { it.copy(teamTypingAgentName = null) }
+                _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+            }
+            if (pausedForInterrupt) {
+                // Automatically resume paused work right where the agent left off!
+                delay(250L)
+                resumeTeamWork()
             }
         }
     }

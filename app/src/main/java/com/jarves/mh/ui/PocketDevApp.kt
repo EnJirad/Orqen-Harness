@@ -2676,6 +2676,7 @@ private fun RootScreenHost(
                                 teamBannerDetail = state.teamBannerDetail,
                                 ownerName = state.ownerDisplayName,
                                 typingAgentName = state.teamTypingAgentName,
+                                typingAgentSlot = state.teamTypingAgentSlot,
                                 runningTeamProjectId = state.runningTeamProjectId,
                                 runningTeamProjectName = state.teamProjects.firstOrNull { it.id == state.runningTeamProjectId }?.name,
                                 activeSupervisedTaskId = state.activeSupervisedTaskId,
@@ -2814,6 +2815,7 @@ private fun RootScreenHost(
                             teamBannerDetail = state.teamBannerDetail,
                             ownerName = state.ownerDisplayName,
                             typingAgentName = state.teamTypingAgentName,
+                            typingAgentSlot = state.teamTypingAgentSlot,
                             pendingDirectivesCount = state.teamPriorityDirectivesCount,
                             onClearChat = viewModel::clearTeamChat,
                             onSendMessageWithImages = { text, type, targetSlot, uris ->

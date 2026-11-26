@@ -119,6 +119,7 @@ fun TeamWorkspaceScreen(
     teamBannerDetail: String? = null,
     ownerName: String = "",
     typingAgentName: String? = null,
+    typingAgentSlot: AgentSlot? = null,
     runningTeamProjectId: String?,
     runningTeamProjectName: String?,
     activeSupervisedTaskId: String? = null,
@@ -260,6 +261,7 @@ fun TeamWorkspaceScreen(
                         teamBannerDetail = teamBannerDetail,
                         ownerName = ownerName,
                         typingAgentName = typingAgentName,
+                        typingAgentSlot = typingAgentSlot,
                         pendingDirectivesCount = pendingDirectivesCount,
                         listState = chatListState,
                         initialScrollDone = chatInitialScrollDone,
@@ -374,6 +376,7 @@ fun TeamWorkspaceScreen(
                 TeamTopRightStatusOverlay(
                     agents = agents,
                     isTeamRunning = isTeamRunning && runningTeamProjectId == project.id,
+                    typingAgentSlot = typingAgentSlot,
                     parentBounds = workspaceBounds,
                     modifier = Modifier.align(Alignment.TopEnd),
                 )
@@ -387,6 +390,7 @@ fun TeamWorkspaceScreen(
 private fun TeamTopRightStatusOverlay(
     agents: List<AgentState>,
     isTeamRunning: Boolean,
+    typingAgentSlot: AgentSlot? = null,
     parentBounds: IntSize,
     modifier: Modifier = Modifier,
 ) {
@@ -398,8 +402,10 @@ private fun TeamTopRightStatusOverlay(
     val initialTopPx = with(density) { 66.dp.toPx() }
     val initialEndPx = with(density) { 10.dp.toPx() }
 
-    val workingCount = agents.count { it.isWorking }
+    val isAnyTyping = typingAgentSlot != null && agents.any { it.config.slot == typingAgentSlot }
+    val workingCount = agents.count { it.isWorking && it.config.slot != typingAgentSlot }
     val pausedCount = agents.count { it.activityState.activity == ActivityType.PAUSED || !it.config.isEnabled }
+    val typingCyan = Color(0xFF06B6D4)
 
     // Clamp offset inside parent screen bounds so it can never be dragged off-screen
     val minX = if (parentBounds.width > 0 && overlaySize.width > 0) {
@@ -455,7 +461,9 @@ private fun TeamTopRightStatusOverlay(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
                     agents.forEach { agent ->
+                        val isAgentTyping = typingAgentSlot == agent.config.slot
                         val dotColor = when {
+                            isAgentTyping -> typingCyan
                             !agent.config.isEnabled || agent.activityState.activity == ActivityType.PAUSED -> Color(0xFFF59E0B)
                             agent.activityState.activity == ActivityType.ERROR -> Color(0xFFDC2626)
                             agent.isWorking -> Color(0xFF16A34A)
@@ -470,8 +478,23 @@ private fun TeamTopRightStatusOverlay(
                         )
                     }
                 }
+                if (isAnyTyping) {
+                    BouncingWaveDots(
+                        color = typingCyan,
+                        dotSize = 3.5.dp,
+                        bounceHeight = -3f,
+                        modifier = Modifier.padding(top = 1.dp),
+                    )
+                } else if (workingCount > 0) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(9.dp),
+                        strokeWidth = 1.5.dp,
+                        color = Color(0xFF16A34A),
+                    )
+                }
                 Text(
                     text = when {
+                        isAnyTyping && workingCount == 0 -> "กำลังตอบ..."
                         workingCount > 0 -> stringResource(R.string.team_overlay_working_count, workingCount, agents.size)
                         isTeamRunning -> stringResource(R.string.team_overlay_standby)
                         pausedCount == agents.size -> stringResource(R.string.team_overlay_paused)
@@ -479,7 +502,11 @@ private fun TeamTopRightStatusOverlay(
                     },
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (workingCount > 0) Color(0xFF16A34A) else MaterialTheme.colorScheme.onSurface,
+                    color = when {
+                        isAnyTyping && workingCount == 0 -> typingCyan
+                        workingCount > 0 -> Color(0xFF16A34A)
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
                     maxLines = 1,
                     softWrap = false,
                 )
@@ -496,14 +523,18 @@ private fun TeamTopRightStatusOverlay(
                     )
                     agents.forEach { agent ->
                         val act = agent.activityState.activity
+                        val isTyping = typingAgentSlot == agent.config.slot
+                        val isWorkingNow = agent.isWorking && !isTyping
                         val statusColor = when {
+                            isTyping -> typingCyan
                             !agent.config.isEnabled || act == ActivityType.PAUSED -> Color(0xFFF59E0B)
                             act == ActivityType.ERROR -> Color(0xFFDC2626)
-                            agent.isWorking -> Color(0xFF16A34A)
+                            isWorkingNow -> Color(0xFF16A34A)
                             act == ActivityType.COMPLETED -> Color(0xFF10B981)
                             else -> Color(0xFF3B82F6)
                         }
                         val statusText = when {
+                            isTyping -> "กำลังตอบ..."
                             !agent.config.isEnabled -> stringResource(R.string.team_overlay_paused)
                             else -> stringResource(act.labelRes)
                         }
@@ -511,19 +542,33 @@ private fun TeamTopRightStatusOverlay(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            if (agent.isWorking) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(10.dp),
-                                    strokeWidth = 1.6.dp,
-                                    color = statusColor,
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(7.dp)
-                                        .clip(CircleShape)
-                                        .background(statusColor),
-                                )
+                            when {
+                                isTyping -> {
+                                    // 3 bouncing wave dots when chatting/typing a reply
+                                    BouncingWaveDots(
+                                        color = typingCyan,
+                                        dotSize = 3.8.dp,
+                                        bounceHeight = -3.2f,
+                                        modifier = Modifier.padding(top = 1.dp),
+                                    )
+                                }
+                                isWorkingNow -> {
+                                    // Rotating spinner when actively working on a task
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(10.dp),
+                                        strokeWidth = 1.6.dp,
+                                        color = statusColor,
+                                    )
+                                }
+                                else -> {
+                                    // Idle / Paused / Waiting / Done: completely static dot, no animation
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(statusColor),
+                                    )
+                                }
                             }
                             Text(
                                 text = agent.config.name,

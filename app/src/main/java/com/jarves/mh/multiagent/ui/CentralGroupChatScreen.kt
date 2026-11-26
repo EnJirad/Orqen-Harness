@@ -83,6 +83,7 @@ fun CentralGroupChatScreen(
     teamBannerDetail: String? = null,
     ownerName: String = "",
     typingAgentName: String? = null,
+    typingAgentSlot: AgentSlot? = null,
     pendingDirectivesCount: Int = 0,
     listState: LazyListState = rememberLazyListState(),
     initialScrollDone: Boolean = false,
@@ -113,8 +114,8 @@ fun CentralGroupChatScreen(
         else "$displayOwner · " + agents.joinToString(" · ") { it.config.name }
     }
 
-    val workingAgents = remember(agents) {
-        agents.filter { it.isWorking }
+    val workingAgents = remember(agents, typingAgentSlot) {
+        agents.filter { it.isWorking && it.config.slot != typingAgentSlot }
     }
     val totalItems = messages.size + workingAgents.size + if (typingAgentName != null) 1 else 0
     var prevTotalCount by remember { mutableIntStateOf(totalItems) }
@@ -505,7 +506,7 @@ fun CentralGroupChatScreen(
 }
 
 @Composable
-private fun BouncingWaveDots(
+internal fun BouncingWaveDots(
     color: Color,
     dotSize: Dp = 6.dp,
     bounceHeight: Float = -5.5f,
@@ -640,11 +641,10 @@ private fun LiveAgentWorkingBubble(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    BouncingWaveDots(
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(13.dp),
+                        strokeWidth = 1.8.dp,
                         color = actColor,
-                        dotSize = 4.5.dp,
-                        bounceHeight = -4.5f,
-                        modifier = Modifier.padding(top = 2.dp),
                     )
                     Text(
                         text = "|",
