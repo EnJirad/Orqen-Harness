@@ -47,19 +47,21 @@ class TaskRecoveryJobService : JobService() {
                     jobFinished(params, false)
                     return@launch
                 }
+                val livenessMonitor = ExecutionLivenessMonitor(store)
+                val expiredLeaseTasks = livenessMonitor.restoreAndIdentifyExpiredLeases()
                 val coordinator = ProcessRecoveryCoordinator(
                     store = store,
                     checkpointManager = CheckpointManager(store),
-                    livenessMonitor = ExecutionLivenessMonitor(),
+                    livenessMonitor = livenessMonitor,
                     scheduler = JobSchedulerRecoveryBackend(applicationContext),
-                    policy = RecoveryPolicy(mode = RecoveryMode.ASK_BEFORE_RESUMING),
+                    policy = RecoveryPolicy(mode = RecoveryMode.AUTOMATIC),
                 )
                 val summary = coordinator.reconcileOnStartup(
                     cause = InterruptionCause.UNEXPECTED_PROCESS_DEATH,
                 )
                 Log.i(
                     TAG,
-                    "Reconciliation finished (target=$taskId): resumable=${summary.resumableAwaitingUserTaskIds.size}, " +
+                    "Reconciliation finished (target=$taskId, expiredLeases=${expiredLeaseTasks.size}): resumable=${summary.resumableAwaitingUserTaskIds.size}, " +
                         "scheduled=${summary.scheduledTaskIds.size}, blocked=${summary.blockedTaskIds.size}, skipped=${summary.skippedTaskIds.size}",
                 )
                 needsReschedule = false

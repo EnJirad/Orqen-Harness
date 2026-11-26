@@ -63,6 +63,7 @@ class TeamAgentRunner(
         prompt: String,
         useIsolatedAgyHome: Boolean,
         enableCache: Boolean = true,
+        allowSkipPermissions: Boolean = false,
         imageFiles: List<File> = emptyList(),
         knownAgyModels: List<String> = emptyList(),
         onProgress: suspend (String) -> Unit,
@@ -104,6 +105,7 @@ class TeamAgentRunner(
                 prompt = agyPrompt,
                 useIsolatedHome = useIsolatedAgyHome,
                 knownAgyModels = knownAgyModels,
+                allowSkipPermissions = allowSkipPermissions,
                 onProgress = onProgress,
             )
             // If agy rejected a stale/invalid --model flag, immediately retry once with the account's own default model!
@@ -119,6 +121,7 @@ class TeamAgentRunner(
                     prompt = agyPrompt,
                     useIsolatedHome = useIsolatedAgyHome,
                     knownAgyModels = emptyList(),
+                    allowSkipPermissions = allowSkipPermissions,
                     onProgress = onProgress,
                 )
             } else {
@@ -150,7 +153,7 @@ class TeamAgentRunner(
         prompt: String,
         useIsolatedHome: Boolean,
         knownAgyModels: List<String> = emptyList(),
-        allowSkipPermissions: Boolean = true,
+        allowSkipPermissions: Boolean = false,
         onProgress: suspend (String) -> Unit,
     ): TeamAgentExecutionResult {
         if (!installer.isAgentInstalled(AgentKind.ANTIGRAVITY)) {

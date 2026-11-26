@@ -34,6 +34,7 @@ data class RuntimeExecutionRequest(
     val projectSlug: String,
     val prompt: String,
     val useIsolatedAgyHome: Boolean = false,
+    val allowSkipPermissions: Boolean = false,
     val imageFiles: List<File> = emptyList(),
     val knownAgyModels: List<String> = emptyList(),
 )
@@ -86,6 +87,7 @@ class TeamAgentRunnerRuntimeAdapter(
             prompt = request.prompt,
             useIsolatedAgyHome = request.useIsolatedAgyHome,
             enableCache = true,
+            allowSkipPermissions = request.allowSkipPermissions,
             imageFiles = request.imageFiles,
             knownAgyModels = request.knownAgyModels,
             onProgress = onProgress,

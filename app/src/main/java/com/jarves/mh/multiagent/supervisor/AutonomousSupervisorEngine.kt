@@ -874,9 +874,14 @@ class AutonomousSupervisorEngine(
             leaseTtlMs = timeoutPolicy.agentExecutionTimeoutMs,
             nowMs = now,
         )
-        // Run watchdog check on all tracked active agents
+        // Run watchdog check on all tracked active agents and route confirmed stalls into Recovery Engine!
         healthMonitor.snapshotAll().keys.forEach { aid ->
-            watchdog.evaluateExecution(aid, nowMs = now)
+            val eval = watchdog.evaluateExecution(aid, nowMs = now) { execId ->
+                runtime.cancel(execId)
+            }
+            if (eval != null && eval.shouldCancelAndRecover) {
+                handleWatchdogEvaluation(eval, team, now)
+            }
         }
         val resumed = mutableListOf<String>()
         for (task in taskStore.listAllTasks()) {
@@ -915,6 +920,122 @@ class AutonomousSupervisorEngine(
             }
         }
         return resumed
+    }
+
+    /**
+     * Explicit Watchdog -> Recovery Engine handoff.
+     * Consumes a typed [WatchdogEvaluation], verifies the task was NOT user-cancelled/paused,
+     * records [SupervisorDecisionType.TIMEOUT_DETECTED], invokes [AutonomousRecoveryEngine.planRecovery],
+     * and applies the selected strategy (retry / model switch / provider failover / agent reassignment / block).
+     */
+    fun handleWatchdogEvaluation(
+        eval: WatchdogEvaluation,
+        team: AgentTeamEntity,
+        nowMs: Long = nowProvider(),
+    ): RecoveryPlan? {
+        if (!eval.shouldCancelAndRecover || eval.deduplicated) return null
+        val task = taskStore.getTask(eval.taskId) ?: return null
+        // Never treat user cancellation or pause as a retryable failure!
+        if (task.ownerStopRequested || task.status == PersistentTaskStatus.CANCELLED ||
+            task.pauseRequested || task.status == PersistentTaskStatus.PAUSED
+        ) {
+            return null
+        }
+        val step = taskStore.getStep(eval.subtaskId) ?: return null
+        val teamProfiles = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
+        val failedAgent = teamProfiles.firstOrNull { it.agentId == eval.agentId } ?: return null
+
+        runtime.cancel(eval.executionId)
+        recoveryEngine.recordDecision(
+            SupervisorDecisionRecord(
+                taskId = task.taskId,
+                stepId = step.stepId,
+                agentId = failedAgent.agentId,
+                executionId = eval.executionId,
+                decisionType = SupervisorDecisionType.TIMEOUT_DETECTED,
+                reason = eval.reason,
+                evidence = "diagnosis=${eval.diagnosis.name}, recoveryActionId=${eval.recoveryActionId}",
+                actionTaken = "Cancel stalled execution and invoke AutonomousRecoveryEngine",
+                result = "ROUTED_TO_RECOVERY",
+                timestampMs = nowMs,
+            ),
+        )
+
+        val err = StructuredErrorClassifier.classify(
+            message = eval.reason,
+            isTimeout = eval.diagnosis != WatchdogDiagnosis.CONFIRMED_IDLE_STREAM_STALL,
+            isIdleStream = eval.diagnosis == WatchdogDiagnosis.CONFIRMED_IDLE_STREAM_STALL,
+        )
+        val preserved = taskStore.getLatestCheckpoint(task.taskId)?.modifiedFiles.orEmpty()
+        val plan = recoveryEngine.planRecovery(
+            task = task,
+            step = step,
+            failedAgent = failedAgent,
+            executionId = eval.executionId,
+            error = err,
+            requiredCapabilities = inferRequiredCapabilities(step),
+            teamCandidates = teamProfiles,
+            preservedFiles = preserved,
+            recoveryKey = "wd:${eval.executionId}:${eval.diagnosis.name}",
+            nowMs = nowMs,
+        )
+
+        when (plan.strategy) {
+            RecoveryStrategyKind.RETRY_SAME_MODEL -> {
+                taskStore.upsertStep(step.copy(status = StepStatus.READY, retryCount = step.retryCount + 1))
+            }
+            RecoveryStrategyKind.SWITCH_MODEL_SAME_PROVIDER,
+            RecoveryStrategyKind.SWITCH_PROVIDER_AND_MODEL -> {
+                registry.register(
+                    failedAgent.copy(
+                        providerId = plan.targetProviderId,
+                        modelId = plan.targetModelId,
+                        updatedAt = nowMs,
+                    ),
+                )
+                taskStore.upsertStep(
+                    step.copy(
+                        status = StepStatus.READY,
+                        retryCount = 0,
+                        inputContext = buildRecoveryHandoffContext(step.inputContext, plan),
+                    ),
+                )
+            }
+            RecoveryStrategyKind.REASSIGN_AGENT -> {
+                val existingDel = collabStore.listDelegationsForTask(task.taskId)
+                    .lastOrNull { it.parentStepId == step.stepId && it.status != DelegationStatus.COMPLETED }
+                    ?: delegationManager.delegate(
+                        team = team,
+                        candidates = listOf(failedAgent),
+                        taskId = task.taskId,
+                        parentStepId = step.stepId,
+                        delegatingAgentId = "supervisor",
+                        objective = step.description,
+                        requiredCapabilities = inferRequiredCapabilities(step),
+                        currentDepth = 1,
+                    )
+                failureManager.recordFailureAndReassign(
+                    delegationId = existingDel.delegationId,
+                    failedAgentId = failedAgent.agentId,
+                    reason = eval.reason,
+                    candidates = teamProfiles,
+                )
+                taskStore.upsertStep(
+                    step.copy(
+                        assignedAgentId = plan.targetAgentId,
+                        status = StepStatus.READY,
+                        retryCount = 0,
+                        inputContext = buildRecoveryHandoffContext(step.inputContext, plan),
+                    ),
+                )
+            }
+            RecoveryStrategyKind.BLOCK_NEEDS_ATTENTION -> {
+                taskStore.upsertStep(step.copy(status = StepStatus.BLOCKED, outputSummary = plan.reason))
+                blockTask(task, plan.reason)
+            }
+        }
+        updateSnapshot(task.taskId, SupervisorOperationalStatus.RECOVERING, plan.reason)
+        return plan
     }
 
     private fun evaluateCompletionGaps(
