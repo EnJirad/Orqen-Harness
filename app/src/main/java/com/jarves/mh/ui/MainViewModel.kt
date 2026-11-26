@@ -505,6 +505,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val providerManager = ProviderManager(application, vault, preferences)
     val fileLockManager = FileLockManager()
     val teamEventBus = TeamEventBus()
+    private val teamGitPrefs by lazy {
+        getApplication<Application>().getSharedPreferences("orqen_team_git_prefs", android.content.Context.MODE_PRIVATE)
+    }
+    private val pendingTeamImageFiles = java.util.concurrent.ConcurrentLinkedQueue<File>()
     val taskManager by lazy {
         val defaultWs = File(getApplication<Application>().filesDir, "team_workspaces/${TaskManager.DEFAULT_PROJECT_ID}")
             .apply { mkdirs() }
@@ -7306,10 +7310,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private val teamGitPrefs by lazy {
-        getApplication<Application>().getSharedPreferences("orqen_team_git_prefs", android.content.Context.MODE_PRIVATE)
-    }
-
     private fun detectTeamProjectGitRemote(projectId: String): Boolean {
         if (teamGitPrefs.getString("git_url_$projectId", "").orEmpty().isNotBlank()) return true
         val gitConfig = File(getApplication<Application>().filesDir, "team_workspaces/$projectId/.git/config")
@@ -7568,7 +7568,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private val pendingTeamImageFiles = java.util.concurrent.ConcurrentLinkedQueue<File>()
+    // pendingTeamImageFiles declared before init {} above
 
     fun postTeamChatMessageWithImages(
         text: String,
