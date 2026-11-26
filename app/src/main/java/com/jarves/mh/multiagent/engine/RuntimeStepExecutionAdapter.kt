@@ -41,6 +41,7 @@ class RuntimeStepExecutionAdapter(
             workspaceDir = input.workspaceDir,
             projectSlug = projectSlug,
             prompt = input.compactContext,
+            imageFiles = input.imageFiles,
         )
 
         val response = try {

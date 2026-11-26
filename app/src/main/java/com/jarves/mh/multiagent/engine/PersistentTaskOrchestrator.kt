@@ -73,6 +73,7 @@ data class StepExecutionInput(
     val workspaceDir: File,
     val compactContext: String,
     val latestCheckpoint: CheckpointEntity?,
+    val imageFiles: List<File> = emptyList(),
 )
 
 data class StepExecutionOutput(

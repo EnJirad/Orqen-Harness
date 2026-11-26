@@ -110,6 +110,10 @@ object TaskContextBuilder {
             if (step.targetFiles.isNotEmpty()) {
                 appendLine("Target Files: ${step.targetFiles.joinToString(", ")}")
             }
+            val attachedPaths = TaskAttachmentCodec.decodePaths(task.taskMemory)
+            if (attachedPaths.isNotEmpty()) {
+                appendLine("Attached Files: ${attachedPaths.joinToString(", ")}")
+            }
             if (step.inputContext.isNotBlank()) {
                 appendLine("Expected Output: ${step.inputContext}")
             }

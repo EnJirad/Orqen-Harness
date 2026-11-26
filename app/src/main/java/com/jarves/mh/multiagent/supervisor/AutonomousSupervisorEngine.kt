@@ -8,6 +8,9 @@ import com.jarves.mh.multiagent.model.LockAcquisitionResult
 import com.jarves.mh.multiagent.persistence.*
 import com.jarves.mh.multiagent.recovery.ExecutionLivenessMonitor
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -132,6 +135,7 @@ class AutonomousSupervisorEngine(
         objective: String,
         requestedSubtasks: List<String> = emptyList(),
         acceptanceCriteria: List<String> = emptyList(),
+        attachmentPaths: List<String> = emptyList(),
         budget: BudgetConfiguration = BudgetConfiguration(),
         completionCriteria: TaskCompletionCriteria = TaskCompletionCriteria(
             requireReviewerApproval = team.requireIndependentReview,
@@ -146,7 +150,7 @@ class AutonomousSupervisorEngine(
 
         val normalizedObj = objective.trim()
         // Idempotency guard: if an active non-terminal task for the exact same project & objective
-        // already exists, reuse it instead of creating duplicate concurrent tasks!
+        // already exists, reuse it (merging any new attachment paths) instead of creating duplicate tasks!
         val existingActive = taskStore.listTasksForProject(projectId).firstOrNull { existing ->
             existing.description.trim().equals(normalizedObj, ignoreCase = true) &&
                 existing.status in setOf(
@@ -158,13 +162,23 @@ class AutonomousSupervisorEngine(
                 )
         }
         if (existingActive != null) {
+            if (attachmentPaths.isNotEmpty()) {
+                val merged = existingActive.copy(
+                    taskMemory = TaskAttachmentCodec.encodeIntoTaskMemory(existingActive.taskMemory, attachmentPaths),
+                    updatedAt = nowProvider(),
+                )
+                taskStore.upsertTask(merged)
+                return merged
+            }
             return existingActive
         }
 
         val rawPlan = planner.planTask(project, normalizedObj, requestedSubtasks, acceptanceCriteria)
+        val workloads = mutableMapOf<String, Int>()
         val assignedSteps = rawPlan.steps.map { step ->
-            val selected = capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities)
+            val selected = capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities, activeWorkloads = workloads)
                 ?: candidates.first()
+            workloads[selected.agentId] = (workloads[selected.agentId] ?: 0) + 1
             step.copy(assignedAgentId = selected.agentId)
         }
         val plannedTask = planner.persistPlan(
@@ -173,7 +187,10 @@ class AutonomousSupervisorEngine(
             plan = rawPlan.copy(steps = assignedSteps),
             budget = budget,
         ).let { t ->
-            val updated = t.copy(completionCriteria = completionCriteria)
+            val updated = t.copy(
+                completionCriteria = completionCriteria,
+                taskMemory = TaskAttachmentCodec.encodeIntoTaskMemory(t.taskMemory, attachmentPaths),
+            )
             taskStore.upsertTask(updated)
             updated
         }
@@ -193,6 +210,7 @@ class AutonomousSupervisorEngine(
         requestedSubtasks: List<String> = emptyList(),
         acceptanceCriteria: List<String> = emptyList(),
         requiredDeliverableFiles: List<String> = emptyList(),
+        attachmentPaths: List<String> = emptyList(),
         budget: BudgetConfiguration = BudgetConfiguration(),
         completionCriteria: TaskCompletionCriteria = TaskCompletionCriteria(
             requireReviewerApproval = team.requireIndependentReview,
@@ -208,6 +226,7 @@ class AutonomousSupervisorEngine(
             objective = objective,
             requestedSubtasks = requestedSubtasks,
             acceptanceCriteria = acceptanceCriteria,
+            attachmentPaths = attachmentPaths,
             budget = budget,
             completionCriteria = completionCriteria,
         ) ?: return null
@@ -219,6 +238,52 @@ class AutonomousSupervisorEngine(
             team = team,
             requiredDeliverableFiles = requiredDeliverableFiles,
         )
+    }
+
+    /**
+     * Phase 1 (Part A.5.1): Persistent Autonomous Project Queue Continuation.
+     *
+     * Automatically drains all eligible QUEUED / READY / RECOVERING tasks for [projectId]
+     * from [OrqenTaskStore] in deterministic order (priority DESC, createdAt ASC) without
+     * requiring another user message. Never restarts COMPLETED, CANCELLED, PAUSED, BLOCKED,
+     * FAILED, or owner-stopped tasks.
+     */
+    suspend fun superviseProjectQueue(
+        projectId: String,
+        team: AgentTeamEntity,
+        requiredDeliverableFilesByTask: Map<String, List<String>> = emptyMap(),
+        onTaskStarted: (TaskEntity) -> Unit = {},
+        onTaskFinished: (TaskEntity) -> Unit = {},
+    ): List<TaskEntity> {
+        val processed = mutableListOf<TaskEntity>()
+        val attemptedIds = mutableSetOf<String>()
+        while (currentCoroutineContext().isActive) {
+            val nextEligible = taskStore.listTasksForProject(projectId)
+                .filter { task ->
+                    !task.ownerStopRequested &&
+                        !task.pauseRequested &&
+                        task.taskId !in activeSupervisedTasks &&
+                        task.taskId !in attemptedIds &&
+                        task.status in setOf(
+                            PersistentTaskStatus.QUEUED,
+                            PersistentTaskStatus.READY,
+                            PersistentTaskStatus.RECOVERING,
+                        )
+                }
+                .sortedWith(compareByDescending<TaskEntity> { it.priority }.thenBy { it.createdAt })
+                .firstOrNull() ?: break
+
+            attemptedIds.add(nextEligible.taskId)
+            onTaskStarted(nextEligible)
+            val outcome = superviseTask(
+                taskId = nextEligible.taskId,
+                team = team,
+                requiredDeliverableFiles = requiredDeliverableFilesByTask[nextEligible.taskId].orEmpty(),
+            ) ?: continue
+            processed.add(outcome)
+            onTaskFinished(outcome)
+        }
+        return processed
     }
 
     /**
@@ -320,10 +385,115 @@ class AutonomousSupervisorEngine(
                     .map { it.stepId }
                     .toSet()
 
-                val nextStep = allSteps.firstOrNull { step ->
+                val runnableSteps = allSteps.filter { step ->
                     (step.status == StepStatus.PENDING || step.status == StepStatus.READY) &&
                         step.dependencies.all { it in completedIds }
                 }
+
+                // Phase 2 (Part A.5.1): Execute independent non-review subtasks concurrently up to team.maxConcurrentAgents
+                val parallelBatch = if (runnableSteps.size > 1 && team.maxConcurrentAgents > 1) {
+                    val seenAgents = mutableSetOf<String>()
+                    val seenFiles = mutableSetOf<String>()
+                    runnableSteps.filter { s ->
+                        !s.requiresReview &&
+                            taskStore.findIdempotency(s.idempotencyKey) == null &&
+                            s.assignedAgentId !in seenAgents &&
+                            s.targetFiles.none { it in seenFiles }
+                    }.take(team.maxConcurrentAgents).also { batch ->
+                        batch.forEach {
+                            seenAgents.add(it.assignedAgentId)
+                            seenFiles.addAll(it.targetFiles)
+                        }
+                    }
+                } else emptyList()
+
+                if (parallelBatch.size > 1) {
+                    val teamProfiles = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
+                    val accessibleImages = TaskAttachmentCodec.resolveAccessibleFiles(task.taskMemory, workspaceDir)
+                    coroutineScope {
+                        parallelBatch.map { pStep ->
+                            async {
+                                val prof = teamProfiles.firstOrNull { it.agentId == pStep.assignedAgentId }
+                                    ?: teamProfiles.firstOrNull() ?: return@async
+                                val execId = "exec-${UUID.randomUUID().toString().take(10)}"
+                                val lease = livenessMonitor.tryAcquireLease(taskId, pStep.stepId, prof.agentId, timeoutPolicy.agentExecutionTimeoutMs, nowProvider())
+                                    ?: return@async
+                                val slot = AgentSlot.fromId(prof.agentId) ?: AgentSlot.AGENT_1
+                                val locked = mutableListOf<String>()
+                                for (path in pStep.targetFiles) {
+                                    if (fileLockManager.tryAcquire(path, slot, taskId, "Parallel ${pStep.title}") is LockAcquisitionResult.Success) {
+                                        locked.add(path)
+                                    } else {
+                                        locked.forEach { fileLockManager.release(it, slot) }
+                                        livenessMonitor.releaseLease(taskId, pStep.stepId, prof.agentId)
+                                        return@async
+                                    }
+                                }
+                                try {
+                                    val runStep = pStep.copy(status = StepStatus.RUNNING, startedAt = nowProvider())
+                                    val execRec = AgentExecutionEntity(execId, taskId, pStep.stepId, prof.agentId, prof.providerId, prof.modelId, "RUNNING")
+                                    taskStore.runInTransaction {
+                                        taskStore.upsertStep(runStep)
+                                        taskStore.insertExecution(execRec)
+                                    }
+                                    val ctx = TaskContextBuilder.buildAgentStepContext(
+                                        project = project,
+                                        task = task,
+                                        step = runStep,
+                                        allSteps = allSteps,
+                                        latestCheckpoint = taskStore.getLatestCheckpoint(taskId),
+                                        communicationManager = communicationManager,
+                                        reviewFeedback = collabStore.listReviewsForTask(taskId),
+                                    )
+                                    val pAdapter = RuntimeStepExecutionAdapter(
+                                        runtime = runtime,
+                                        communicationManager = communicationManager,
+                                        stepTimeoutMs = timeoutPolicy.forProvider(prof.providerId).agentExecutionTimeoutMs,
+                                    )
+                                    val out = pAdapter.executeStep(
+                                        StepExecutionInput(
+                                            task = task,
+                                            step = runStep,
+                                            agent = AgentProfileMapper.toDynamicProfile(prof),
+                                            workspaceDir = workspaceDir,
+                                            compactContext = ctx,
+                                            latestCheckpoint = taskStore.getLatestCheckpoint(taskId),
+                                            imageFiles = accessibleImages,
+                                        ),
+                                    )
+                                    if (out.success) {
+                                        val cp = checkpointManager.buildCheckpoint(taskId, runStep.stepId, workspaceDir, out.modifiedFiles, out.summary)
+                                        val latestT = taskStore.getTask(taskId) ?: task
+                                        taskStore.completeStepTransactionally(
+                                            task = latestT.copy(
+                                                totalInputTokens = latestT.totalInputTokens + out.inputTokens,
+                                                totalOutputTokens = latestT.totalOutputTokens + out.outputTokens,
+                                                actualCostUsd = latestT.actualCostUsd + out.actualCostUsd,
+                                                lastHeartbeatAt = nowProvider(),
+                                                updatedAt = nowProvider(),
+                                            ),
+                                            step = runStep.copy(status = StepStatus.COMPLETED, outputSummary = out.summary, completedAt = nowProvider(), checkpointId = cp.checkpointId),
+                                            execution = execRec.copy(executionStatus = "COMPLETED", completedAt = nowProvider(), inputTokens = out.inputTokens, outputTokens = out.outputTokens, estimatedCostUsd = out.actualCostUsd),
+                                            checkpoint = cp,
+                                            event = TaskEventEntity(taskId = taskId, stepId = runStep.stepId, eventType = "PARALLEL_STEP_COMPLETED", eventPayload = "Parallel step '${runStep.title}' completed by ${prof.agentId}"),
+                                            idempotency = IdempotencyRecordEntity(runStep.idempotencyKey, taskId, runStep.stepId, "STEP_EXECUTION", out.summary.take(500)),
+                                        )
+                                    } else {
+                                        // Return failed step to READY so main sequential recovery path handles failover/reassignment cleanly
+                                        taskStore.upsertStep(runStep.copy(status = StepStatus.READY))
+                                        taskStore.updateExecution(execRec.copy(executionStatus = "FAILED", completedAt = nowProvider(), errorMessage = out.error?.message ?: out.summary))
+                                    }
+                                } finally {
+                                    locked.forEach { fileLockManager.release(it, slot) }
+                                    livenessMonitor.releaseLease(taskId, pStep.stepId, prof.agentId)
+                                }
+                            }
+                        }.awaitAll()
+                    }
+                    continue
+                }
+
+                val nextStep = runnableSteps.firstOrNull()
 
                 if (nextStep == null) {
                     // All currently planned steps finished -> run Independent Completion Verifier!
@@ -504,6 +674,7 @@ class AutonomousSupervisorEngine(
                     },
                 )
 
+                val accessibleImages = TaskAttachmentCodec.resolveAccessibleFiles(task.taskMemory, workspaceDir)
                 val output = try {
                     adapter.executeStep(
                         StepExecutionInput(
@@ -513,6 +684,7 @@ class AutonomousSupervisorEngine(
                             workspaceDir = workspaceDir,
                             compactContext = compactContext,
                             latestCheckpoint = latestCheckpoint,
+                            imageFiles = accessibleImages,
                         ),
                     )
                 } catch (cancel: CancellationException) {

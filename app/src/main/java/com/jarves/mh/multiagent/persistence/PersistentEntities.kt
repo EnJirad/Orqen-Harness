@@ -101,6 +101,42 @@ object WorkspacePathValidator {
     }
 }
 
+/**
+ * Persists task attachment file paths (e.g., images) inside [TaskEntity.taskMemory]
+ * so attachments survive queuing, delegation, and Android process recreation without
+ * requiring a separate schema migration or temporary in-memory queue.
+ */
+object TaskAttachmentCodec {
+    private const val PREFIX = "ORQEN_ATTACHMENTS="
+
+    fun encodeIntoTaskMemory(existingMemory: String, attachmentPaths: List<String>): String {
+        val clean = attachmentPaths.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (clean.isEmpty()) return existingMemory
+        val merged = (decodePaths(existingMemory) + clean).distinct()
+        val stripped = existingMemory.lines().filterNot { it.startsWith(PREFIX) }.joinToString("\n").trim()
+        val encoded = PREFIX + merged.joinToString("|")
+        return if (stripped.isBlank()) encoded else "$stripped\n$encoded"
+    }
+
+    fun decodePaths(taskMemory: String): List<String> {
+        val line = taskMemory.lines().firstOrNull { it.startsWith(PREFIX) } ?: return emptyList()
+        return line.removePrefix(PREFIX)
+            .split("|")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }
+
+    fun resolveAccessibleFiles(taskMemory: String, workspaceDir: java.io.File): List<java.io.File> {
+        return decodePaths(taskMemory).mapNotNull { path ->
+            val file = java.io.File(path)
+            if (file.isFile && file.length() > 0L && WorkspacePathValidator.isPathInsideRoot(workspaceDir, file.absolutePath)) {
+                file
+            } else null
+        }
+    }
+}
+
 data class TaskConversationCrossRef(
     val taskId: String,
     val conversationId: String,

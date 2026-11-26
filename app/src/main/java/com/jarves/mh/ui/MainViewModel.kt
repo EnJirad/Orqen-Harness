@@ -6331,6 +6331,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun submitAutonomousTeamObjective(
         objective: String,
         requiredDeliverableFiles: List<String> = emptyList(),
+        attachmentPaths: List<String> = emptyList(),
     ) {
         val activeProj = _state.value.activeTeamProject ?: return
         val cleanObjective = objective.trim()
@@ -6354,6 +6355,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     team = team,
                     objective = cleanObjective,
                     requiredDeliverableFiles = requiredDeliverableFiles,
+                    attachmentPaths = attachmentPaths,
                     onTaskCreated = { created ->
                         activeSupervisedTaskId = created.taskId
                         _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
@@ -6377,6 +6379,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         notifyTeamTaskCompleted(activeProj.name, result.title)
                     }
                 }
+                // Phase 1 (Part A.5.1): Automatically continue with any remaining queued tasks for this project!
+                autonomousSupervisorEngine.superviseProjectQueue(
+                    projectId = activeProj.id,
+                    team = team,
+                    onTaskStarted = { queued ->
+                        activeSupervisedTaskId = queued.taskId
+                        _state.update { it.copy(activeSupervisedTaskId = queued.taskId) }
+                        updateTeamForegroundNotification(activeProj.name, "Continuing queued task: ${queued.title.take(50)}")
+                    },
+                    onTaskFinished = { finished ->
+                        appendProjectTeamMessage(
+                            projectId = activeProj.id,
+                            senderSlot = AgentSlot.AGENT_1,
+                            senderName = agentNameFor(AgentSlot.AGENT_1),
+                            text = "Autonomous Supervisor [${finished.status.name}] (${finished.taskId}): ${finished.lastError ?: finished.title}",
+                            messageType = if (finished.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                                GroupMessageType.COMPLETION_REPORT
+                            } else {
+                                GroupMessageType.PROGRESS_UPDATE
+                            },
+                        )
+                    },
+                )
             } finally {
                 _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null) }
                 stopTeamForegroundService()
@@ -6611,15 +6636,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     message = "Owner directive (+${savedFiles.size} image): \"$text\"",
                     priority = EventPriority.CRITICAL,
                 )
+                val savedPaths = savedFiles.map { it.absolutePath }
                 val runningId = _state.value.runningTeamProjectId
                 val canAutoStart = !_state.value.teamIsRunning && (runningId == null || runningId == projectId)
                 if (canAutoStart) {
-                    submitAutonomousTeamObjective(text)
+                    submitAutonomousTeamObjective(text, attachmentPaths = savedPaths)
                 } else {
-                    // Safely persist queued directive as a durable QUEUED task in SQLite
+                    // Safely persist queued directive + image attachments as a durable QUEUED task in SQLite
                     _state.value.activeTeamProject?.let { proj ->
                         val team = syncTeamProfilesForProject(proj)
-                        autonomousSupervisorEngine.preparePlan(proj.id, team, text)
+                        autonomousSupervisorEngine.preparePlan(proj.id, team, text, attachmentPaths = savedPaths)
                     }
                 }
             }
