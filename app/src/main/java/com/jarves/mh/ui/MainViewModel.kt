@@ -325,6 +325,7 @@ data class AppUiState(
     val teamBannerHealth: com.jarves.mh.multiagent.ui.TeamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.RUNNING,
     val teamBannerMessage: String? = null,
     val teamBannerDetail: String? = null,
+    val activeSupervisedTaskId: String? = null,
     val supervisorSnapshots: Map<String, com.jarves.mh.multiagent.supervisor.SupervisorUiSnapshot> = emptyMap(),
     val teamTerminalOutput: String = "",
     val teamTerminalRunning: Boolean = false,
@@ -531,8 +532,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val teamAgentRunner by lazy {
         com.jarves.mh.runtime.TeamAgentRunner(getApplication(), installer, providerManager)
     }
+    private val orqenDbHelper by lazy {
+        com.jarves.mh.multiagent.persistence.OrqenTaskDatabaseHelper(getApplication())
+    }
     private val orqenTaskStore by lazy {
-        com.jarves.mh.multiagent.persistence.SqliteOrqenTaskStore(getApplication())
+        com.jarves.mh.multiagent.persistence.SqliteOrqenTaskStore(orqenDbHelper)
     }
     private val checkpointManager by lazy {
         com.jarves.mh.multiagent.engine.CheckpointManager(orqenTaskStore)
@@ -545,7 +549,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
     private val collaborationStore by lazy {
-        com.jarves.mh.multiagent.collab.InMemoryCollaborationStore()
+        com.jarves.mh.multiagent.collab.SqliteCollaborationStore(orqenDbHelper)
     }
     private val persistentLivenessMonitor by lazy {
         com.jarves.mh.multiagent.recovery.ExecutionLivenessMonitor(orqenTaskStore)
@@ -6178,16 +6182,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(toastMessage = str(R.string.team_locked_by_other_project, runningName)) }
             return
         }
+        val nextDirective = pendingTeamDirectives.poll()
+        _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
+        if (!nextDirective.isNullOrBlank()) {
+            submitAutonomousTeamObjective(nextDirective)
+            return
+        }
+        // Reconcile and resume any persisted recoverable tasks for this project via AutonomousSupervisorEngine!
+        ensureSupervisorSnapshotCollector()
+        val team = syncTeamProfilesForProject(activeProj)
         teamCycleJob?.cancel()
         _state.update { it.copy(teamIsRunning = true, runningTeamProjectId = activeProj.id) }
         continuousSupervisor.startContinuous()
-        startTeamForegroundService(activeProj.name, "${activeProj.name} · กำลังรอรับคำสั่งจาก ${effectiveOwnerName()}")
+        startTeamForegroundService(activeProj.name, "${activeProj.name} · Autonomous Supervisor active")
         com.jarves.mh.runtime.TaskRecoveryJobService.scheduleReconciliation(
             context = getApplication(),
             taskId = activeProj.id,
         )
         teamCycleJob = viewModelScope.launch {
-            runTeamCycle()
+            try {
+                autonomousSupervisorEngine.reconcileActiveTasksOnce(team)
+            } finally {
+                _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null) }
+                stopTeamForegroundService()
+            }
         }
     }
 
@@ -6336,9 +6354,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     team = team,
                     objective = cleanObjective,
                     requiredDeliverableFiles = requiredDeliverableFiles,
+                    onTaskCreated = { created ->
+                        activeSupervisedTaskId = created.taskId
+                        _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
+                    },
                 )
-                activeSupervisedTaskId = result?.taskId
                 if (result != null) {
+                    activeSupervisedTaskId = result.taskId
+                    _state.update { it.copy(activeSupervisedTaskId = result.taskId) }
                     appendProjectTeamMessage(
                         projectId = activeProj.id,
                         senderSlot = AgentSlot.AGENT_1,
@@ -6591,7 +6614,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val runningId = _state.value.runningTeamProjectId
                 val canAutoStart = !_state.value.teamIsRunning && (runningId == null || runningId == projectId)
                 if (canAutoStart) {
-                    startTeamWork()
+                    submitAutonomousTeamObjective(text)
+                } else {
+                    // Safely persist queued directive as a durable QUEUED task in SQLite
+                    _state.value.activeTeamProject?.let { proj ->
+                        val team = syncTeamProfilesForProject(proj)
+                        autonomousSupervisorEngine.preparePlan(proj.id, team, text)
+                    }
                 }
             }
         }
@@ -6714,6 +6743,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (canAutoStart) {
             submitAutonomousTeamObjective(text)
         } else if (_state.value.teamIsRunning && runningId == projectId) {
+            _state.value.activeTeamProject?.let { proj ->
+                val team = syncTeamProfilesForProject(proj)
+                autonomousSupervisorEngine.preparePlan(proj.id, team, text)
+            }
             val ceoName = agentNameFor(AgentSlot.AGENT_1)
             val coderName = _state.value.teamAgents.filter { it.config.isEnabled }.getOrNull(1)?.config?.name ?: ceoName
             appendProjectTeamMessage(

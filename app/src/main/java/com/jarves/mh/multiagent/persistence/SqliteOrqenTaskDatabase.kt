@@ -46,6 +46,10 @@ class OrqenTaskDatabaseHelper(
         if (oldVersion < 4) {
             migrateV3ToV4(db)
         }
+        if (oldVersion < 5) {
+            // Non-destructive v4 -> v5: ensures owner_approvals table exists
+            migrateV3ToV4(db)
+        }
     }
 
     private fun createV1Schema(db: SQLiteDatabase) {
@@ -450,11 +454,32 @@ class OrqenTaskDatabaseHelper(
             """.trimIndent(),
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_file_locks_proj_path ON agent_file_locks(project_id, file_path, lock_status)")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS owner_approvals (
+                approval_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                requested_by_agent_id TEXT NOT NULL,
+                action_title TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                impact TEXT NOT NULL,
+                affected_resources_json TEXT NOT NULL DEFAULT '[]',
+                risk_level TEXT NOT NULL DEFAULT 'HIGH',
+                alternatives_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER,
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_owner_approvals_task ON owner_approvals(task_id, status)")
     }
 
     companion object {
         const val DATABASE_NAME = "orqen_autonomous_tasks.db"
-        const val DATABASE_VERSION = 4
+        const val DATABASE_VERSION = 5
     }
 }
 

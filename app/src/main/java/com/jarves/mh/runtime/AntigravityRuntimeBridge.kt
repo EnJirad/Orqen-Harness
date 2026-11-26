@@ -216,7 +216,6 @@ class AntigravityRuntimeBridge(
                     addAll(listOf("--input-format", "stream-json"))
                     addAll(listOf("--output-format", "stream-json"))
                     addAll(listOf("--print-timeout", "2m"))
-                    add("--dangerously-skip-permissions")
                     addAntigravitySelection(model(), effort())
                     add("--new-project")
                 }

@@ -2678,6 +2678,8 @@ private fun RootScreenHost(
                                 typingAgentName = state.teamTypingAgentName,
                                 runningTeamProjectId = state.runningTeamProjectId,
                                 runningTeamProjectName = state.teamProjects.firstOrNull { it.id == state.runningTeamProjectId }?.name,
+                                activeSupervisedTaskId = state.activeSupervisedTaskId,
+                                supervisorSnapshots = state.supervisorSnapshots,
                                 pendingDirectivesCount = state.teamPriorityDirectivesCount,
                                 officialQuota = state.teamOfficialQuota,
                                 estimatedUsage = state.teamEstimatedUsage,

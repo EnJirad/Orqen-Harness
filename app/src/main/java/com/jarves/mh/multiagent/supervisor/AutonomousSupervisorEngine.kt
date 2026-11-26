@@ -123,16 +123,15 @@ class AutonomousSupervisorEngine(
     fun snapshotFor(taskId: String): SupervisorUiSnapshot? = _snapshots.value[taskId]
 
     /**
-     * Submits a user objective once, creates a validated persistent plan, and runs the
-     * autonomous supervision loop until verified COMPLETED, PAUSED, CANCELLED, or BLOCKED.
+     * Phase 2 (Part A.5): Creates and persists the task + plan BEFORE execution starts,
+     * with idempotent duplicate-submission protection for active tasks on the same project.
      */
-    suspend fun submitAndSupervise(
+    fun preparePlan(
         projectId: String,
         team: AgentTeamEntity,
         objective: String,
         requestedSubtasks: List<String> = emptyList(),
         acceptanceCriteria: List<String> = emptyList(),
-        requiredDeliverableFiles: List<String> = emptyList(),
         budget: BudgetConfiguration = BudgetConfiguration(),
         completionCriteria: TaskCompletionCriteria = TaskCompletionCriteria(
             requireReviewerApproval = team.requireIndependentReview,
@@ -145,7 +144,24 @@ class AutonomousSupervisorEngine(
         val candidates = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
         if (candidates.isEmpty()) return null
 
-        val rawPlan = planner.planTask(project, objective, requestedSubtasks, acceptanceCriteria)
+        val normalizedObj = objective.trim()
+        // Idempotency guard: if an active non-terminal task for the exact same project & objective
+        // already exists, reuse it instead of creating duplicate concurrent tasks!
+        val existingActive = taskStore.listTasksForProject(projectId).firstOrNull { existing ->
+            existing.description.trim().equals(normalizedObj, ignoreCase = true) &&
+                existing.status in setOf(
+                    PersistentTaskStatus.QUEUED,
+                    PersistentTaskStatus.PLANNING,
+                    PersistentTaskStatus.READY,
+                    PersistentTaskStatus.RUNNING,
+                    PersistentTaskStatus.RECOVERING,
+                )
+        }
+        if (existingActive != null) {
+            return existingActive
+        }
+
+        val rawPlan = planner.planTask(project, normalizedObj, requestedSubtasks, acceptanceCriteria)
         val assignedSteps = rawPlan.steps.map { step ->
             val selected = capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities)
                 ?: candidates.first()
@@ -162,6 +178,41 @@ class AutonomousSupervisorEngine(
             updated
         }
         updateSnapshot(plannedTask.taskId, SupervisorOperationalStatus.PLANNING, "Plan created with ${assignedSteps.size} steps")
+        return plannedTask
+    }
+
+    /**
+     * Submits a user objective once, creates a validated persistent plan, publishes the Task ID
+     * via [onTaskCreated] BEFORE execution starts, and runs the autonomous supervision loop
+     * until verified COMPLETED, PAUSED, CANCELLED, or BLOCKED.
+     */
+    suspend fun submitAndSupervise(
+        projectId: String,
+        team: AgentTeamEntity,
+        objective: String,
+        requestedSubtasks: List<String> = emptyList(),
+        acceptanceCriteria: List<String> = emptyList(),
+        requiredDeliverableFiles: List<String> = emptyList(),
+        budget: BudgetConfiguration = BudgetConfiguration(),
+        completionCriteria: TaskCompletionCriteria = TaskCompletionCriteria(
+            requireReviewerApproval = team.requireIndependentReview,
+            requireTestsPass = true,
+            requireDeliverableVerification = true,
+            acceptanceChecks = acceptanceCriteria,
+        ),
+        onTaskCreated: (TaskEntity) -> Unit = {},
+    ): TaskEntity? {
+        val plannedTask = preparePlan(
+            projectId = projectId,
+            team = team,
+            objective = objective,
+            requestedSubtasks = requestedSubtasks,
+            acceptanceCriteria = acceptanceCriteria,
+            budget = budget,
+            completionCriteria = completionCriteria,
+        ) ?: return null
+
+        onTaskCreated(plannedTask)
 
         return superviseTask(
             taskId = plannedTask.taskId,
