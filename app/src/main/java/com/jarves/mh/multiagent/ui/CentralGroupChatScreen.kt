@@ -98,6 +98,7 @@ fun CentralGroupChatScreen(
     hasGitRemote: Boolean = false,
     gitPushRunning: Boolean = false,
     onPushToGit: ((gitUrl: String?, apiKey: String?) -> Unit)? = null,
+    onInstallApk: ((String) -> Unit)? = null,
     onOpenFile: ((String) -> Unit)? = null,
     onSendMessageWithImages: ((text: String, type: GroupMessageType, targetSlot: AgentSlot?, imageUris: List<Uri>) -> Unit)? = null,
     onSendMessage: (text: String, type: GroupMessageType, targetSlot: AgentSlot?) -> Unit,
@@ -545,6 +546,7 @@ fun CentralGroupChatScreen(
                         message = msg,
                         senderIcon = senderAgent?.let { AgentIconCatalog.iconFor(it.config) },
                         onOpenFile = onOpenFile,
+                        onInstallApk = onInstallApk,
                         onSendAsTask = { taskPrompt ->
                             pendingUserSendScroll = true
                             onSendMessage(taskPrompt, GroupMessageType.TASK_ASSIGNMENT, null)
@@ -1092,6 +1094,7 @@ fun GroupChatBubble(
     message: GroupChatMessage,
     senderIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     onOpenFile: ((String) -> Unit)? = null,
+    onInstallApk: ((String) -> Unit)? = null,
     onSendAsTask: ((String) -> Unit)? = null,
 ) {
     val isUser = message.isUser
@@ -1337,6 +1340,64 @@ fun GroupChatBubble(
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.Bold,
                     )
+                }
+            }
+
+            // Direct Installable APK Card right inside Group Chat!
+            val apkPath = message.apkFilePath?.takeIf { it.isNotBlank() }
+            if (apkPath != null && onInstallApk != null) {
+                val apkFile = remember(apkPath) { java.io.File(apkPath) }
+                val apkSizeMb = remember(apkPath) {
+                    val bytes = runCatching { apkFile.length() }.getOrDefault(0L)
+                    if (bytes > 0L) String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0)) else "APK"
+                }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF10B981).copy(alpha = 0.14f),
+                    border = BorderStroke(1.2.dp, Color(0xFF10B981).copy(alpha = 0.65f)),
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(11.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Android,
+                                contentDescription = "APK",
+                                tint = Color(0xFF10B981),
+                                modifier = Modifier.size(22.dp),
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = apkFile.name,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = "$apkSizeMb · พร้อมติดตั้งลงเครื่องทันที",
+                                    fontSize = 10.5.sp,
+                                    color = Color(0xFF10B981),
+                                )
+                            }
+                        }
+                        Button(
+                            onClick = { onInstallApk(apkPath) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                            Spacer(Modifier.width(6.dp))
+                            Text("ดาวน์โหลดและติดตั้ง APK", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
                 }
             }
 

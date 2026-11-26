@@ -157,6 +157,7 @@ fun TeamWorkspaceScreen(
     onSendGroupMessageWithImages: ((text: String, type: GroupMessageType, targetSlot: AgentSlot?, imageUris: List<Uri>) -> Unit)? = null,
     onClearGroupChat: () -> Unit = {},
     onPushToGit: (gitUrl: String?, apiKey: String?) -> Unit = { _, _ -> },
+    onInstallApk: (String) -> Unit = {},
     onToggleAutoPushGit: (Boolean) -> Unit = {},
     onRunTeamTerminalCommand: (String) -> Unit,
     onClearTeamTerminal: () -> Unit,
@@ -287,6 +288,7 @@ fun TeamWorkspaceScreen(
                         hasGitRemote = hasGitRemote,
                         gitPushRunning = gitPushRunning,
                         onPushToGit = onPushToGit,
+                        onInstallApk = onInstallApk,
                         onOpenFile = { path ->
                             pendingFileToOpen = path
                             activeTab = TeamWorkspaceTab.FILES

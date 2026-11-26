@@ -112,6 +112,7 @@ class AutonomousSupervisorEngine(
     },
     private val chatProjectionSink: TeamChatProjectionSink? = null,
     private val onStepLifecycleUpdate: (StepLifecycleUpdate) -> Unit = {},
+    private val mcpManager: com.jarves.mh.mcp.McpConnectionManager? = null,
     private val delayFn: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
     private val nowProvider: () -> Long = { System.currentTimeMillis() },
 ) {
@@ -507,6 +508,7 @@ class AutonomousSupervisorEngine(
                                         providerConfigResolver = providerConfigResolver,
                                         communicationManager = communicationManager,
                                         stepTimeoutMs = timeoutPolicy.forProvider(prof.providerId).agentExecutionTimeoutMs,
+                                        mcpManager = mcpManager,
                                     )
                                     val out = pAdapter.executeStep(
                                         StepExecutionInput(
@@ -717,6 +719,7 @@ class AutonomousSupervisorEngine(
                     providerConfigResolver = providerConfigResolver,
                     communicationManager = communicationManager,
                     stepTimeoutMs = timeoutPolicy.forProvider(agentProfile.providerId).agentExecutionTimeoutMs,
+                    mcpManager = mcpManager,
                     onProgress = { tid, sid, aid, prog ->
                         val (evType, toolName, cleanDetails) = when {
                             prog.startsWith("TOOL_STARTED:") -> {
@@ -1169,6 +1172,20 @@ class AutonomousSupervisorEngine(
             return taskStore.getTask(taskId)
         } finally {
             activeSupervisedTasks.remove(taskId)
+            val finalStatus = taskStore.getTask(taskId)?.status
+            if (finalStatus == PersistentTaskStatus.COMPLETED ||
+                finalStatus == PersistentTaskStatus.FAILED ||
+                finalStatus == PersistentTaskStatus.CANCELLED ||
+                finalStatus == PersistentTaskStatus.BLOCKED
+            ) {
+                mcpManager?.let { mgr ->
+                    mgr.authEngine.revokeGrantsForTask(
+                        taskId = taskId,
+                        reason = "Task ended ($finalStatus)",
+                    )
+                    mgr.refreshStateFlows()
+                }
+            }
         }
     }
 
@@ -1430,7 +1447,10 @@ class AutonomousSupervisorEngine(
         if (task.completionCriteria.requireTestsPass) {
             val testsPassed = steps.any {
                 it.status == StepStatus.COMPLETED &&
-                    (it.title.contains("test", ignoreCase = true) || it.title.contains("verify", ignoreCase = true)) &&
+                    (it.requiresReview ||
+                        it.title.contains("test", ignoreCase = true) ||
+                        it.title.contains("verify", ignoreCase = true) ||
+                        it.title.contains("ทดสอบ")) &&
                     it.outputSummary.contains("TESTS_PASSED", ignoreCase = true)
             }
             if (!testsPassed) gaps.add("Required tests have not reported TESTS_PASSED")
@@ -1462,8 +1482,8 @@ class AutonomousSupervisorEngine(
             return listOf(
                 PlannedStep(
                     sequenceNumber = nextSeq,
-                    title = "ตรวจสอบโค้ดและยืนยันผลทดสอบ (รอบที่ $roundNum)",
-                    description = "Verify completed work and run tests for: ${task.title}. Remaining checks: ${missing.joinToString("; ")}",
+                    title = "Verify & test deliverables (ตรวจสอบโค้ดและยืนยันผลทดสอบ รอบที่ $roundNum)",
+                    description = "Verify completed work and run tests for: ${task.title}. Remaining checks: ${missing.joinToString("; ")}. Explicitly output REVIEW_APPROVED and TESTS_PASSED when verified.",
                     expectedOutput = "REVIEW_APPROVED and TESTS_PASSED",
                     dependencies = lastStepIds,
                     requiredCapabilities = setOf("review", "qa"),
@@ -1491,8 +1511,8 @@ class AutonomousSupervisorEngine(
         )
         val verifyStep = PlannedStep(
             sequenceNumber = nextSeq + 1,
-            title = "ตรวจสอบโค้ดและยืนยันผลทดสอบ (รอบที่ $roundNum)",
-            description = "Verify deliverables are complete and run tests for: ${task.title}",
+            title = "Verify & test deliverables (ตรวจสอบโค้ดและยืนยันผลทดสอบ รอบที่ $roundNum)",
+            description = "Verify deliverables are complete and run tests for: ${task.title}. Explicitly output REVIEW_APPROVED and TESTS_PASSED when verified.",
             expectedOutput = "REVIEW_APPROVED and TESTS_PASSED",
             dependencies = listOf(implStep.stepId),
             requiredCapabilities = setOf("review", "qa"),
@@ -1565,8 +1585,9 @@ class AutonomousSupervisorEngine(
     }
 
     private fun inferRequiredCapabilities(step: TaskStepEntity): Set<String> = when {
-        step.requiresReview || step.title.contains("verify", ignoreCase = true) || step.title.contains("review", ignoreCase = true) -> setOf("review", "qa")
-        step.title.contains("inspect", ignoreCase = true) || step.title.contains("plan", ignoreCase = true) -> setOf("lead")
+        step.requiresReview || step.title.contains("verify", ignoreCase = true) || step.title.contains("review", ignoreCase = true) || step.title.contains("ทดสอบ") -> setOf("review", "qa")
+        step.title.startsWith("Implement", ignoreCase = true) || step.title.contains("พัฒนาโค้ด") -> setOf("code")
+        step.title.contains("inspect", ignoreCase = true) || step.title.contains("วางแผน") || step.title.contains("plan", ignoreCase = true) -> setOf("lead")
         else -> setOf("code")
     }
 

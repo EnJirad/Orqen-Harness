@@ -35,6 +35,7 @@ class RuntimeStepExecutionAdapter(
     private val providerConfigResolver: (providerId: String) -> ProviderConfig? = { null },
     private val communicationManager: AgentCommunicationManager? = null,
     private val stepTimeoutMs: Long = 1_800_000L,
+    private val mcpManager: com.jarves.mh.mcp.McpConnectionManager? = null,
     private val onProgress: suspend (taskId: String, stepId: String, agentId: String, progress: String) -> Unit = { _, _, _, _ -> },
 ) : StepExecutionAdapter {
 
@@ -48,12 +49,24 @@ class RuntimeStepExecutionAdapter(
             .trim('-')
             .take(60)
             .ifBlank { "team-project" }
+
+        // Inject connected & authorized MCP tools into the agent's prompt context (Part 8)
+        val mcpPromptBlock = mcpManager?.buildAuthorizedToolPromptBlock(
+            agentId = input.agent.agentId,
+            workspaceId = input.task.projectId,
+        ).orEmpty()
+        val effectivePrompt = if (mcpPromptBlock.isNotBlank()) {
+            "${input.compactContext}\n\n$mcpPromptBlock"
+        } else {
+            input.compactContext
+        }
+
         val request = RuntimeExecutionRequest(
             agent = agentState,
             providerConfig = providerConfig,
             workspaceDir = input.workspaceDir,
             projectSlug = projectSlug,
-            prompt = input.compactContext,
+            prompt = effectivePrompt,
             imageFiles = input.imageFiles,
         )
 
@@ -144,15 +157,43 @@ class RuntimeStepExecutionAdapter(
             )
         }
 
+        // Execute any authorized [MCP_CALL tool="mcp__..." args={...}] requests and return real results (Parts 8, 9, 16)
+        var finalOutputText = response.outputText
+        if (mcpManager != null) {
+            val mcpResults = executeEmbeddedMcpCalls(
+                input = input,
+                outputText = response.outputText,
+            )
+            if (mcpResults.isNotEmpty()) {
+                val resultsBlock = mcpResults.joinToString("\n") { res ->
+                    "[MCP_RESULT tool=\"${res.toolId}\" ok=${res.success}] ${res.contentText.take(1200)}"
+                }
+                // Continue the model execution loop with the real MCP tool results!
+                val followUpReq = request.copy(
+                    prompt = "$effectivePrompt\n\nPrevious response:\n${response.outputText.take(2000)}\n\nReal MCP tool results:\n$resultsBlock\n\nContinue and complete the step using these real MCP tool results.",
+                )
+                val followUp = runCatching {
+                    runtime.execute(followUpReq) { progress ->
+                        onProgress(input.task.taskId, input.step.stepId, input.agent.agentId, progress)
+                    }
+                }.getOrNull()
+                finalOutputText = if (followUp != null && followUp.success && followUp.outputText.isNotBlank()) {
+                    "${followUp.outputText.trim()}\n\n$resultsBlock"
+                } else {
+                    "${response.outputText.trim()}\n\n$resultsBlock"
+                }
+            }
+        }
+
         val (reviewApproved, reviewFeedback) = parseReviewVerdict(
             requiresReview = input.step.requiresReview,
-            outputText = response.outputText,
+            outputText = finalOutputText,
         )
-        val verificationSpec = buildVerificationSpec(input, response.outputText)
+        val verificationSpec = buildVerificationSpec(input, finalOutputText)
 
         return StepExecutionOutput(
             success = true,
-            summary = response.outputText.trim(),
+            summary = finalOutputText.trim(),
             modifiedFiles = response.modifiedFiles,
             inputTokens = response.usage.inputTokens,
             outputTokens = response.usage.outputTokens,
@@ -161,6 +202,31 @@ class RuntimeStepExecutionAdapter(
             reviewFeedback = reviewFeedback,
             verificationSpec = verificationSpec,
         )
+    }
+
+    private suspend fun executeEmbeddedMcpCalls(
+        input: StepExecutionInput,
+        outputText: String,
+    ): List<com.jarves.mh.mcp.McpToolCallResult> {
+        val manager = mcpManager ?: return emptyList()
+        val callRegex = Regex("""\[MCP_CALL\s+tool="([^"]+)"\s+args=(\{[^\n]*\})\]""")
+        val results = mutableListOf<com.jarves.mh.mcp.McpToolCallResult>()
+        for (match in callRegex.findAll(outputText).take(6)) {
+            val toolId = match.groupValues[1].trim()
+            val argsJson = match.groupValues[2].trim()
+            val res = manager.executeToolForAgent(
+                agentId = input.agent.agentId,
+                agentRole = input.agent.roleTitle,
+                namespacedToolId = toolId,
+                argumentsJson = argsJson,
+                workspaceId = input.task.projectId,
+                taskId = input.task.taskId,
+                activeTaskAgentIds = setOf(input.agent.agentId),
+                autoRequestFromSpv = true,
+            )
+            results += res
+        }
+        return results
     }
 
     private fun toAgentState(profile: DynamicAgentProfile): AgentState {
@@ -244,9 +310,11 @@ class RuntimeStepExecutionAdapter(
         input: StepExecutionInput,
         outputText: String,
     ): VerificationSpec? {
-        val isTestStep = "test" in input.agent.capabilities ||
+        val isTestStep = input.step.requiresReview ||
+            "test" in input.agent.capabilities ||
             input.step.title.contains("test", ignoreCase = true) ||
-            input.step.title.contains("verify", ignoreCase = true)
+            input.step.title.contains("verify", ignoreCase = true) ||
+            input.step.title.contains("ทดสอบ")
         if (!isTestStep) return null
 
         val explicitPass = Regex("""\bTESTS_PASSED\b""", RegexOption.IGNORE_CASE).containsMatchIn(outputText)

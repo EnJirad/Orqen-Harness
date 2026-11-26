@@ -580,6 +580,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         workDetails = details,
                         imagePaths = imgs,
                         suggestedTaskPrompt = obj.optString("suggestedTaskPrompt").takeIf { it.isNotBlank() },
+                        apkFilePath = obj.optString("apkFilePath").takeIf { it.isNotBlank() },
                     )
                 }
             }
@@ -607,6 +608,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             put("workDetails", org.json.JSONArray(msg.workDetails))
                             put("imagePaths", org.json.JSONArray(msg.imagePaths))
                             put("suggestedTaskPrompt", msg.suggestedTaskPrompt.orEmpty())
+                            put("apkFilePath", msg.apkFilePath.orEmpty())
                         },
                     )
                 }
@@ -645,6 +647,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             allowSandboxedCliTools = true,
         )
     }
+    val mcpConnectionManager by lazy {
+        com.jarves.mh.mcp.McpConnectionManager(
+            store = com.jarves.mh.mcp.SqliteMcpStore(orqenDbHelper),
+            secretStore = com.jarves.mh.mcp.VaultMcpSecretStore(vault),
+            transportFactory = { cfg ->
+                when (cfg.transportType) {
+                    com.jarves.mh.mcp.McpTransportType.STDIO ->
+                        com.jarves.mh.mcp.StdioMcpTransportClient(
+                            serverId = cfg.serverId,
+                            installer = installer,
+                            workspaceResolver = { wsId ->
+                                val teamWs = _state.value.teamProjects.firstOrNull { it.id == wsId }?.rootPath
+                                val projWs = _state.value.projects.firstOrNull { it.id == wsId }?.rootPath
+                                val activeWs = _state.value.activeTeamProject?.rootPath ?: _state.value.activeProject?.rootPath
+                                val path = teamWs?.takeIf { it.isNotBlank() }
+                                    ?: projWs?.takeIf { it.isNotBlank() }
+                                    ?: activeWs?.takeIf { it.isNotBlank() }
+                                if (path != null) File(path) else getApplication<Application>().filesDir
+                            },
+                        )
+                    com.jarves.mh.mcp.McpTransportType.STREAMABLE_HTTP ->
+                        com.jarves.mh.mcp.StreamableHttpMcpTransportClient(cfg.serverId)
+                    com.jarves.mh.mcp.McpTransportType.LEGACY_HTTP_SSE ->
+                        com.jarves.mh.mcp.LegacySseMcpTransportClient(cfg.serverId)
+                }
+            },
+        )
+    }
     val autonomousSupervisorEngine by lazy {
         com.jarves.mh.multiagent.supervisor.AutonomousSupervisorEngine(
             taskStore = orqenTaskStore,
@@ -653,6 +683,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             checkpointManager = checkpointManager,
             fileLockManager = fileLockManager,
             livenessMonitor = persistentLivenessMonitor,
+            mcpManager = mcpConnectionManager,
             modelPoolProvider = {
                 providerManager.configs.value.filter { it.isEnabled }.map { cfg ->
                     com.jarves.mh.multiagent.supervisor.ModelCandidate(
@@ -6950,6 +6981,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             com.jarves.mh.runtime.TaskRecoveryJobService.cancelTaskRecovery(getApplication(), tid)
+            mcpConnectionManager.authEngine.revokeGrantsForTask(
+                taskId = tid,
+                reason = "Task stopped by owner",
+            )
+            mcpConnectionManager.refreshStateFlows()
         }
         activeSupervisedTaskId = null
         _state.value.activeTeamProject?.id?.let { projId ->
@@ -7078,16 +7114,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (result != null) {
                     activeSupervisedTaskId = result.taskId
                     _state.update { it.copy(activeSupervisedTaskId = result.taskId) }
+                    val builtApk = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                        buildAndLocateTeamAndroidApk(activeProj)
+                    } else null
+                    val completionMsg = if (builtApk != null) {
+                        "🎉 แอป '${activeProj.name}' สร้างและบิลด์ APK เสร็จสมบูรณ์แล้วครับ! กดปุ่มดาวน์โหลดและติดตั้งด้านล่างเพื่อลงเครื่องทดสอบได้เลย ชอบหรือไม่ชอบตรงไหนบอกให้ทีมแก้ได้ทันทีครับ"
+                    } else {
+                        formatTeamTaskCompletionMessage(activeProj.name, result.title, result.taskId, result.status, result.lastError)
+                    }
                     appendProjectTeamMessage(
                         projectId = activeProj.id,
                         senderSlot = AgentSlot.AGENT_1,
                         senderName = agentNameFor(AgentSlot.AGENT_1),
-                        text = formatTeamTaskCompletionMessage(activeProj.name, result.title, result.taskId, result.status, result.lastError),
+                        text = completionMsg,
                         messageType = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                             GroupMessageType.COMPLETION_REPORT
                         } else {
                             GroupMessageType.PROGRESS_UPDATE
                         },
+                        apkFilePath = builtApk?.absolutePath,
                     )
                     if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                         notifyTeamTaskCompleted(activeProj.name, formatTeamTaskCompletionNotifDetail(activeProj.name, result.title))
@@ -7237,6 +7282,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         workDetails: List<String> = emptyList(),
         imagePaths: List<String> = emptyList(),
         suggestedTaskPrompt: String? = null,
+        apkFilePath: String? = null,
     ) {
         val msg = GroupChatMessage(
             senderSlot = senderSlot,
@@ -7248,6 +7294,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             workDetails = workDetails,
             imagePaths = imagePaths,
             suggestedTaskPrompt = suggestedTaskPrompt,
+            apkFilePath = apkFilePath,
         )
         if (projectId != null) {
             val list = loadProjectTeamChat(projectId)
@@ -7395,6 +7442,82 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    fun installTeamApk(apkPath: String) {
+        val apkFile = File(apkPath)
+        if (!apkFile.isFile || apkFile.length() <= 0L) {
+            _state.update { it.copy(toastMessage = "ไม่พบไฟล์ APK: ${apkFile.name}") }
+            return
+        }
+        runCatching {
+            com.jarves.mh.runtime.AndroidAppInstaller.install(
+                context = getApplication(),
+                apk = apkFile,
+                launchAfterInstall = true,
+            )
+            _state.update { it.copy(toastMessage = "กำลังเปิดหน้าติดตั้ง ${apkFile.name}…") }
+        }.onFailure { err ->
+            android.util.Log.e("OrqenMainViewModel", "Failed to install team APK: $apkPath", err)
+            _state.update { it.copy(toastMessage = "ไม่สามารถเปิดติดตั้ง APK ได้: ${err.message?.take(120) ?: err.javaClass.simpleName}") }
+        }
+    }
+
+    /**
+     * Checks if [project] is an Android project; if so, finds an already-built debug APK or builds
+     * one automatically inside PRoot using PocketDev's Gradle command so Owner can install it directly from Chat!
+     */
+    private suspend fun buildAndLocateTeamAndroidApk(project: Project): File? = withContext(Dispatchers.IO) {
+        val workspace = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}")
+            .apply { mkdirs() }
+            .canonicalFile
+        val isAndroidProj = project.type == ProjectType.ANDROID ||
+            File(workspace, "app/build.gradle").isFile ||
+            File(workspace, "app/build.gradle.kts").isFile ||
+            File(workspace, "settings.gradle").isFile ||
+            File(workspace, "settings.gradle.kts").isFile
+        if (!isAndroidProj) return@withContext null
+
+        fun findNewestApk(): File? {
+            val apkRoot = File(workspace, "app/build/outputs/apk")
+            if (!apkRoot.isDirectory) return null
+            return apkRoot.walkTopDown()
+                .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) && it.length() > 0L }
+                .maxByOrNull { it.lastModified() }
+        }
+
+        val existingApk = findNewestApk()
+        val latestSrcMod = workspace.walkTopDown()
+            .maxDepth(6)
+            .filter { it.isFile && !it.path.contains("/build/") && !it.path.contains("/.git/") && !it.path.contains("/.gradle/") && it.name != ".orqen_chat.json" }
+            .maxOfOrNull { it.lastModified() } ?: 0L
+
+        // If an APK already exists and is newer than all source files, return it immediately!
+        if (existingApk != null && existingApk.lastModified() >= latestSrcMod) {
+            return@withContext existingApk
+        }
+
+        // Otherwise build the real Debug APK inside PRoot!
+        runCatching {
+            val installed = installer.installedRuntime()
+            val safeSlug = project.slug.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "team-project" }
+            val offlineFlag = if (existingApk != null) "--offline" else ""
+            val buildCmd = "timeout 15m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 $offlineFlag --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 assembleDebug --console=plain --stacktrace"
+            val outFile = File(getApplication<Application>().cacheDir, "team-apk-build-${System.nanoTime()}.log")
+            val proc = installer.process(
+                proot = installed.proot,
+                rootfs = installed.rootfs,
+                workspace = workspace,
+                environment = emptyMap(),
+                guestCommand = listOf("/bin/sh", "-lc", buildCmd),
+                guestWorkspacePath = "/workspace/$safeSlug",
+                emulateHardLinks = false,
+                outputFile = outFile,
+            )
+            proc.waitFor()
+            runCatching { outFile.delete() }
+        }
+        findNewestApk()
     }
 
     fun clearTeamTerminal() {

@@ -53,7 +53,8 @@ class P0StartTeamCrashRegressionTest {
         // Verify agent_profiles explicitly defines preferred_tools_json and migration v5->v6 exists
         assertTrue("agent_profiles must contain preferred_tools_json column", "preferred_tools_json" in allDbCols)
         assertTrue("migrateV5ToV6 must exist for upgrading existing v4/v5 installs", dbText.contains("migrateV5ToV6"))
-        assertTrue("DATABASE_VERSION must be >= 6", dbText.contains("DATABASE_VERSION = 6"))
+        val dbVersion = Regex("""DATABASE_VERSION\s*=\s*(\d+)""").find(dbText)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        assertTrue("DATABASE_VERSION must be >= 6 (found $dbVersion)", dbVersion >= 6)
 
         // Verify every getColumnIndexOrThrow("...") in SqliteCollaborationStore exists in DB schema
         val getColRegex = Regex("""getColumnIndexOrThrow\("([a-z0-9_]+)"\)""")

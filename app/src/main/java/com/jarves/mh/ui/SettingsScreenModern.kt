@@ -151,6 +151,9 @@ fun SettingsScreen(
     showBackupDot: Boolean = false,
     onBackupOpened: () -> Unit = {},
     openBackup: Boolean = false,
+    mcpServerCount: Int = 0,
+    mcpToolCount: Int = 0,
+    onOpenMcpManager: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var expanded by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
@@ -268,6 +271,55 @@ fun SettingsScreen(
                                 Text(if (savedOwnerName) "✓" else stringResource(R.string.action_save), fontWeight = FontWeight.Bold)
                             }
                         }
+                    }
+                }
+            }
+
+            // MCP Servers & Tools Management Card (Neon, Git, GitHub, Filesystem, Postgres, SPV Auth)
+            item {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenMcpManager() },
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SmartToy,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text("MCP Servers & Tools", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(
+                                if (mcpServerCount > 0) {
+                                    "$mcpServerCount servers • $mcpToolCount tools • SPV Permissions"
+                                } else {
+                                    "Connect Neon, Git, GitHub, Postgres, Fetch & SPV Authorization"
+                                },
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

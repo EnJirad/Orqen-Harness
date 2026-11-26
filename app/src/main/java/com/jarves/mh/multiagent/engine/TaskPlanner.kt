@@ -102,12 +102,21 @@ class StructuredTaskPlanner : TaskPlanner {
         var seq = 1
 
         val inspectStep = PlannedStep(
-            stepId = "step-inspect-${UUID.randomUUID().toString().take(6)}",
+            stepId = "step-plan-${UUID.randomUUID().toString().take(6)}",
             sequenceNumber = seq++,
-            title = "Inspect workspace & architecture",
-            description = "Analyze project '${project.projectName}' for objective: $cleanObjective",
-            expectedOutput = "Architecture findings and file map",
+            title = "SPV วิเคราะห์ความต้องการและวางแผน (.orqen/plan.md)",
+            description = buildString {
+                appendLine("Analyze the Owner's request for project '${project.projectName}' and refine it into a crystal-clear, actionable specification.")
+                appendLine("Owner's request: $cleanObjective")
+                appendLine("REQUIRED DELIVERABLE: Create or update `.orqen/plan.md` inside the workspace with:")
+                appendLine("1. Refined goal & user requirements")
+                appendLine("2. Numbered implementation phases with `[ ]` checklists and exact target files")
+                appendLine("3. Verification, test, and build plan (for Android projects, include `assembleDebug` APK build)")
+                appendLine("Then hand off clearly to the coding agent(s) to execute `.orqen/plan.md` step-by-step.")
+            },
+            expectedOutput = "Master plan saved to .orqen/plan.md and clear delegation brief for developers",
             requiredCapabilities = setOf("lead", "architect"),
+            targetFiles = emptyList(),
             verificationSpec = VerificationSpec(mode = VerificationMode.AUTOMATED_VERIFICATION),
             assignedAgentId = "agent-leader",
         )
@@ -119,9 +128,14 @@ class StructuredTaskPlanner : TaskPlanner {
             val implStep = PlannedStep(
                 stepId = "step-impl-${idx + 1}-${UUID.randomUUID().toString().take(6)}",
                 sequenceNumber = seq++,
-                title = "Implement: ${work.take(64)}",
-                description = work,
-                expectedOutput = "Working code modifications for: ${work.take(80)}",
+                title = "Implement (พัฒนาโค้ดตามแผน): ${work.take(52)}",
+                description = buildString {
+                    appendLine("Read `.orqen/plan.md` created by Supervisor and implement all planned steps cleanly for: $work")
+                    appendLine("- Follow the exact architecture and checklist in `.orqen/plan.md`, marking completed items `[x]`.")
+                    appendLine("- If this is an Android project (has `app/build.gradle` or `app/build.gradle.kts`), run the PocketDev Gradle `assembleDebug` build to verify it compiles into a real APK with zero errors.")
+                    appendLine("- Report completed files and test results back to Supervisor for verification.")
+                },
+                expectedOutput = "Working code modifications implementing .orqen/plan.md for: ${work.take(80)}",
                 dependencies = listOf(inspectStep.stepId),
                 requiredCapabilities = setOf("code"),
                 verificationSpec = VerificationSpec(mode = VerificationMode.AUTOMATED_VERIFICATION),
@@ -134,9 +148,15 @@ class StructuredTaskPlanner : TaskPlanner {
         val verifyStep = PlannedStep(
             stepId = "step-verify-${UUID.randomUUID().toString().take(6)}",
             sequenceNumber = seq,
-            title = "Verify & review deliverables",
-            description = "Independently inspect changed files and validate acceptance criteria for: $cleanObjective",
-            expectedOutput = "Verification report confirming acceptance criteria pass",
+            title = "Verify & test deliverables (ตรวจสอบโค้ดและทดสอบงาน)",
+            description = buildString {
+                appendLine("Inspect `.orqen/plan.md` and all changed files for: $cleanObjective")
+                appendLine("- Verify every requirement in `.orqen/plan.md` is implemented cleanly without bugs.")
+                appendLine("- Run tests (and for Android projects, ensure Debug APK builds cleanly with `assembleDebug`).")
+                appendLine("- If everything passes cleanly, explicitly include BOTH `REVIEW_APPROVED` and `TESTS_PASSED` in your final response.")
+                appendLine("- If bugs or build failures remain, explicitly include `REVIEW_REJECTED: <exact issues>` so Developer can fix them.")
+            },
+            expectedOutput = "REVIEW_APPROVED and TESTS_PASSED after verifying all deliverables and builds",
             dependencies = implStepIds,
             requiredCapabilities = setOf("review", "qa"),
             verificationSpec = VerificationSpec(mode = VerificationMode.TEST_VERIFICATION),

@@ -2525,10 +2525,14 @@ private fun RootScreenHost(
     var screen by rememberSaveable { mutableStateOf(RootScreen.PROJECTS) }
     var showQuickTerminal by rememberSaveable { mutableStateOf(false) }
     var openBackup by rememberSaveable { mutableStateOf(false) }
+    var showMcpManager by rememberSaveable { mutableStateOf(false) }
+    val mcpServers by viewModel.mcpConnectionManager.servers.collectAsStateWithLifecycle()
+    val mcpTools by viewModel.mcpConnectionManager.tools.collectAsStateWithLifecycle()
 
     // System Back Button handling across all root tabs & AI Team sub-screens
-    BackHandler(enabled = showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST) || screen != RootScreen.PROJECTS) {
+    BackHandler(enabled = showMcpManager || showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST) || screen != RootScreen.PROJECTS) {
         when {
+            showMcpManager -> showMcpManager = false
             showQuickTerminal -> showQuickTerminal = false
             screen == RootScreen.TEAM && state.teamScreenMode == TeamScreenMode.DASHBOARD -> {
                 viewModel.setTeamScreenMode(TeamScreenMode.PROJECT_LIST)
@@ -2565,7 +2569,7 @@ private fun RootScreenHost(
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            if (!keyboardVisible && !insideTeamWorkspace) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            if (!keyboardVisible && !insideTeamWorkspace && !showMcpManager) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 RootScreen.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = screen == tab,
@@ -2725,6 +2729,7 @@ private fun RootScreenHost(
                                 },
                                 onClearGroupChat = viewModel::clearTeamChat,
                                 onPushToGit = { url, apiKey -> viewModel.pushTeamProjectToGit(url, apiKey) },
+                                onInstallApk = viewModel::installTeamApk,
                                 onToggleAutoPushGit = viewModel::setTeamAutoPushGitEnabled,
                                 onRunTeamTerminalCommand = viewModel::runTeamTerminalCommand,
                                 onClearTeamTerminal = viewModel::clearTeamTerminal,
@@ -2844,6 +2849,7 @@ private fun RootScreenHost(
                             hasGitRemote = state.teamActiveProjectHasGitRemote,
                             gitPushRunning = state.teamGitPushRunning,
                             onPushToGit = { url, apiKey -> viewModel.pushTeamProjectToGit(url, apiKey) },
+                            onInstallApk = viewModel::installTeamApk,
                             onSendMessageWithImages = { text, type, targetSlot, uris ->
                                 viewModel.postTeamChatMessageWithImages(text, type, targetSlot, uris)
                             },
@@ -3016,47 +3022,59 @@ private fun RootScreenHost(
                         }
                     }
                 }
-                RootScreen.SETTINGS -> SettingsScreen(
-                    state = state,
-                    showBackupDot = !state.backupFeatureSeen,
-                    onBackupOpened = {
-                        openBackup = false
-                        viewModel.markBackupFeatureSeen()
-                    },
-                    openBackup = openBackup,
-                    onSaveProvider = { profile, key ->
-                        viewModel.updateProvider(profile, key)
-                    },
-                    onDiscoverModels = viewModel::discoverModels,
-                    onValidateProvider = viewModel::validateProvider,
-                    onSetThemeMode = viewModel::setThemeMode,
-                    onSetLanguage = viewModel::setLanguage,
-                    onSetOwnerDisplayName = viewModel::setOwnerDisplayName,
-                    onPing = viewModel::pingApi,
-                    onClearTerminal = viewModel::clearTerminal,
-                    getSavedApiKey = viewModel::getSavedApiKey,
-                    getSavedApiKeys = viewModel::getSavedApiKeys,
-                    onAddApiKey = viewModel::addApiKey,
-                    onActivateApiKey = viewModel::activateApiKey,
-                    onRemoveApiKey = viewModel::removeApiKey,
-                    onInstallDevStack = viewModel::installDevStack,
-                    onRemoveDevStack = viewModel::removeDevStack,
-                    onInstallAgent = viewModel::installAgent,
-                    onCheckAgentUpdates = viewModel::checkAgentUpdates,
-                    onUpdateAgent = viewModel::updateAgent,
-                    onStartAntigravityLogin = viewModel::startAntigravityLogin,
-                    onSubmitAntigravityCode = viewModel::submitAntigravityCode,
-                    onLogoutAntigravity = viewModel::logoutAntigravity,
-                    onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
-                    onSetAntigravityModel = viewModel::setAntigravityModel,
-                    onSetAntigravityEffort = viewModel::setAntigravityEffort,
-                    initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
-                    onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
-                    onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
-                    onRefreshDiagnostics = viewModel::refreshDeveloperDiagnostics,
-                    onStopInactiveProcesses = viewModel::stopInactiveDeveloperProcesses,
-                    onClearRuntimeCache = viewModel::clearDeveloperRuntimeCache,
-                )
+                RootScreen.SETTINGS -> if (showMcpManager) {
+                    com.jarves.mh.mcp.McpManagementScreen(
+                        manager = viewModel.mcpConnectionManager,
+                        agents = state.teamAgents,
+                        activeWorkspaceId = state.activeTeamProject?.id ?: state.activeProject?.id,
+                        onBack = { showMcpManager = false },
+                    )
+                } else {
+                    SettingsScreen(
+                        state = state,
+                        showBackupDot = !state.backupFeatureSeen,
+                        onBackupOpened = {
+                            openBackup = false
+                            viewModel.markBackupFeatureSeen()
+                        },
+                        openBackup = openBackup,
+                        mcpServerCount = mcpServers.size,
+                        mcpToolCount = mcpTools.size,
+                        onOpenMcpManager = { showMcpManager = true },
+                        onSaveProvider = { profile, key ->
+                            viewModel.updateProvider(profile, key)
+                        },
+                        onDiscoverModels = viewModel::discoverModels,
+                        onValidateProvider = viewModel::validateProvider,
+                        onSetThemeMode = viewModel::setThemeMode,
+                        onSetLanguage = viewModel::setLanguage,
+                        onSetOwnerDisplayName = viewModel::setOwnerDisplayName,
+                        onPing = viewModel::pingApi,
+                        onClearTerminal = viewModel::clearTerminal,
+                        getSavedApiKey = viewModel::getSavedApiKey,
+                        getSavedApiKeys = viewModel::getSavedApiKeys,
+                        onAddApiKey = viewModel::addApiKey,
+                        onActivateApiKey = viewModel::activateApiKey,
+                        onRemoveApiKey = viewModel::removeApiKey,
+                        onInstallDevStack = viewModel::installDevStack,
+                        onRemoveDevStack = viewModel::removeDevStack,
+                        onInstallAgent = viewModel::installAgent,
+                        onCheckAgentUpdates = viewModel::checkAgentUpdates,
+                        onUpdateAgent = viewModel::updateAgent,
+                        onStartAntigravityLogin = viewModel::startAntigravityLogin,
+                        onSubmitAntigravityCode = viewModel::submitAntigravityCode,
+                        onLogoutAntigravity = viewModel::logoutAntigravity,
+                        onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
+                        onSetAntigravityModel = viewModel::setAntigravityModel,
+                        onSetAntigravityEffort = viewModel::setAntigravityEffort,
+                        initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
+                        onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
+                        onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
+                        onRefreshDiagnostics = viewModel::refreshDeveloperDiagnostics,
+                        onStopInactiveProcesses = viewModel::stopInactiveDeveloperProcesses,
+                        onClearRuntimeCache = viewModel::clearDeveloperRuntimeCache,
+                    )
+                }
             }
         }
     }

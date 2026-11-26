@@ -35,6 +35,7 @@ class OrqenTaskDatabaseHelper(
         migrateV2ToV3(db)
         migrateV3ToV4(db)
         migrateV5ToV6(db)
+        migrateV6ToV7(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -54,6 +55,10 @@ class OrqenTaskDatabaseHelper(
         if (oldVersion < 6) {
             // Non-destructive v5 -> v6: ensures agent_profiles.preferred_tools_json exists (P0 crash hotfix)
             migrateV5ToV6(db)
+        }
+        if (oldVersion < 7) {
+            // Non-destructive v6 -> v7: MCP servers, tools, agent permissions, grants & audit log
+            migrateV6ToV7(db)
         }
     }
 
@@ -490,9 +495,141 @@ class OrqenTaskDatabaseHelper(
         }
     }
 
+    private fun migrateV6ToV7(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_servers (
+                server_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                transport_type TEXT NOT NULL,
+                command TEXT NOT NULL DEFAULT '',
+                args_json TEXT NOT NULL DEFAULT '[]',
+                env_json TEXT NOT NULL DEFAULT '{}',
+                secret_env_keys_json TEXT NOT NULL DEFAULT '[]',
+                working_directory TEXT NOT NULL DEFAULT '',
+                remote_url TEXT NOT NULL DEFAULT '',
+                headers_json TEXT NOT NULL DEFAULT '{}',
+                secret_header_keys_json TEXT NOT NULL DEFAULT '[]',
+                auth_type TEXT NOT NULL DEFAULT 'NONE',
+                auth_header_name TEXT NOT NULL DEFAULT 'Authorization',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                scope TEXT NOT NULL DEFAULT 'GLOBAL',
+                workspace_id TEXT,
+                default_tool_policy TEXT NOT NULL DEFAULT 'ASK',
+                connection_timeout_ms INTEGER NOT NULL DEFAULT 20000,
+                request_timeout_ms INTEGER NOT NULL DEFAULT 45000,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_tools (
+                namespaced_tool_id TEXT PRIMARY KEY,
+                server_id TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                raw_tool_name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                input_schema_json TEXT NOT NULL DEFAULT '{}',
+                required_permission_level TEXT NOT NULL DEFAULT 'READ',
+                policy TEXT NOT NULL DEFAULT 'ASK',
+                is_high_risk INTEGER NOT NULL DEFAULT 0,
+                available INTEGER NOT NULL DEFAULT 1,
+                discovered_at INTEGER NOT NULL,
+                FOREIGN KEY(server_id) REFERENCES mcp_servers(server_id) ON DELETE CASCADE
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_mcp_tools_server ON mcp_tools(server_id)")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_agent_permissions (
+                permission_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                server_id TEXT NOT NULL,
+                max_level TEXT NOT NULL DEFAULT 'READ',
+                allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                denied_tools_json TEXT NOT NULL DEFAULT '[]',
+                allow_dynamic_request INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_agent_perm_unique ON mcp_agent_permissions(agent_id, server_id)")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_permission_requests (
+                request_id TEXT PRIMARY KEY,
+                requester_agent_id TEXT NOT NULL,
+                assigned_role TEXT NOT NULL,
+                task_id TEXT,
+                workspace_id TEXT,
+                mcp_server_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                requested_action TEXT NOT NULL,
+                requested_level TEXT NOT NULL,
+                resource_scope TEXT NOT NULL DEFAULT '',
+                justification TEXT NOT NULL DEFAULT '',
+                requested_duration_ms INTEGER NOT NULL DEFAULT 1800000,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                decision_reason TEXT,
+                created_at INTEGER NOT NULL,
+                resolved_at INTEGER
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_permission_grants (
+                grant_id TEXT PRIMARY KEY,
+                request_id TEXT,
+                agent_id TEXT NOT NULL,
+                granted_by TEXT NOT NULL,
+                mcp_server_id TEXT NOT NULL,
+                tool_id TEXT,
+                granted_level TEXT NOT NULL,
+                scope_type TEXT NOT NULL,
+                task_id TEXT,
+                workspace_id TEXT,
+                resource_scope TEXT NOT NULL DEFAULT '',
+                can_delegate_further INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                revoke_reason TEXT
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_mcp_grants_agent ON mcp_permission_grants(agent_id, mcp_server_id)")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_permission_audit (
+                event_id TEXT PRIMARY KEY,
+                request_id TEXT,
+                requesting_agent_id TEXT NOT NULL,
+                supervisor_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                mcp_server_id TEXT NOT NULL,
+                requested_permission TEXT NOT NULL,
+                granted_permission TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                decision_reason TEXT NOT NULL,
+                resource_scope TEXT NOT NULL DEFAULT '',
+                task_id TEXT,
+                timestamp_ms INTEGER NOT NULL,
+                expiration_ms INTEGER,
+                revocation_timestamp_ms INTEGER
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_mcp_audit_ts ON mcp_permission_audit(timestamp_ms DESC)")
+    }
+
     companion object {
         const val DATABASE_NAME = "orqen_autonomous_tasks.db"
-        const val DATABASE_VERSION = 6
+        const val DATABASE_VERSION = 7
     }
 }
 

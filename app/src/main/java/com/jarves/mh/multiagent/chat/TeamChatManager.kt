@@ -34,6 +34,7 @@ data class GroupChatMessage(
     val workDetails: List<String> = emptyList(),
     val imagePaths: List<String> = emptyList(),
     val suggestedTaskPrompt: String? = null,
+    val apkFilePath: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
 )
 
