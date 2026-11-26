@@ -6473,16 +6473,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             try {
-                val (pendingTasks, workspaceSummary) = withContext(Dispatchers.IO) {
+                val (pendingTasks, workspaceFiles) = withContext(Dispatchers.IO) {
                     val allTasks = runCatching { orqenTaskStore.listTasksForProject(activeProj.id) }.getOrDefault(emptyList())
                     val unfinished = allTasks.filter {
                         it.status != com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED &&
                             it.status != com.jarves.mh.multiagent.persistence.PersistentTaskStatus.CANCELLED
                     }
                     val workspaceDir = File(getApplication<Application>().filesDir, "team_workspaces/${activeProj.id}").apply { mkdirs() }
-                    unfinished to workspaceFileListingSummary(workspaceDir)
+                    val realFiles = workspaceDir.walkTopDown()
+                        .maxDepth(4)
+                        .filter { f ->
+                            f.isFile &&
+                                f.name != ".orqen_chat.json" &&
+                                !f.path.contains("/.git/") &&
+                                !f.path.contains("/.orqen_uploads/") &&
+                                !f.path.contains("/node_modules/") &&
+                                !f.path.contains("/build/") &&
+                                !f.path.contains("/.gradle/")
+                        }
+                        .map { it.relativeTo(workspaceDir).path }
+                        .take(60)
+                        .toList()
+                    unfinished to realFiles
                 }
                 delay(280L)
+
+                // Case 1: Brand-new EMPTY workspace (no pending tasks AND no real project files)
+                if (pendingTasks.isEmpty() && workspaceFiles.isEmpty()) {
+                    pendingStartConfirmation = null
+                    val emptyPrompt = if (isThaiUiLanguage()) {
+                        "สวัสดีครับ $ownerName! ผม ($supName) ตรวจสอบโปรเจกต์ '${activeProj.name}' แล้ว ตอนนี้โฟลเดอร์โปรเจกต์ยังว่างเปล่าอยู่ (ยังไม่มีไฟล์และยังไม่มีงานค้างครับ)\n\n" +
+                            "คุณ$ownerName ต้องการให้ผมและทีมเริ่มสร้างอะไรดีครับ? พิมพ์รายละเอียดหรือสั่งงานในแชทนี้ได้เลยครับ"
+                    } else {
+                        "Hello $ownerName! I ($supName) checked '${activeProj.name}' — this workspace is completely empty (no files or pending tasks yet).\n\n" +
+                            "What would you like me and the team to build? Just describe your idea or task right here in chat!"
+                    }
+                    _state.update {
+                        it.copy(
+                            teamAwaitingStartConfirmation = false,
+                            teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.RUNNING,
+                            teamBannerMessage = if (isThaiUiLanguage()) {
+                                "โปรเจกต์ยังว่างเปล่า — พิมพ์สั่งงานที่ต้องการให้ทีมสร้างได้เลยครับ"
+                            } else {
+                                "Empty workspace — tell the team what to build in chat"
+                            },
+                        )
+                    }
+                    appendProjectTeamMessage(
+                        projectId = activeProj.id,
+                        senderSlot = AgentSlot.AGENT_1,
+                        senderName = supName,
+                        text = emptyPrompt,
+                        messageType = GroupMessageType.NORMAL,
+                    )
+                    return@launch
+                }
+
+                // Case 2 & 3: Either has pending tasks OR existing project files -> report & ask Owner to confirm!
                 val proactiveObjective = "วิเคราะห์โปรเจกต์ '${activeProj.name}' จากไฟล์ทั้งหมดใน workspace ปัจจุบัน ทำความเข้าใจว่ากำลังพัฒนาอะไร ตรวจสอบส่วนที่ยังไม่สมบูรณ์หรือยังไม่ได้ทดสอบ จากนั้นวางแผนและพัฒนาต่อจนโปรเจกต์สมบูรณ์และผ่านการตรวจสอบ"
                 val reportText = buildString {
                     appendLine("สวัสดีครับ $ownerName! ผม ($supName) ตรวจสอบโปรเจกต์ '${activeProj.name}' เรียบร้อยแล้วครับ:")
@@ -6492,8 +6539,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             appendLine("${idx + 1}. ${t.title} [${t.status.name}]")
                         }
                     } else {
-                        appendLine("ยังไม่มีคิวงานค้างในระบบ แต่พบไฟล์ในโปรเจกต์ปัจจุบัน:")
-                        appendLine(workspaceSummary.take(400))
+                        appendLine("ยังไม่มีคิวงานค้างในระบบ แต่พบไฟล์ในโปรเจกต์ปัจจุบัน (${workspaceFiles.size} ไฟล์):")
+                        appendLine(workspaceFiles.take(15).joinToString("\n") { "• $it" })
                         appendLine("ผมสามารถวิเคราะห์โครงสร้างโปรเจกต์ วางแผน และให้ทีมพัฒนาต่อจนสมบูรณ์ได้ครับ")
                     }
                     appendLine()
@@ -7599,7 +7646,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun workspaceFileListingSummary(workspaceDir: File): String {
         val files = workspaceDir.walkTopDown()
             .maxDepth(4)
-            .filter { it.isFile && !it.path.contains("/.git/") && !it.path.contains("/node_modules/") && !it.path.contains("/build/") }
+            .filter { f ->
+                f.isFile &&
+                    f.name != ".orqen_chat.json" &&
+                    !f.path.contains("/.git/") &&
+                    !f.path.contains("/.orqen_uploads/") &&
+                    !f.path.contains("/node_modules/") &&
+                    !f.path.contains("/build/") &&
+                    !f.path.contains("/.gradle/")
+            }
             .map { it.relativeTo(workspaceDir).path }
             .take(60)
             .toList()
