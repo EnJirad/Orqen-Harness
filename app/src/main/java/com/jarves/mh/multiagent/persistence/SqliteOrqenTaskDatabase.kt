@@ -34,6 +34,7 @@ class OrqenTaskDatabaseHelper(
         migrateV1ToV2(db)
         migrateV2ToV3(db)
         migrateV3ToV4(db)
+        migrateV5ToV6(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -49,6 +50,10 @@ class OrqenTaskDatabaseHelper(
         if (oldVersion < 5) {
             // Non-destructive v4 -> v5: ensures owner_approvals table exists
             migrateV3ToV4(db)
+        }
+        if (oldVersion < 6) {
+            // Non-destructive v5 -> v6: ensures agent_profiles.preferred_tools_json exists (P0 crash hotfix)
+            migrateV5ToV6(db)
         }
     }
 
@@ -345,6 +350,7 @@ class OrqenTaskDatabaseHelper(
                 runtime_type TEXT NOT NULL DEFAULT 'API',
                 system_instructions TEXT,
                 capabilities_json TEXT NOT NULL DEFAULT '[]',
+                preferred_tools_json TEXT NOT NULL DEFAULT '[]',
                 priority INTEGER NOT NULL DEFAULT 1,
                 is_enabled INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
@@ -477,9 +483,16 @@ class OrqenTaskDatabaseHelper(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_owner_approvals_task ON owner_approvals(task_id, status)")
     }
 
+    private fun migrateV5ToV6(db: SQLiteDatabase) {
+        val profCols = tableColumns(db, "agent_profiles")
+        if ("preferred_tools_json" !in profCols) {
+            db.execSQL("ALTER TABLE agent_profiles ADD COLUMN preferred_tools_json TEXT NOT NULL DEFAULT '[]'")
+        }
+    }
+
     companion object {
         const val DATABASE_NAME = "orqen_autonomous_tasks.db"
-        const val DATABASE_VERSION = 5
+        const val DATABASE_VERSION = 6
     }
 }
 

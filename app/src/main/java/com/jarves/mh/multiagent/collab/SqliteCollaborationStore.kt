@@ -39,7 +39,8 @@ class SqliteCollaborationStore(
             put("created_at", profile.createdAt)
             put("updated_at", profile.updatedAt)
         }
-        db.insertWithOnConflict("agent_profiles", null, cv, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE)
+        val rowId = db.insertWithOnConflict("agent_profiles", null, cv, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE)
+        check(rowId != -1L) { "Failed to persist agent profile '${profile.agentId}' into SQLite table agent_profiles." }
     }
 
     override fun getProfile(agentId: String): AgentProfileEntity? {
@@ -321,7 +322,10 @@ class SqliteCollaborationStore(
         runtimeType = c.getString(c.getColumnIndexOrThrow("runtime_type")),
         systemInstructions = c.getString(c.getColumnIndexOrThrow("system_instructions")),
         capabilities = decodeStringList(c.getString(c.getColumnIndexOrThrow("capabilities_json"))).toSet(),
-        preferredTools = decodeStringList(c.getString(c.getColumnIndexOrThrow("preferred_tools_json"))).toSet(),
+        preferredTools = c.getColumnIndex("preferred_tools_json")
+            .takeIf { it >= 0 }
+            ?.let { decodeStringList(c.getString(it)).toSet() }
+            ?: emptySet(),
         priority = c.getInt(c.getColumnIndexOrThrow("priority")),
         isEnabled = c.getInt(c.getColumnIndexOrThrow("is_enabled")) == 1,
         createdAt = c.getLong(c.getColumnIndexOrThrow("created_at")),

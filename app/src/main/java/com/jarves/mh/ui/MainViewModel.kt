@@ -6185,29 +6185,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(toastMessage = str(R.string.team_locked_by_other_project, runningName)) }
             return
         }
+        // Prevent duplicate simultaneous Start button presses for the same active project
+        if (_state.value.teamIsRunning && runningId == activeProj.id && teamCycleJob?.isActive == true) {
+            return
+        }
+        if (_state.value.teamAgents.none { it.config.isEnabled }) {
+            _state.update {
+                it.copy(
+                    toastMessage = "Enable at least one AI agent before starting the team.",
+                    teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.WARNING,
+                    teamBannerMessage = "No enabled AI agents configured",
+                )
+            }
+            return
+        }
+
         val nextDirective = pendingTeamDirectives.poll()
         _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
         if (!nextDirective.isNullOrBlank()) {
             submitAutonomousTeamObjective(nextDirective)
             return
         }
-        // Reconcile and resume any persisted recoverable tasks for this project via AutonomousSupervisorEngine!
-        ensureSupervisorSnapshotCollector()
-        val team = syncTeamProfilesForProject(activeProj)
+
+        // Safe startup sequence: initialize & sync SQLite off the Main Thread, then mark running & start FGS
         teamCycleJob?.cancel()
-        _state.update { it.copy(teamIsRunning = true, runningTeamProjectId = activeProj.id) }
-        continuousSupervisor.startContinuous()
-        startTeamForegroundService(activeProj.name, "${activeProj.name} · Autonomous Supervisor active")
-        com.jarves.mh.runtime.TaskRecoveryJobService.scheduleReconciliation(
-            context = getApplication(),
-            taskId = activeProj.id,
-        )
         teamCycleJob = viewModelScope.launch {
+            var serviceStarted = false
             try {
-                autonomousSupervisorEngine.reconcileActiveTasksOnce(team)
+                ensureSupervisorSnapshotCollector()
+                val team = withContext(Dispatchers.IO) {
+                    syncTeamProfilesForProject(activeProj)
+                }
+                _state.update {
+                    it.copy(
+                        teamIsRunning = true,
+                        runningTeamProjectId = activeProj.id,
+                        teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.RUNNING,
+                        teamBannerMessage = null,
+                        teamBannerDetail = null,
+                    )
+                }
+                continuousSupervisor.startContinuous()
+                startTeamForegroundService(activeProj.name, "${activeProj.name} · Autonomous Supervisor active")
+                serviceStarted = true
+                runCatching {
+                    com.jarves.mh.runtime.TaskRecoveryJobService.scheduleReconciliation(
+                        context = getApplication(),
+                        taskId = activeProj.id,
+                    )
+                }.onFailure { err ->
+                    android.util.Log.w("OrqenMainViewModel", "Failed to schedule TaskRecoveryJobService", err)
+                }
+                withContext(Dispatchers.IO) {
+                    autonomousSupervisorEngine.reconcileActiveTasksOnce(team)
+                }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (err: Throwable) {
+                android.util.Log.e("OrqenMainViewModel", "Start AI Team failed for project ${activeProj.id}", err)
+                val detail = err.message?.take(200) ?: err.javaClass.simpleName
+                _state.update {
+                    it.copy(
+                        teamIsRunning = false,
+                        runningTeamProjectId = null,
+                        teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.WARNING,
+                        teamBannerMessage = "Start AI Team failed",
+                        teamBannerDetail = detail,
+                        toastMessage = "Start AI Team failed: $detail",
+                    )
+                }
             } finally {
                 _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null) }
-                stopTeamForegroundService()
+                if (serviceStarted) {
+                    stopTeamForegroundService()
+                }
             }
         }
     }
@@ -6236,25 +6287,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val tid = activeSupervisedTaskId
         val activeProj = _state.value.activeTeamProject
         if (tid != null && activeProj != null) {
-            val task = orqenTaskStore.getTask(tid)
-            if (task != null && !task.ownerStopRequested && task.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PAUSED) {
-                orqenTaskStore.upsertTask(
-                    task.copy(
-                        pauseRequested = false,
-                        status = com.jarves.mh.multiagent.persistence.PersistentTaskStatus.QUEUED,
-                        updatedAt = System.currentTimeMillis(),
-                    ),
-                )
-                val team = syncTeamProfilesForProject(activeProj)
-                _state.update { it.copy(teamIsRunning = true, runningTeamProjectId = activeProj.id) }
-                startTeamForegroundService(activeProj.name, "Resuming autonomous task $tid")
-                teamCycleJob = viewModelScope.launch {
-                    autonomousSupervisorEngine.superviseTask(tid, team)
+            teamCycleJob?.cancel()
+            teamCycleJob = viewModelScope.launch {
+                var serviceStarted = false
+                try {
+                    val task = withContext(Dispatchers.IO) { orqenTaskStore.getTask(tid) }
+                    if (task != null && !task.ownerStopRequested && task.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PAUSED) {
+                        val team = withContext(Dispatchers.IO) {
+                            orqenTaskStore.upsertTask(
+                                task.copy(
+                                    pauseRequested = false,
+                                    status = com.jarves.mh.multiagent.persistence.PersistentTaskStatus.QUEUED,
+                                    updatedAt = System.currentTimeMillis(),
+                                ),
+                            )
+                            syncTeamProfilesForProject(activeProj)
+                        }
+                        _state.update { it.copy(teamIsRunning = true, runningTeamProjectId = activeProj.id) }
+                        startTeamForegroundService(activeProj.name, "Resuming autonomous task $tid")
+                        serviceStarted = true
+                        withContext(Dispatchers.IO) {
+                            autonomousSupervisorEngine.superviseTask(tid, team)
+                        }
+                    } else {
+                        startTeamWork()
+                    }
+                } catch (cancel: kotlinx.coroutines.CancellationException) {
+                    throw cancel
+                } catch (err: Throwable) {
+                    android.util.Log.e("OrqenMainViewModel", "Resume AI Team failed for task $tid", err)
+                    val detail = err.message?.take(200) ?: err.javaClass.simpleName
+                    _state.update {
+                        it.copy(
+                            teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.WARNING,
+                            teamBannerMessage = "Resume AI Team failed",
+                            teamBannerDetail = detail,
+                            toastMessage = "Resume AI Team failed: $detail",
+                        )
+                    }
+                } finally {
                     _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null) }
-                    stopTeamForegroundService()
+                    if (serviceStarted) {
+                        stopTeamForegroundService()
+                    }
                 }
-                return
             }
+            return
         }
         startTeamWork()
     }
@@ -6339,31 +6417,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val activeProj = _state.value.activeTeamProject ?: return
         val cleanObjective = objective.trim()
         if (cleanObjective.isBlank()) return
-
-        ensureSupervisorSnapshotCollector()
-        val team = syncTeamProfilesForProject(activeProj)
+        if (_state.value.teamAgents.none { it.config.isEnabled }) {
+            _state.update {
+                it.copy(
+                    toastMessage = "Enable at least one AI agent before submitting a team task.",
+                    teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.WARNING,
+                    teamBannerMessage = "No enabled AI agents configured",
+                )
+            }
+            return
+        }
 
         teamCycleJob?.cancel()
-        _state.update { it.copy(teamIsRunning = true, runningTeamProjectId = activeProj.id) }
-        startTeamForegroundService(activeProj.name, "Autonomous Supervisor: ${cleanObjective.take(60)}")
-        com.jarves.mh.runtime.TaskRecoveryJobService.scheduleReconciliation(
-            context = getApplication(),
-            taskId = activeProj.id,
-        )
-
         teamCycleJob = viewModelScope.launch {
+            var serviceStarted = false
             try {
-                val result = autonomousSupervisorEngine.submitAndSupervise(
-                    projectId = activeProj.id,
-                    team = team,
-                    objective = cleanObjective,
-                    requiredDeliverableFiles = requiredDeliverableFiles,
-                    attachmentPaths = attachmentPaths,
-                    onTaskCreated = { created ->
-                        activeSupervisedTaskId = created.taskId
-                        _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
-                    },
-                )
+                ensureSupervisorSnapshotCollector()
+                val team = withContext(Dispatchers.IO) {
+                    syncTeamProfilesForProject(activeProj)
+                }
+                _state.update {
+                    it.copy(
+                        teamIsRunning = true,
+                        runningTeamProjectId = activeProj.id,
+                        teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.RUNNING,
+                        teamBannerMessage = null,
+                        teamBannerDetail = null,
+                    )
+                }
+                startTeamForegroundService(activeProj.name, "Autonomous Supervisor: ${cleanObjective.take(60)}")
+                serviceStarted = true
+                runCatching {
+                    com.jarves.mh.runtime.TaskRecoveryJobService.scheduleReconciliation(
+                        context = getApplication(),
+                        taskId = activeProj.id,
+                    )
+                }.onFailure { err ->
+                    android.util.Log.w("OrqenMainViewModel", "Failed to schedule TaskRecoveryJobService", err)
+                }
+                val result = withContext(Dispatchers.IO) {
+                    autonomousSupervisorEngine.submitAndSupervise(
+                        projectId = activeProj.id,
+                        team = team,
+                        objective = cleanObjective,
+                        requiredDeliverableFiles = requiredDeliverableFiles,
+                        attachmentPaths = attachmentPaths,
+                        onTaskCreated = { created ->
+                            activeSupervisedTaskId = created.taskId
+                            _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
+                        },
+                    )
+                }
                 if (result != null) {
                     activeSupervisedTaskId = result.taskId
                     _state.update { it.copy(activeSupervisedTaskId = result.taskId) }
@@ -6383,31 +6487,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 // Phase 1 (Part A.5.1): Automatically continue with any remaining queued tasks for this project!
-                autonomousSupervisorEngine.superviseProjectQueue(
-                    projectId = activeProj.id,
-                    team = team,
-                    onTaskStarted = { queued ->
-                        activeSupervisedTaskId = queued.taskId
-                        _state.update { it.copy(activeSupervisedTaskId = queued.taskId) }
-                        updateTeamForegroundNotification(activeProj.name, "Continuing queued task: ${queued.title.take(50)}")
-                    },
-                    onTaskFinished = { finished ->
-                        appendProjectTeamMessage(
-                            projectId = activeProj.id,
-                            senderSlot = AgentSlot.AGENT_1,
-                            senderName = agentNameFor(AgentSlot.AGENT_1),
-                            text = "Autonomous Supervisor [${finished.status.name}] (${finished.taskId}): ${finished.lastError ?: finished.title}",
-                            messageType = if (finished.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
-                                GroupMessageType.COMPLETION_REPORT
-                            } else {
-                                GroupMessageType.PROGRESS_UPDATE
-                            },
-                        )
-                    },
-                )
+                withContext(Dispatchers.IO) {
+                    autonomousSupervisorEngine.superviseProjectQueue(
+                        projectId = activeProj.id,
+                        team = team,
+                        onTaskStarted = { queued ->
+                            activeSupervisedTaskId = queued.taskId
+                            _state.update { it.copy(activeSupervisedTaskId = queued.taskId) }
+                            updateTeamForegroundNotification(activeProj.name, "Continuing queued task: ${queued.title.take(50)}")
+                        },
+                        onTaskFinished = { finished ->
+                            appendProjectTeamMessage(
+                                projectId = activeProj.id,
+                                senderSlot = AgentSlot.AGENT_1,
+                                senderName = agentNameFor(AgentSlot.AGENT_1),
+                                text = "Autonomous Supervisor [${finished.status.name}] (${finished.taskId}): ${finished.lastError ?: finished.title}",
+                                messageType = if (finished.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                                    GroupMessageType.COMPLETION_REPORT
+                                } else {
+                                    GroupMessageType.PROGRESS_UPDATE
+                                },
+                            )
+                        },
+                    )
+                }
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (err: Throwable) {
+                android.util.Log.e("OrqenMainViewModel", "Autonomous Supervisor execution failed", err)
+                val detail = err.message?.take(200) ?: err.javaClass.simpleName
+                _state.update {
+                    it.copy(
+                        teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.WARNING,
+                        teamBannerMessage = "AI Team execution failed",
+                        teamBannerDetail = detail,
+                        toastMessage = "AI Team error: $detail",
+                    )
+                }
             } finally {
                 _state.update { it.copy(teamIsRunning = false, runningTeamProjectId = null) }
-                stopTeamForegroundService()
+                if (serviceStarted) {
+                    stopTeamForegroundService()
+                }
             }
         }
     }
@@ -6436,6 +6557,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .putExtra(RuntimeExecutionService.EXTRA_DETAIL, statusDetail)
                     .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, true),
             )
+        }.onFailure { err ->
+            android.util.Log.e("OrqenMainViewModel", "Failed to start RuntimeExecutionService foreground service", err)
         }
     }
 

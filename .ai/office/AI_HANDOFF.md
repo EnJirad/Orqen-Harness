@@ -2,13 +2,6 @@
 
 ## Current Project State
 - **Branch**: `main`
-- **Status**: **READY WITH LIMITATIONS** (All P0/P1 code blockers resolved; `43 suites / 286 tests / 286 PASS`; `ORQEN-debug.apk` `70M` built cleanly).
-- **Latest Fixes (Final Production Readiness)**:
-  - P0: Wired `providerConfigResolver` from `MainViewModel` (`providerManager.configs.value`) through `AutonomousSupervisorEngine` and `MultiAgentTeamCoordinator` into `RuntimeStepExecutionAdapter` so all real API providers receive their live `ProviderConfig` on initial runs and after failover.
-  - P1: Upgraded `AutonomousRecoveryEngine` retry backoff to bounded exponential backoff with jitter + `Retry-After` respect.
-  - Added `FinalProductionReadinessTest` (`2/2 PASS`).
-
-## Remaining Steps Before Unconditional Production Release
-1. Install `ORQEN-debug.apk` on a physical Android device, configure real provider API keys (or Antigravity login), and execute live smoke tests (single task, multi-agent task, 3-task queue, image attachment, Pause/Stop, and `adb shell am kill` recovery).
-2. Remove the unused private `runTeamCycle()` helper from `MainViewModel.kt` after on-device confirmation.
-3. Configure upload signing keystore to build a signed release bundle (`assembleOnlineRelease` / `bundleOnlineRelease`).
+- **Latest Hotfix**: **P0 Start AI Team Crash Fixed** — Fixed missing SQLite column `agent_profiles.preferred_tools_json` (bumped `DATABASE_VERSION = 6` with non-destructive `migrateV5ToV6`), hardened `SqliteCollaborationStore`, and moved `MainViewModel.startTeamWork` / `resumeTeamWork` / `submitAutonomousTeamObjective` SQLite sync onto `Dispatchers.IO` with safe error boundaries, duplicate-start guard, and UI error reporting.
+- **Build & Test Status**: `44 suites / 288 tests / 288 PASSED / 0 FAILED / 0 SKIPPED`; `ORQEN-debug.apk` (`70M`) `BUILD SUCCESSFUL`.
+- **Remaining Verification**: Install `ORQEN-debug.apk` on physical Android device to confirm Start AI Team stays open and capture `adb logcat` if any device-specific issue appears.
