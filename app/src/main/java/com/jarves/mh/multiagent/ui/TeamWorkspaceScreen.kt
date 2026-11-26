@@ -86,6 +86,7 @@ enum class TeamWorkspaceTab(val icon: ImageVector) {
     CHAT(Icons.AutoMirrored.Filled.Chat),
     FILES(Icons.Default.Folder),
     TERMINAL(Icons.Default.Terminal),
+    SUPERVISOR(Icons.Default.Hub),
     PREVIEW(Icons.Default.Preview),
     SETTINGS(Icons.Default.Settings),
 }
@@ -120,6 +121,9 @@ fun TeamWorkspaceScreen(
     ownerName: String = "",
     typingAgentName: String? = null,
     typingAgentSlot: AgentSlot? = null,
+    streamingAgentName: String? = null,
+    streamingAgentSlot: AgentSlot? = null,
+    streamingText: String = "",
     awaitingStartConfirmation: Boolean = false,
     collaborationEvents: List<com.jarves.mh.multiagent.model.PrioritizedCollaborationEvent> = emptyList(),
     runningTeamProjectId: String?,
@@ -200,18 +204,19 @@ fun TeamWorkspaceScreen(
         bottomBar = {
             if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 TeamWorkspaceTab.entries.forEach { tab ->
-                    val labelRes = when (tab) {
-                        TeamWorkspaceTab.CHAT -> R.string.tab_chat
-                        TeamWorkspaceTab.FILES -> R.string.tab_files
-                        TeamWorkspaceTab.TERMINAL -> R.string.tab_terminal
-                        TeamWorkspaceTab.PREVIEW -> R.string.tab_preview
-                        TeamWorkspaceTab.SETTINGS -> R.string.tab_settings
+                    val labelText = when (tab) {
+                        TeamWorkspaceTab.CHAT -> stringResource(R.string.tab_chat)
+                        TeamWorkspaceTab.FILES -> stringResource(R.string.tab_files)
+                        TeamWorkspaceTab.TERMINAL -> stringResource(R.string.tab_terminal)
+                        TeamWorkspaceTab.SUPERVISOR -> "SPV"
+                        TeamWorkspaceTab.PREVIEW -> stringResource(R.string.tab_preview)
+                        TeamWorkspaceTab.SETTINGS -> stringResource(R.string.tab_settings)
                     }
                     NavigationBarItem(
                         selected = activeTab == tab,
                         onClick = { activeTab = tab },
-                        icon = { Icon(tab.icon, contentDescription = stringResource(labelRes)) },
-                        label = { Text(stringResource(labelRes), fontSize = 10.sp, maxLines = 1) },
+                        icon = { Icon(tab.icon, contentDescription = labelText) },
+                        label = { Text(labelText, fontSize = 9.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = PocketOrange,
                             selectedTextColor = PocketOrange,
@@ -265,6 +270,10 @@ fun TeamWorkspaceScreen(
                         ownerName = ownerName,
                         typingAgentName = typingAgentName,
                         typingAgentSlot = typingAgentSlot,
+                        streamingAgentName = streamingAgentName,
+                        streamingAgentSlot = streamingAgentSlot,
+                        streamingText = streamingText,
+                        awaitingStartConfirmation = awaitingStartConfirmation,
                         pendingDirectivesCount = pendingDirectivesCount,
                         listState = chatListState,
                         initialScrollDone = chatInitialScrollDone,
@@ -297,6 +306,17 @@ fun TeamWorkspaceScreen(
                     onRunCommand = onRunTeamTerminalCommand,
                     onClear = onClearTeamTerminal,
                     onClearLogs = onClearCollaborationEvents,
+                    onBack = onBackToFolders,
+                )
+
+                TeamWorkspaceTab.SUPERVISOR -> TeamSupervisorTab(
+                    projectName = project.name,
+                    agents = agents,
+                    activeSupervisedTaskId = activeSupervisedTaskId,
+                    supervisorSnapshots = supervisorSnapshots,
+                    isTeamRunning = isTeamRunning || awaitingStartConfirmation,
+                    awaitingStartConfirmation = awaitingStartConfirmation,
+                    onOpenChat = { activeTab = TeamWorkspaceTab.CHAT },
                     onBack = onBackToFolders,
                 )
 
@@ -339,7 +359,7 @@ fun TeamWorkspaceScreen(
                     allProviderQuotas = allProviderQuotas,
                     allProviderEstimated = allProviderEstimated,
                     continuousConfig = continuousConfig,
-                    isTeamRunning = isTeamRunning,
+                    isTeamRunning = isTeamRunning || awaitingStartConfirmation,
                     runningTeamProjectId = runningTeamProjectId,
                     runningTeamProjectName = runningTeamProjectName,
                     activeSupervisedTaskId = activeSupervisedTaskId,
@@ -375,239 +395,284 @@ fun TeamWorkspaceScreen(
                     onNextPart = onNextPart,
                 )
             }
-
-            // Draggable Floating Per-Agent Status Overlay (can be dragged freely anywhere on screen!)
-            if (agents.isNotEmpty()) {
-                TeamTopRightStatusOverlay(
-                    agents = agents,
-                    isTeamRunning = isTeamRunning && runningTeamProjectId == project.id,
-                    typingAgentSlot = typingAgentSlot,
-                    isAwaitingConfirmation = awaitingStartConfirmation,
-                    parentBounds = workspaceBounds,
-                    modifier = Modifier.align(Alignment.TopEnd),
-                )
-            }
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TeamTopRightStatusOverlay(
+private fun TeamSupervisorTab(
+    projectName: String,
     agents: List<AgentState>,
+    activeSupervisedTaskId: String?,
+    supervisorSnapshots: Map<String, com.jarves.mh.multiagent.supervisor.SupervisorUiSnapshot>,
     isTeamRunning: Boolean,
-    typingAgentSlot: AgentSlot? = null,
-    isAwaitingConfirmation: Boolean = false,
-    parentBounds: IntSize,
-    modifier: Modifier = Modifier,
+    awaitingStartConfirmation: Boolean,
+    onOpenChat: () -> Unit,
+    onBack: () -> Unit,
 ) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    var offsetX by rememberSaveable { mutableFloatStateOf(0f) }
-    var offsetY by rememberSaveable { mutableFloatStateOf(0f) }
-    var overlaySize by remember { mutableStateOf(IntSize.Zero) }
-    val density = LocalDensity.current
-    val initialTopPx = with(density) { 66.dp.toPx() }
-    val initialEndPx = with(density) { 10.dp.toPx() }
+    val activeSnapshot = activeSupervisedTaskId?.let { supervisorSnapshots[it] }
+        ?: supervisorSnapshots.values.lastOrNull()
 
-    val isAnyTyping = typingAgentSlot != null && agents.any { it.config.slot == typingAgentSlot }
-    val workingCount = agents.count { it.isWorking && it.config.slot != typingAgentSlot }
-    val pausedCount = agents.count { it.activityState.activity == ActivityType.PAUSED || !it.config.isEnabled }
-    val errorCount = agents.count { it.activityState.activity == ActivityType.ERROR }
-    val completedCount = agents.count { it.activityState.activity == ActivityType.COMPLETED }
-    val typingCyan = Color(0xFF06B6D4)
-    val confirmViolet = Color(0xFFA78BFA)
+    fun humanStatus(status: com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus): Pair<String, Color> = when (status) {
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.PLANNING -> "กำลังวิเคราะห์และวางแผนงาน" to Color(0xFF3B82F6)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.SUPERVISING -> "กำลังควบคุมและสั่งงานทีม" to Color(0xFF16A34A)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.VERIFYING -> "กำลังตรวจสอบคุณภาพและผลทดสอบ" to Color(0xFF06B6D4)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.RECOVERING -> "กำลังกู้คืนขั้นตอนอัตโนมัติ" to Color(0xFFF59E0B)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.REASSIGNING -> "กำลังสลับมอบหมายงานให้เอเจนต์สำรอง" to Color(0xFFF59E0B)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.COMPLETED -> "ทำงานเสร็จสมบูรณ์แล้ว" to Color(0xFF10B981)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.PAUSED -> "พักการทำงานชั่วคราว" to Color(0xFFF59E0B)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.BLOCKED -> "รอการแก้ไขหรือคำสั่งเพิ่มเติม" to Color(0xFFDC2626)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.CANCELLED -> "ยกเลิกงานแล้ว" to Color(0xFF64748B)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.IDLE -> "พร้อมรับคำสั่ง" to Color(0xFF64748B)
+    }
 
-    // Clamp offset inside parent screen bounds so it can never be dragged off-screen
-    val minX = if (parentBounds.width > 0 && overlaySize.width > 0) {
-        -(parentBounds.width - overlaySize.width - initialEndPx).coerceAtLeast(0f)
-    } else -1000f
-    val maxX = initialEndPx
-    val minY = -initialTopPx
-    val maxY = if (parentBounds.height > 0 && overlaySize.height > 0) {
-        (parentBounds.height - overlaySize.height - initialTopPx).coerceAtLeast(0f)
-    } else 1600f
+    fun humanHealth(state: com.jarves.mh.multiagent.supervisor.AgentHealthState): Pair<String, Color> = when (state) {
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.HEALTHY -> "ปกติ" to Color(0xFF10B981)
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.BUSY -> "กำลังทำงาน" to Color(0xFF16A34A)
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.IDLE -> "พร้อมทำงาน" to Color(0xFF3B82F6)
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.SUSPECTED_STALL -> "ตอบสนองช้า กำลังตรวจสอบ" to Color(0xFFF59E0B)
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.TIMEOUT -> "หมดเวลารอ กำลังกู้คืน" to Color(0xFFEA580C)
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.RECOVERING -> "กำลังกู้คืนอัตโนมัติ" to Color(0xFFF59E0B)
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.RATE_LIMITED -> "ติดลิมิตชั่วคราว กำลังสลับ/รอ" to Color(0xFFF59E0B)
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.PROVIDER_ERROR,
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.UNAVAILABLE -> "เชื่อมต่อโมเดลไม่ได้" to Color(0xFFDC2626)
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.DISABLED -> "ปิดใช้งาน" to Color(0xFF64748B)
+    }
 
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-        shadowElevation = 6.dp,
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (workingCount > 0) Color(0xFF16A34A).copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-        ),
-        modifier = modifier
-            .padding(top = 66.dp, end = 10.dp)
-            .offset {
-                IntOffset(
-                    x = offsetX.coerceIn(minX, maxX).roundToInt(),
-                    y = offsetY.coerceIn(minY, maxY).roundToInt(),
-                )
-            }
-            .onSizeChanged { overlaySize = it }
-            .pointerInput(parentBounds, overlaySize) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    offsetX = (offsetX + dragAmount.x).coerceIn(minX, maxX)
-                    offsetY = (offsetY + dragAmount.y).coerceIn(minY, maxY)
-                }
-            }
-            .widthIn(max = 280.dp),
-    ) {
-        Column(
+    fun humanDecision(dec: com.jarves.mh.multiagent.supervisor.SupervisorDecisionRecord): Pair<String, String> = when (dec.decisionType) {
+        com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.RETRY_INITIATED ->
+            "ลองทำขั้นตอนเดิมซ้ำอัตโนมัติ" to "ระบบพบปัญหาชั่วคราว จึงสั่งรันขั้นตอนเดิมต่อโดยไม่เสียงานที่ทำไปแล้ว (${dec.reason})"
+        com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.TASK_REPLANNED ->
+            "วางแผนขั้นตอนเพิ่มเติม" to "SPV ตรวจพบส่วนที่ยังไม่ครบ (เช่น งานค้าง/การรีวิว/ผลทดสอบ) จึงเพิ่มขั้นตอนให้ทีมทำต่อจนสมบูรณ์"
+        com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.MODEL_CHANGED,
+        com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.PROVIDER_CHANGED ->
+            "สลับโมเดลอัตโนมัติ" to "สลับไปใช้โมเดลสำรองเพื่อให้งานเดินต่อได้ไม่สะดุด (${dec.reason})"
+        com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.AGENT_REPLACED ->
+            "มอบหมายให้เอเจนต์สำรอง" to "ส่งต่องานให้เอเจนต์ที่พร้อมใช้งานแทน (${dec.reason})"
+        com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.TIMEOUT_DETECTED ->
+            "ตรวจพบการรอตอบสนองนานเกินไป" to "SPV เข้าช่วยกู้คืนขั้นตอนปัจจุบันโดยยังคงไฟล์ที่เขียนเสร็จแล้วไว้ทั้งหมด"
+        else -> dec.decisionType.name.replace('_', ' ') to dec.reason
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                modifier = Modifier.padding(top = 6.dp),
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                title = {
+                    Column {
+                        Text("$projectName · Supervisor", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("ศูนย์ติดตามแผนงานและการสั่งการของ SPV", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                },
+                actions = {
+                    TextButton(onClick = onOpenChat) {
+                        Text("ไปแชทกลุ่ม", fontWeight = FontWeight.SemiBold)
+                    }
+                },
+            )
+        },
+    ) { pad ->
+        LazyColumn(
             modifier = Modifier
-                .width(IntrinsicSize.Max)
-                .clickable { expanded = !expanded }
-                .padding(horizontal = 9.dp, vertical = 6.dp),
+                .fillMaxSize()
+                .padding(pad)
+                .padding(horizontal = 14.dp),
+            contentPadding = PaddingValues(vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.DragIndicator,
-                    contentDescription = "Drag",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    modifier = Modifier.size(13.dp),
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-                    agents.forEach { agent ->
-                        val isAgentTyping = typingAgentSlot == agent.config.slot
-                        val dotColor = when {
-                            isAgentTyping -> typingCyan
-                            !agent.config.isEnabled || agent.activityState.activity == ActivityType.PAUSED -> Color(0xFFF59E0B)
-                            agent.activityState.activity == ActivityType.ERROR -> Color(0xFFDC2626)
-                            agent.isWorking -> Color(0xFF16A34A)
-                            agent.activityState.activity == ActivityType.COMPLETED -> Color(0xFF10B981)
-                            else -> Color(0xFF3B82F6)
+            if (activeSnapshot == null) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Default.Hub, contentDescription = null, tint = Color(0xFF10B981))
+                                Text(
+                                    text = if (awaitingStartConfirmation) "SPV กำลังรอเจ้าของบริษัทยืนยันในแชทกลุ่ม" else "Supervisor พร้อมทำงาน",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                )
+                            }
+                            Text(
+                                text = if (awaitingStartConfirmation) {
+                                    "SPV ตรวจพบงานค้างแล้วและส่งสรุปไปที่แชทกลุ่ม กรุณาพิมพ์ \"โอเค\" หรือ \"ทำต่อ\" ในแชทเพื่อให้ SPV เริ่มสั่งงานทีมครับ"
+                                } else {
+                                    "เมื่อคุณสั่งงานในแชทกลุ่มหรือกด Start, SPV จะวางแผนขั้นตอนทั้งหมดและรายงานความคืบหน้าแบบเข้าใจง่ายที่หน้านี้ครับ"
+                                },
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(dotColor),
-                        )
                     }
                 }
-                if (isAnyTyping) {
-                    BouncingWaveDots(
-                        color = typingCyan,
-                        dotSize = 3.5.dp,
-                        bounceHeight = -3f,
-                        modifier = Modifier.padding(top = 1.dp),
-                    )
-                } else if (workingCount > 0) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(9.dp),
-                        strokeWidth = 1.5.dp,
-                        color = Color(0xFF16A34A),
-                    )
-                }
-                val pillText = when {
-                    isAnyTyping && workingCount == 0 -> "กำลังตอบ..."
-                    workingCount > 0 -> stringResource(R.string.team_overlay_working_count, workingCount, agents.size)
-                    isAwaitingConfirmation -> "รอยืนยัน"
-                    errorCount > 0 -> "พบข้อผิดพลาด"
-                    pausedCount > 0 && !isTeamRunning -> stringResource(R.string.team_overlay_paused)
-                    completedCount == agents.size && agents.isNotEmpty() -> "เสร็จสิ้น"
-                    isTeamRunning -> stringResource(R.string.team_overlay_standby)
-                    else -> "รอคำสั่ง"
-                }
-                val pillColor = when {
-                    isAnyTyping && workingCount == 0 -> typingCyan
-                    workingCount > 0 -> Color(0xFF16A34A)
-                    isAwaitingConfirmation -> confirmViolet
-                    errorCount > 0 -> Color(0xFFDC2626)
-                    pausedCount > 0 && !isTeamRunning -> Color(0xFFF59E0B)
-                    completedCount == agents.size && agents.isNotEmpty() -> Color(0xFF10B981)
-                    isTeamRunning -> Color(0xFF3B82F6)
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                }
-                Text(
-                    text = pillText,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = pillColor,
-                    maxLines = 1,
-                    softWrap = false,
-                )
-            }
-
-            AnimatedVisibility(visible = expanded) {
-                Column(
-                    modifier = Modifier.padding(top = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    HorizontalDivider(
+            } else {
+                val (statusLabel, statusColor) = humanStatus(activeSnapshot.status)
+                item {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.2.dp, statusColor.copy(alpha = 0.5f)),
                         modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                    )
-                    agents.forEach { agent ->
-                        val act = agent.activityState.activity
-                        val isTyping = typingAgentSlot == agent.config.slot
-                        val isWorkingNow = agent.isWorking && !isTyping
-                        val statusColor = when {
-                            isTyping -> typingCyan
-                            !agent.config.isEnabled || act == ActivityType.PAUSED -> Color(0xFFF59E0B)
-                            act == ActivityType.ERROR -> Color(0xFFDC2626)
-                            isWorkingNow -> Color(0xFF16A34A)
-                            act == ActivityType.COMPLETED -> Color(0xFF10B981)
-                            else -> Color(0xFF3B82F6)
-                        }
-                        val statusText = when {
-                            isTyping -> "กำลังตอบ..."
-                            !agent.config.isEnabled -> stringResource(R.string.team_overlay_paused)
-                            else -> stringResource(act.labelRes)
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            when {
-                                isTyping -> {
-                                    // 3 bouncing wave dots when chatting/typing a reply
-                                    BouncingWaveDots(
-                                        color = typingCyan,
-                                        dotSize = 3.8.dp,
-                                        bounceHeight = -3.2f,
-                                        modifier = Modifier.padding(top = 1.dp),
-                                    )
-                                }
-                                isWorkingNow -> {
-                                    // Rotating spinner when actively working on a task
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(10.dp),
-                                        strokeWidth = 1.6.dp,
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (isTeamRunning && activeSnapshot.status != com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.COMPLETED) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = statusColor)
+                                    } else {
+                                        Box(Modifier.size(10.dp).clip(CircleShape).background(statusColor))
+                                    }
+                                    Text(
+                                        text = statusLabel,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp,
                                         color = statusColor,
                                     )
                                 }
-                                else -> {
-                                    // Idle / Paused / Waiting / Done: completely static dot, no animation
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(statusColor),
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = statusColor.copy(alpha = 0.14f),
+                                ) {
+                                    Text(
+                                        text = activeSnapshot.taskId,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = statusColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                     )
                                 }
                             }
-                            Text(
-                                text = agent.config.name,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                softWrap = false,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.widthIn(max = 120.dp),
-                            )
-                            Text(
-                                text = "· $statusText",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = statusColor,
-                                maxLines = 1,
-                                softWrap = false,
-                            )
+
+                            // Step progress bar
+                            val progressText = if (activeSnapshot.totalSteps > 0) {
+                                "ความคืบหน้า: เสร็จแล้ว ${activeSnapshot.completedSteps} จาก ${activeSnapshot.totalSteps} ขั้นตอน"
+                            } else {
+                                "กำลังวิเคราะห์และจัดเตรียมขั้นตอนการทำงาน..."
+                            }
+                            Text(text = progressText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            if (activeSnapshot.totalSteps > 0) {
+                                LinearProgressIndicator(
+                                    progress = { (activeSnapshot.completedSteps.toFloat() / activeSnapshot.totalSteps.toFloat()).coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                    color = statusColor,
+                                )
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text("สิ่งที่กำลังทำอยู่ตอนนี้", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = activeSnapshot.statusDetail.ifBlank { "SPV กำลังประสานงานกับทีม" },
+                                        fontSize = 12.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Per-Agent Status & Health in plain language
+                if (activeSnapshot.agentHealth.isNotEmpty() || agents.isNotEmpty()) {
+                    item {
+                        Text("สถานะสมาชิก AI ในทีม", fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                    }
+                    items(agents, key = { it.config.slot.id }) { agent ->
+                        val rec = activeSnapshot.agentHealth[agent.config.slot.id]
+                        val accent = agentAccentColor(agent.config.slot)
+                        val (hLabel, hColor) = if (rec != null) humanHealth(rec.healthState) else ("พร้อมทำงาน" to Color(0xFF3B82F6))
+                        val currentAction = agent.activityState.currentTask.ifBlank { agent.activityState.lastAction }
+                            .takeIf { it.isNotBlank() && !it.equals("Idle", ignoreCase = true) }
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Box(Modifier.size(10.dp).clip(CircleShape).background(accent))
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(agent.config.name, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = accent)
+                                    Text(
+                                        text = currentAction ?: stringResource(agent.activityState.activity.labelRes),
+                                        fontSize = 11.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (rec != null && rec.modelId.isNotBlank()) {
+                                        Text(
+                                            text = "โมเดล: ${rec.modelId}",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                                        )
+                                    }
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = hColor.copy(alpha = 0.14f),
+                                ) {
+                                    Text(
+                                        text = hLabel,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = hColor,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Human-readable Supervisor Decisions / Recovery Log
+                if (activeSnapshot.recoveryHistory.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "การตัดสินใจและการกู้คืนล่าสุด (${activeSnapshot.recoveryHistory.size})",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.5.sp,
+                        )
+                    }
+                    items(activeSnapshot.recoveryHistory.takeLast(8).reversed()) { dec ->
+                        val (title, explanation) = humanDecision(dec)
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(text = title, fontWeight = FontWeight.Bold, fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text(text = explanation, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
@@ -667,7 +732,7 @@ private fun TeamFilesTab(
         if (selectedFile != null) return@LaunchedEffect
         var lastFp = withContext(Dispatchers.IO) { computeWorkspaceFingerprint(workspaceDir) }
         while (true) {
-            delay(2000L)
+            delay(3000L)
             val nextFp = withContext(Dispatchers.IO) { computeWorkspaceFingerprint(workspaceDir) }
             if (nextFp != lastFp) {
                 lastFp = nextFp
@@ -685,36 +750,56 @@ private fun TeamFilesTab(
         val isDirectory: Boolean,
         val depth: Int,
         val childCount: Int,
+        val lastModifiedMs: Long,
     )
 
-    val visibleNodes = remember(workspaceDir, refreshTick, expandedDirs) {
-        val ignored = setOf(".git", "node_modules", "build", ".gradle")
-        val result = mutableListOf<TeamFileNode>()
-        fun collectChildren(dir: File, depth: Int) {
-            if (depth > 8 || result.size >= 400) return
-            val children = dir.listFiles()
-                ?.filter { it.name !in ignored }
-                ?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
-                .orEmpty()
-            for (child in children) {
-                val rel = child.relativeTo(workspaceDir).path
-                val isDir = child.isDirectory
-                val count = if (isDir) child.listFiles()?.count { it.name !in ignored } ?: 0 else 0
-                result += TeamFileNode(
-                    file = child,
-                    relPath = rel,
-                    name = child.name,
-                    isDirectory = isDir,
-                    depth = depth,
-                    childCount = count,
-                )
-                if (isDir && rel in expandedSet) {
-                    collectChildren(child, depth + 1)
+    var visibleNodes by remember { mutableStateOf<List<TeamFileNode>>(emptyList()) }
+    LaunchedEffect(workspaceDir, refreshTick, expandedDirs) {
+        visibleNodes = withContext(Dispatchers.IO) {
+            val ignored = setOf(".git", "node_modules", "build", ".gradle")
+            val result = mutableListOf<TeamFileNode>()
+            fun latestModifiedInDir(dir: File): Long {
+                var latest = dir.lastModified()
+                var scanned = 0
+                dir.walkTopDown()
+                    .maxDepth(6)
+                    .onEnter { it.name !in ignored }
+                    .forEach { f ->
+                        if (scanned++ < 400) {
+                            val m = f.lastModified()
+                            if (m > latest) latest = m
+                        }
+                    }
+                return latest
+            }
+            fun collectChildren(dir: File, depth: Int) {
+                if (depth > 8 || result.size >= 400) return
+                val children = dir.listFiles()
+                    ?.filter { it.name !in ignored }
+                    ?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
+                    .orEmpty()
+                for (child in children) {
+                    val rel = child.relativeTo(workspaceDir).path
+                    val isDir = child.isDirectory
+                    val count = if (isDir) child.listFiles()?.count { it.name !in ignored } ?: 0 else 0
+                    val latestMod = if (isDir) latestModifiedInDir(child) else child.lastModified()
+                    result += TeamFileNode(
+                        file = child,
+                        relPath = rel,
+                        name = child.name,
+                        isDirectory = isDir,
+                        depth = depth,
+                        childCount = count,
+                        lastModifiedMs = latestMod,
+                    )
+                    if (isDir && rel in expandedSet) {
+                        collectChildren(child, depth + 1)
+                    }
                 }
             }
+            collectChildren(workspaceDir, 0)
+            result.toList()
         }
-        collectChildren(workspaceDir, 0)
-        result.toList()
     }
     val totalVisibleCount = visibleNodes.size
 
@@ -889,10 +974,20 @@ private fun TeamFilesTab(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
+                                val relTime = formatRelativeUpdatedTime(node.lastModifiedMs)
+                                val isRecentlyUpdated = (System.currentTimeMillis() - node.lastModifiedMs) in 0L..(5 * 60_000L)
+                                val subtitle = if (node.isDirectory) {
+                                    "${node.childCount} items · $relTime"
+                                } else {
+                                    "${node.file.length()} bytes · $relTime"
+                                }
                                 Text(
-                                    text = if (node.isDirectory) "${node.childCount} items" else "${node.file.length()} bytes",
+                                    text = subtitle,
                                     fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = if (isRecentlyUpdated) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (isRecentlyUpdated) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                             if (!node.isDirectory) {
@@ -1067,14 +1162,14 @@ private fun TeamDualPreviewTab(
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var selectedScreenPath by rememberSaveable { mutableStateOf<String?>(null) }
 
-    // Real-time file watcher (600ms) for instant hot-reloading of BOTH Web Preview & App Preview as AI writes code
+    // Real-time file watcher (2500ms — battery & CPU friendly while still auto-refreshing Preview)
     LaunchedEffect(workspaceDir, liveReloadEnabled) {
         if (!liveReloadEnabled) return@LaunchedEffect
         val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
         var lastFp = withContext(Dispatchers.IO) { computeWorkspaceFingerprint(workspaceDir) }
         workspaceFingerprint = lastFp
         while (true) {
-            delay(600L)
+            delay(2500L)
             val nextFp = withContext(Dispatchers.IO) { computeWorkspaceFingerprint(workspaceDir) }
             if (nextFp != lastFp) {
                 lastFp = nextFp
@@ -1751,4 +1846,29 @@ private fun parseAppScreenWidgets(file: File): List<ParsedUiWidget> {
         if (result.size >= 20) break
     }
     return result
+}
+
+private fun formatRelativeUpdatedTime(lastModifiedMs: Long): String {
+    if (lastModifiedMs <= 0L) return ""
+    val diffMs = (System.currentTimeMillis() - lastModifiedMs).coerceAtLeast(0L)
+    val seconds = diffMs / 1_000L
+    val minutes = seconds / 60L
+    val hours = minutes / 60L
+    val days = hours / 24L
+    val isThai = Locale.getDefault().language.equals("th", ignoreCase = true)
+    return if (isThai) {
+        when {
+            seconds < 60L -> "อัปเดตเมื่อสักครู่"
+            minutes < 60L -> "อัปเดตเมื่อ $minutes นาทีที่แล้ว"
+            hours < 24L -> "อัปเดตเมื่อ $hours ชม.ที่แล้ว"
+            else -> "อัปเดตเมื่อ $days วันที่แล้ว"
+        }
+    } else {
+        when {
+            seconds < 60L -> "Updated just now"
+            minutes < 60L -> "Updated ${minutes}m ago"
+            hours < 24L -> "Updated ${hours}h ago"
+            else -> "Updated ${days}d ago"
+        }
+    }
 }

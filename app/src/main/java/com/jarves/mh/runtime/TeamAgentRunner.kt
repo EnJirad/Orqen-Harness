@@ -221,9 +221,11 @@ class TeamAgentRunner(
 
                 var offset = 0L
                 var lastActivityAtMs = System.currentTimeMillis()
+                var lastWorkspaceCheckAtMs = lastActivityAtMs
+                var lastWorkspaceSnapshot = beforeMtimes
                 var activeToolName: String? = null
                 var toolStartedAtMs = 0L
-                val toolTimeoutMs = (defaultPolicy.idleStreamTimeoutMs * 2L).coerceAtLeast(180_000L)
+                val toolTimeoutMs = (defaultPolicy.idleStreamTimeoutMs * 2L).coerceAtLeast(480_000L)
                 val pending = StringBuilder()
                 val textAccumulator = StringBuilder()
                 var finalResponse: String? = null
@@ -235,6 +237,17 @@ class TeamAgentRunner(
                     if (available <= 0L) {
                         val now = System.currentTimeMillis()
                         if (process.isAlive) {
+                            // Periodically check workspace file modifications so active disk writes reset the idle timer!
+                            if (now - lastWorkspaceCheckAtMs >= 5_000L) {
+                                lastWorkspaceCheckAtMs = now
+                                val currentSnapshot = snapshotWorkspaceFiles(workspaceDir)
+                                if (currentSnapshot != lastWorkspaceSnapshot) {
+                                    lastWorkspaceSnapshot = currentSnapshot
+                                    lastActivityAtMs = now
+                                    if (activeToolName != null) toolStartedAtMs = now
+                                    onProgress("Updating workspace files…")
+                                }
+                            }
                             if (activeToolName != null) {
                                 if ((now - toolStartedAtMs) >= toolTimeoutMs) {
                                     errorMessage = "Tool execution timeout (${toolTimeoutMs / 1000}s running $activeToolName)"
@@ -247,7 +260,7 @@ class TeamAgentRunner(
                                 break
                             }
                         }
-                        delay(120)
+                        delay(150)
                         continue
                     }
                     lastActivityAtMs = System.currentTimeMillis()

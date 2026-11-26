@@ -10,7 +10,12 @@ import com.jarves.mh.multiagent.persistence.AgentMessageKind
 import com.jarves.mh.provider.core.ProviderConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Production [StepExecutionAdapter] that bridges [PersistentTaskOrchestrator] directly to
@@ -18,7 +23,9 @@ import kotlinx.coroutines.withTimeout
  *
  * Guarantees:
  * - Never substitutes simulated/fake AI output in production.
- * - Enforces configurable per-step execution timeouts and propagates cooperative cancellation.
+ * - Uses an **activity-resetting inactivity watchdog**: as long as the agent emits progress,
+ *   streaming chunks, or file writes, the timer continuously resets so long coding turns never
+ *   prematurely time out; only true stalls with zero activity trigger recovery.
  * - Routes structured inter-agent messages emitted by real agents through [AgentCommunicationManager].
  * - Parses explicit review verdicts (`REVIEW_APPROVED` / `REVIEW_REJECTED: ...`) and test verdicts
  *   (`TESTS_PASSED` / `TESTS_FAILED`) without auto-approving rejected work.
@@ -27,7 +34,7 @@ class RuntimeStepExecutionAdapter(
     private val runtime: AIExecutionRuntime,
     private val providerConfigResolver: (providerId: String) -> ProviderConfig? = { null },
     private val communicationManager: AgentCommunicationManager? = null,
-    private val stepTimeoutMs: Long = 180_000L,
+    private val stepTimeoutMs: Long = 1_800_000L,
     private val onProgress: suspend (taskId: String, stepId: String, agentId: String, progress: String) -> Unit = { _, _, _, _ -> },
 ) : StepExecutionAdapter {
 
@@ -44,10 +51,37 @@ class RuntimeStepExecutionAdapter(
             imageFiles = input.imageFiles,
         )
 
+        val lastActivityAtMs = AtomicLong(System.currentTimeMillis())
+        val timedOutByWatchdog = AtomicBoolean(false)
+        // For short test timeouts (< 60s), honor exact stepTimeoutMs; in production, allow up to
+        // stepTimeoutMs of inactivity while resetting on every streaming/file progress heartbeat.
+        val idleLimitMs = stepTimeoutMs.coerceAtLeast(10L)
+        val pollIntervalMs = (idleLimitMs / 4L).coerceIn(10L, 2_000L)
+
         val response = try {
-            withTimeout(stepTimeoutMs) {
-                runtime.execute(request) { progress ->
-                    onProgress(input.task.taskId, input.step.stepId, input.agent.agentId, progress)
+            coroutineScope {
+                val execDeferred = async {
+                    runtime.execute(request) { progress ->
+                        lastActivityAtMs.set(System.currentTimeMillis())
+                        onProgress(input.task.taskId, input.step.stepId, input.agent.agentId, progress)
+                    }
+                }
+                val watchdogJob = launch {
+                    while (execDeferred.isActive) {
+                        delay(pollIntervalMs)
+                        val idleFor = System.currentTimeMillis() - lastActivityAtMs.get()
+                        if (idleFor >= idleLimitMs) {
+                            timedOutByWatchdog.set(true)
+                            runtime.cancel(request.requestId)
+                            execDeferred.cancel(CancellationException("Inactivity timeout after ${idleLimitMs}ms"))
+                            break
+                        }
+                    }
+                }
+                try {
+                    execDeferred.await()
+                } finally {
+                    watchdogJob.cancel()
                 }
             }
         } catch (timeout: TimeoutCancellationException) {
@@ -62,6 +96,16 @@ class RuntimeStepExecutionAdapter(
             )
         } catch (cancel: CancellationException) {
             runtime.cancel(request.requestId)
+            if (timedOutByWatchdog.get()) {
+                return StepExecutionOutput(
+                    success = false,
+                    summary = "",
+                    error = StructuredErrorClassifier.classify(
+                        message = "No output or progress for ${idleLimitMs / 1000}s on step '${input.step.title}'",
+                        isTimeout = true,
+                    ),
+                )
+            }
             throw cancel
         }
 

@@ -5,9 +5,9 @@ package com.jarves.mh.multiagent.engine
  * Each model request is an individual step cycle, NOT the lifetime of the entire task.
  */
 data class RequestExecutionPolicy(
-    val requestTimeoutMs: Long = 5 * 60_000L,      // 5 minutes per individual model request
-    val idleStreamTimeoutMs: Long = 90_000L,       // 90s without any streaming bytes/progress -> idle stream recovery
-    val cliPrintTimeoutMinutes: Int = 5,           // --print-timeout per step
+    val requestTimeoutMs: Long = 30 * 60_000L,     // 30 minutes safety ceiling per step (activity-resetting watchdog prevents premature kills)
+    val idleStreamTimeoutMs: Long = 5 * 60_000L,   // 5 minutes of total silence (zero output AND zero workspace file changes)
+    val cliPrintTimeoutMinutes: Int = 30,          // --print-timeout per step
     val maxResponseBytes: Int = 2 * 1024 * 1024,   // 2 MB safety cap per response
     val maxRetriesPerStep: Int = 4,
     val initialBackoffMs: Long = 1_500L,

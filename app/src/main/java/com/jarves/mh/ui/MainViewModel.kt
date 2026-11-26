@@ -315,6 +315,9 @@ data class AppUiState(
     val ownerDisplayName: String = "",
     val teamTypingAgentName: String? = null,
     val teamTypingAgentSlot: AgentSlot? = null,
+    val teamStreamingAgentName: String? = null,
+    val teamStreamingAgentSlot: AgentSlot? = null,
+    val teamStreamingText: String = "",
     val teamAwaitingStartConfirmation: Boolean = false,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
@@ -638,6 +641,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 workStatus = "Working",
                             )
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                            // Strict SPV-directed sequential handoff: once a specialist starts executing,
+                            // mark Supervisor back to WAITING so ONLY the active executing agent shows as working!
+                            if (slot != AgentSlot.AGENT_1) {
+                                updateAgentActivity(AgentSlot.AGENT_1, ActivityType.WAITING, "", "กำลังติดตามงานของ $displayName")
+                            }
                             updateAgentActivity(slot, act, upd.stepTitle, upd.detail)
                             updateTeamForegroundNotification(
                                 _state.value.activeTeamProject?.name ?: "ORQEN",
@@ -6467,7 +6475,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             projectId = activeProj.id,
                             senderSlot = AgentSlot.AGENT_1,
                             senderName = supName,
-                            text = "Autonomous Supervisor [${result.status.name}] (${result.taskId}): ${result.lastError ?: result.title}",
+                            text = formatTeamTaskCompletionMessage(activeProj.name, result.title, result.taskId, result.status, result.lastError),
                             messageType = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                                 GroupMessageType.COMPLETION_REPORT
                             } else {
@@ -6475,7 +6483,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             },
                         )
                         if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
-                            notifyTeamTaskCompleted(activeProj.name, result.title)
+                            notifyTeamTaskCompleted(activeProj.name, formatTeamTaskCompletionNotifDetail(activeProj.name, result.title))
                         }
                     }
                     withContext(Dispatchers.IO) {
@@ -6492,13 +6500,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     projectId = activeProj.id,
                                     senderSlot = AgentSlot.AGENT_1,
                                     senderName = supName,
-                                    text = "Autonomous Supervisor [${finished.status.name}] (${finished.taskId}): ${finished.lastError ?: finished.title}",
+                                    text = formatTeamTaskCompletionMessage(activeProj.name, finished.title, finished.taskId, finished.status, finished.lastError),
                                     messageType = if (finished.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                                         GroupMessageType.COMPLETION_REPORT
                                     } else {
                                         GroupMessageType.PROGRESS_UPDATE
                                     },
                                 )
+                                if (finished.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                                    notifyTeamTaskCompleted(activeProj.name, formatTeamTaskCompletionNotifDetail(activeProj.name, finished.title))
+                                }
                             },
                         )
                     }
@@ -6528,9 +6539,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun isThaiUiLanguage(): Boolean {
+        val code = _state.value.languageCode.lowercase()
+        return code == "th" || (code == "system" && java.util.Locale.getDefault().language.equals("th", ignoreCase = true))
+    }
+
+    private fun formatTeamTaskCompletionMessage(
+        projectName: String,
+        taskTitle: String,
+        taskId: String,
+        status: com.jarves.mh.multiagent.persistence.PersistentTaskStatus,
+        lastError: String?,
+    ): String = if (status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+        if (isThaiUiLanguage()) {
+            "✅ งานเสร็จสมบูรณ์แล้ว! โปรเจกต์ '$projectName' ดำเนินการ '${taskTitle}' เสร็จเรียบร้อยครับ ($taskId)"
+        } else {
+            "✅ Task Completed! Project '$projectName' finished '${taskTitle}' ($taskId)"
+        }
+    } else {
+        if (isThaiUiLanguage()) {
+            "สถานะงานโปรเจกต์ '$projectName' [${status.name}] ($taskId): ${lastError ?: taskTitle}"
+        } else {
+            "Project '$projectName' status [${status.name}] ($taskId): ${lastError ?: taskTitle}"
+        }
+    }
+
+    private fun formatTeamTaskCompletionNotifDetail(projectName: String, taskTitle: String): String =
+        if (isThaiUiLanguage()) {
+            "โปรเจกต์ '$projectName' ทำงานเสร็จสมบูรณ์แล้ว: $taskTitle"
+        } else {
+            "Project '$projectName' completed: $taskTitle"
+        }
+
     fun pauseTeamWork() {
         teamCycleJob?.cancel()
         teamCycleJob = null
+        pendingStartConfirmation = null
         activeSupervisedTaskId?.let { tid ->
             orqenTaskStore.getTask(tid)?.let { task ->
                 orqenTaskStore.upsertTask(
@@ -6542,7 +6586,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
-        _state.update { it.copy(teamIsRunning = false) }
+        _state.update { it.copy(teamIsRunning = false, teamAwaitingStartConfirmation = false) }
         continuousSupervisor.pauseContinuous("User paused team")
         stopTeamForegroundService()
         updateAgentActivities(ActivityType.PAUSED)
@@ -6605,6 +6649,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stopTeamWork() {
         teamCycleJob?.cancel()
         teamCycleJob = null
+        pendingStartConfirmation = null
         pendingTeamDirectives.clear()
         activeSupervisedTaskId?.let { tid ->
             orqenTaskStore.getTask(tid)?.let { task ->
@@ -6627,6 +6672,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 teamIsRunning = false,
+                teamAwaitingStartConfirmation = false,
                 runningTeamProjectId = null,
                 teamPriorityDirectivesCount = 0,
             )
@@ -6666,6 +6712,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             teamName = project.name,
             memberAgentIds = registered.map { it.agentId },
             requireIndependentReview = true,
+            maxConcurrentAgents = 1, // Strict SPV-directed sequential execution: one specialist works at a time
         )
     }
 
@@ -6740,7 +6787,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         projectId = activeProj.id,
                         senderSlot = AgentSlot.AGENT_1,
                         senderName = agentNameFor(AgentSlot.AGENT_1),
-                        text = "Autonomous Supervisor [${result.status.name}] (${result.taskId}): ${result.lastError ?: result.title}",
+                        text = formatTeamTaskCompletionMessage(activeProj.name, result.title, result.taskId, result.status, result.lastError),
                         messageType = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                             GroupMessageType.COMPLETION_REPORT
                         } else {
@@ -6748,7 +6795,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         },
                     )
                     if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
-                        notifyTeamTaskCompleted(activeProj.name, result.title)
+                        notifyTeamTaskCompleted(activeProj.name, formatTeamTaskCompletionNotifDetail(activeProj.name, result.title))
                     }
                 }
                 // Phase 1 (Part A.5.1): Automatically continue with any remaining queued tasks for this project!
@@ -6766,13 +6813,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 projectId = activeProj.id,
                                 senderSlot = AgentSlot.AGENT_1,
                                 senderName = agentNameFor(AgentSlot.AGENT_1),
-                                text = "Autonomous Supervisor [${finished.status.name}] (${finished.taskId}): ${finished.lastError ?: finished.title}",
+                                text = formatTeamTaskCompletionMessage(activeProj.name, finished.title, finished.taskId, finished.status, finished.lastError),
                                 messageType = if (finished.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                                     GroupMessageType.COMPLETION_REPORT
                                 } else {
                                     GroupMessageType.PROGRESS_UPDATE
                                 },
                             )
+                            if (finished.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                                notifyTeamTaskCompleted(activeProj.name, formatTeamTaskCompletionNotifDetail(activeProj.name, finished.title))
+                            }
                         },
                     )
                 }
@@ -7107,6 +7157,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLine("Reply naturally in the same language as $ownerName, addressing them as $ownerName, clearly explaining the current project status or answering their question concisely.")
                 }
                 val providerCfg = _state.value.providerConfigs.firstOrNull { it.id == responder.config.providerId }
+                val streamBuffer = StringBuilder()
+                var lastStreamUiUpdateMs = 0L
                 val res = teamAgentRunner.executeTurn(
                     agent = responder,
                     providerConfig = providerCfg,
@@ -7116,7 +7168,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     useIsolatedAgyHome = useIsolatedAgyHomeFor(responder.config.slot),
                     enableCache = false,
                     knownAgyModels = _state.value.antigravityModels,
-                    onProgress = {},
+                    onProgress = { chunk ->
+                        val cleanedChunk = chunk.trim()
+                        if (cleanedChunk.isNotBlank() &&
+                            !cleanedChunk.startsWith("Cache hit") &&
+                            !cleanedChunk.startsWith("Updating workspace")
+                        ) {
+                            if (streamBuffer.isNotEmpty() && !streamBuffer.endsWith("\n")) {
+                                streamBuffer.append("\n")
+                            }
+                            streamBuffer.append(cleanedChunk)
+                            val now = System.currentTimeMillis()
+                            if (now - lastStreamUiUpdateMs >= 85L) {
+                                lastStreamUiUpdateMs = now
+                                val snapshot = streamBuffer.toString().takeLast(4000)
+                                _state.update {
+                                    it.copy(
+                                        teamStreamingAgentName = responder.config.name,
+                                        teamStreamingAgentSlot = responder.config.slot,
+                                        teamStreamingText = snapshot,
+                                    )
+                                }
+                            }
+                        }
+                    },
                 )
                 val replyBody = if (res.isError) {
                     if (pausedForInterrupt) {
@@ -7132,6 +7207,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     replyBody
                 }
+                // Smooth, lightweight line-by-line progressive reveal (throttled to <= 10 ticks so zero lag / low CPU!)
+                val lines = finalReply.lines()
+                if (lines.size > 1) {
+                    val step = (lines.size / 10).coerceAtLeast(1)
+                    var shown = step
+                    while (shown < lines.size) {
+                        val partial = lines.take(shown).joinToString("\n")
+                        _state.update {
+                            it.copy(
+                                teamStreamingAgentName = responder.config.name,
+                                teamStreamingAgentSlot = responder.config.slot,
+                                teamStreamingText = partial,
+                            )
+                        }
+                        delay(50L)
+                        shown += step
+                    }
+                }
+                _state.update {
+                    it.copy(
+                        teamStreamingAgentName = null,
+                        teamStreamingAgentSlot = null,
+                        teamStreamingText = "",
+                    )
+                }
                 appendProjectTeamMessage(
                     projectId = project.id,
                     senderSlot = responder.config.slot,
@@ -7141,7 +7241,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     suggestedTaskPrompt = if (looksLikeTask && !pausedForInterrupt) userMessage else null,
                 )
             } finally {
-                _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                _state.update {
+                    it.copy(
+                        teamTypingAgentName = null,
+                        teamTypingAgentSlot = null,
+                        teamStreamingAgentName = null,
+                        teamStreamingAgentSlot = null,
+                        teamStreamingText = "",
+                    )
+                }
             }
             if (pausedForInterrupt) {
                 // Automatically resume paused work right where the agent left off!

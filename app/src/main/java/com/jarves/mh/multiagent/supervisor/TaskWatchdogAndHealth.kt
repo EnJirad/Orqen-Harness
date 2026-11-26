@@ -13,12 +13,12 @@ import java.util.concurrent.ConcurrentHashMap
  * agent execution duration, task deadline, and heartbeat liveness.
  */
 data class GranularTimeoutPolicy(
-    val firstResponseTimeoutMs: Long = 45_000L,
-    val streamInactivityTimeoutMs: Long = 90_000L,
-    val toolExecutionTimeoutMs: Long = 180_000L,
-    val agentExecutionTimeoutMs: Long = 300_000L,
+    val firstResponseTimeoutMs: Long = 180_000L,
+    val streamInactivityTimeoutMs: Long = 300_000L,
+    val toolExecutionTimeoutMs: Long = 480_000L,
+    val agentExecutionTimeoutMs: Long = 1_800_000L,
     val taskDeadlineMs: Long = 3_600_000L,
-    val heartbeatTimeoutMs: Long = 60_000L,
+    val heartbeatTimeoutMs: Long = 120_000L,
     val providerOverrides: Map<String, GranularTimeoutPolicy> = emptyMap(),
 ) {
     fun forProvider(providerId: String): GranularTimeoutPolicy =

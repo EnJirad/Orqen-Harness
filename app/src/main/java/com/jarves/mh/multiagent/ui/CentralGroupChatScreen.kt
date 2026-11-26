@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.jarves.mh.multiagent.model.ActivityType
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,6 +85,10 @@ fun CentralGroupChatScreen(
     ownerName: String = "",
     typingAgentName: String? = null,
     typingAgentSlot: AgentSlot? = null,
+    streamingAgentName: String? = null,
+    streamingAgentSlot: AgentSlot? = null,
+    streamingText: String = "",
+    awaitingStartConfirmation: Boolean = false,
     pendingDirectivesCount: Int = 0,
     listState: LazyListState = rememberLazyListState(),
     initialScrollDone: Boolean = false,
@@ -117,7 +122,8 @@ fun CentralGroupChatScreen(
     val workingAgents = remember(agents, typingAgentSlot) {
         agents.filter { it.isWorking && it.config.slot != typingAgentSlot }
     }
-    val totalItems = messages.size + workingAgents.size + if (typingAgentName != null) 1 else 0
+    val hasStreaming = !streamingAgentName.isNullOrBlank() && streamingText.isNotBlank()
+    val totalItems = messages.size + workingAgents.size + (if (hasStreaming) 1 else 0) + (if (!hasStreaming && !typingAgentName.isNullOrBlank()) 1 else 0)
     var prevTotalCount by remember { mutableIntStateOf(totalItems) }
 
     // Smart Scroll Memory:
@@ -217,27 +223,66 @@ fun CentralGroupChatScreen(
                 .imePadding()
                 .background(MaterialTheme.colorScheme.background),
         ) {
-            // Compact 3-color AI Team Status Banner (expandable dropdown when Warning/Disconnected to show which AI & exact error!)
-            val showBanner = isTeamRunning || teamBannerHealth != TeamBannerHealth.RUNNING
+            // Unified Expandable AI Team Status Bar (replaces floating pill! Tap down-arrow to inspect every agent & what they're doing)
+            val showBanner = agents.isNotEmpty() || isTeamRunning || teamBannerHealth != TeamBannerHealth.RUNNING
             if (showBanner) {
-                var bannerExpanded by remember(teamBannerHealth, teamBannerDetail) { mutableStateOf(false) }
+                var bannerExpanded by remember { mutableStateOf(false) }
+                val activeWorkingAgents = agents.filter { it.isWorking && it.config.slot != typingAgentSlot }
+                val isAnyTyping = typingAgentSlot != null && agents.any { it.config.slot == typingAgentSlot }
+                val pausedAgentsCount = agents.count { !it.config.isEnabled || it.activityState.activity == ActivityType.PAUSED }
+                val errorAgentsCount = agents.count { it.activityState.activity == ActivityType.ERROR }
                 val hasIssueDetail = teamBannerHealth != TeamBannerHealth.RUNNING && !teamBannerDetail.isNullOrBlank()
-                val (bannerBg, bannerFg, bannerText) = when (teamBannerHealth) {
-                    TeamBannerHealth.DISCONNECTED -> Triple(
+                val (bannerBg, bannerFg, bannerText) = when {
+                    teamBannerHealth == TeamBannerHealth.DISCONNECTED -> Triple(
                         Color(0xFFDC2626).copy(alpha = 0.14f),
                         Color(0xFFDC2626),
                         teamBannerMessage?.takeIf { it.isNotBlank() } ?: stringResource(R.string.team_status_disconnected_agent),
                     )
-                    TeamBannerHealth.WARNING -> Triple(
+                    teamBannerHealth == TeamBannerHealth.WARNING -> Triple(
                         Color(0xFFF59E0B).copy(alpha = 0.16f),
                         Color(0xFFD97706),
                         teamBannerMessage?.takeIf { it.isNotBlank() } ?: stringResource(R.string.team_status_warning_network),
                     )
-                    TeamBannerHealth.RUNNING -> Triple(
-                        Color(0xFF22C55E).copy(alpha = 0.14f),
-                        Color(0xFF16A34A),
+                    isAnyTyping && activeWorkingAgents.isEmpty() -> Triple(
+                        Color(0xFF06B6D4).copy(alpha = 0.14f),
+                        Color(0xFF06B6D4),
+                        "${typingAgentName ?: "AI"} กำลังพิมพ์ตอบ...",
+                    )
+                    activeWorkingAgents.isNotEmpty() -> {
+                        val lead = activeWorkingAgents.first()
+                        val actLabel = stringResource(lead.activityState.activity.labelRes)
+                        Triple(
+                            Color(0xFF22C55E).copy(alpha = 0.14f),
+                            Color(0xFF16A34A),
+                            "กำลังทำงาน ${activeWorkingAgents.size}/${agents.size} · ${lead.config.name}: $actLabel" +
+                                if (pendingDirectivesCount > 0) " (+$pendingDirectivesCount)" else "",
+                        )
+                    }
+                    awaitingStartConfirmation -> Triple(
+                        Color(0xFFA78BFA).copy(alpha = 0.14f),
+                        Color(0xFFA78BFA),
+                        "SPV รอยืนยันการทำงานต่อจากเจ้าของบริษัท",
+                    )
+                    errorAgentsCount > 0 -> Triple(
+                        Color(0xFFDC2626).copy(alpha = 0.14f),
+                        Color(0xFFDC2626),
+                        "พบข้อผิดพลาด ($errorAgentsCount ตัว) · แตะเพื่อดูรายละเอียด",
+                    )
+                    pausedAgentsCount > 0 && !isTeamRunning -> Triple(
+                        Color(0xFFF59E0B).copy(alpha = 0.14f),
+                        Color(0xFFD97706),
+                        "พักงาน (${pausedAgentsCount}/${agents.size} ตัว)",
+                    )
+                    isTeamRunning -> Triple(
+                        Color(0xFF3B82F6).copy(alpha = 0.12f),
+                        Color(0xFF3B82F6),
                         stringResource(R.string.team_status_running_short) +
                             if (pendingDirectivesCount > 0) " ($pendingDirectivesCount)" else "",
+                    )
+                    else -> Triple(
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                        "ทีมพร้อมรับคำสั่ง (${agents.count { it.config.isEnabled }}/${agents.size} AI)",
                     )
                 }
                 Surface(
@@ -245,47 +290,121 @@ fun CentralGroupChatScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 4.dp)
-                        .clickable(enabled = hasIssueDetail) { bannerExpanded = !bannerExpanded },
+                        .clickable { bannerExpanded = !bannerExpanded },
                     shape = RoundedCornerShape(10.dp),
                 ) {
-                    Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                    Column(Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Box(Modifier.size(8.dp).clip(CircleShape).background(bannerFg))
+                            when {
+                                isAnyTyping && activeWorkingAgents.isEmpty() -> {
+                                    BouncingWaveDots(color = bannerFg, dotSize = 4.dp, bounceHeight = -3f)
+                                }
+                                activeWorkingAgents.isNotEmpty() -> {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        strokeWidth = 1.8.dp,
+                                        color = bannerFg,
+                                    )
+                                }
+                                else -> {
+                                    Box(Modifier.size(8.dp).clip(CircleShape).background(bannerFg))
+                                }
+                            }
                             Text(
                                 text = bannerText,
-                                fontSize = 11.sp,
+                                fontSize = 11.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = bannerFg,
-                                maxLines = 2,
+                                maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f),
                             )
-                            if (hasIssueDetail) {
-                                Icon(
-                                    imageVector = if (bannerExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Details",
-                                    tint = bannerFg,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
+                            Icon(
+                                imageVector = if (bannerExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Toggle AI Status",
+                                tint = bannerFg,
+                                modifier = Modifier.size(18.dp),
+                            )
                         }
-                        AnimatedVisibility(visible = bannerExpanded && hasIssueDetail) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        AnimatedVisibility(visible = bannerExpanded) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                SelectionContainer {
-                                    Text(
-                                        text = teamBannerDetail.orEmpty(),
-                                        fontSize = 10.5.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.padding(8.dp),
-                                    )
+                                HorizontalDivider(color = bannerFg.copy(alpha = 0.22f))
+                                agents.forEach { agent ->
+                                    val slot = agent.config.slot
+                                    val accent = agentAccentColor(slot)
+                                    val isTypingThis = typingAgentSlot == slot
+                                    val isWorkingThis = agent.isWorking && !isTypingThis
+                                    val act = agent.activityState.activity
+                                    val statusLabel = when {
+                                        isTypingThis -> "กำลังตอบ..."
+                                        !agent.config.isEnabled -> stringResource(R.string.team_overlay_paused)
+                                        else -> stringResource(act.labelRes)
+                                    }
+                                    val currentTaskDesc = agent.activityState.currentTask.ifBlank { agent.activityState.lastAction }
+                                        .takeIf { it.isNotBlank() && !it.equals("Idle", ignoreCase = true) }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                                    ) {
+                                        when {
+                                            isTypingThis -> BouncingWaveDots(color = accent, dotSize = 3.8.dp, bounceHeight = -3f)
+                                            isWorkingThis -> CircularProgressIndicator(
+                                                modifier = Modifier.size(11.dp),
+                                                strokeWidth = 1.6.dp,
+                                                color = accent,
+                                            )
+                                            else -> Box(
+                                                Modifier
+                                                    .size(7.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        if (!agent.config.isEnabled || act == ActivityType.PAUSED) Color(0xFFF59E0B) else accent.copy(alpha = 0.7f),
+                                                    ),
+                                            )
+                                        }
+                                        Text(
+                                            text = agent.config.name,
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = accent,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = "· $statusLabel" + if (currentTaskDesc != null) " — $currentTaskDesc" else "",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                }
+                                if (hasIssueDetail) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        SelectionContainer {
+                                            Text(
+                                                text = teamBannerDetail.orEmpty(),
+                                                fontSize = 10.5.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.padding(8.dp),
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -319,7 +438,15 @@ fun CentralGroupChatScreen(
                         logs = agentLiveLogs[agent.config.slot].orEmpty(),
                     )
                 }
-                if (!typingAgentName.isNullOrBlank()) {
+                if (hasStreaming) {
+                    item(key = "streaming-live-bubble") {
+                        AiStreamingBubble(
+                            agentName = streamingAgentName!!,
+                            agentSlot = streamingAgentSlot,
+                            text = streamingText,
+                        )
+                    }
+                } else if (!typingAgentName.isNullOrBlank()) {
                     item(key = "typing-wave-indicator") {
                         AiTypingWaveBubble(
                             agentName = typingAgentName,
@@ -579,6 +706,60 @@ internal fun agentAccentColor(slot: AgentSlot?): Color = when (slot) {
     AgentSlot.AGENT_3 -> Color(0xFFA78BFA) // Violet Purple
     AgentSlot.AGENT_4 -> Color(0xFFF59E0B) // Amber Gold
     null -> OrqenMint
+}
+
+@Composable
+private fun AiStreamingBubble(
+    agentName: String,
+    agentSlot: AgentSlot? = null,
+    text: String,
+) {
+    val accent = agentAccentColor(agentSlot)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.Start,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                painter = painterResource(id = R.drawable.ic_orqen_mark),
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(13.dp),
+            )
+            Text(
+                text = agentName,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = accent,
+            )
+            BouncingWaveDots(
+                color = accent,
+                dotSize = 4.dp,
+                bounceHeight = -3f,
+                modifier = Modifier.padding(start = 2.dp, top = 1.dp),
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Column(
+            modifier = Modifier
+                .widthIn(max = 315.dp)
+                .clip(RoundedCornerShape(15.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .background(accent.copy(alpha = 0.08f))
+                .border(1.3.dp, accent.copy(alpha = 0.72f), RoundedCornerShape(15.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Text(
+                text = text,
+                fontSize = 13.5.sp,
+                lineHeight = 19.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
 }
 
 @Composable
