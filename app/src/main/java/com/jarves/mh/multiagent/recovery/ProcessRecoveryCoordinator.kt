@@ -62,8 +62,14 @@ class JobSchedulerRecoveryBackend(
 /**
  * Exclusive execution lease & liveness monitor preventing duplicate recovery workers
  * from executing the same task/step concurrently.
+ *
+ * When backed by [taskStore], lease ownership and heartbeats are persisted on [TaskEntity]
+ * (`executionLeaseOwner` / `lastHeartbeatAt`) so process recreation can accurately detect
+ * stale vs active leases without introducing a separate database.
  */
-class ExecutionLivenessMonitor {
+class ExecutionLivenessMonitor(
+    private val taskStore: OrqenTaskStore? = null,
+) {
     private val leases = ConcurrentHashMap<String, ExecutionLeaseRecord>()
 
     @Synchronized
@@ -88,6 +94,7 @@ class ExecutionLivenessMonitor {
             lastHeartbeatMs = nowMs,
         )
         leases[key] = lease
+        persistLeaseOwner(taskId, ownerId, nowMs)
         return lease
     }
 
@@ -97,6 +104,7 @@ class ExecutionLivenessMonitor {
         val existing = leases[key] ?: return false
         if (existing.ownerId != ownerId || existing.isExpired(nowMs)) return false
         leases[key] = existing.copy(lastHeartbeatMs = nowMs, expiresAtMs = nowMs + ttlMs)
+        persistLeaseOwner(taskId, ownerId, nowMs)
         return true
     }
 
@@ -106,6 +114,7 @@ class ExecutionLivenessMonitor {
         val existing = leases[key]
         if (existing != null && existing.ownerId == ownerId) {
             leases.remove(key)
+            persistLeaseOwner(taskId, null, System.currentTimeMillis())
         }
     }
 
@@ -113,6 +122,50 @@ class ExecutionLivenessMonitor {
     fun activeLease(taskId: String, stepId: String?, nowMs: Long = System.currentTimeMillis()): ExecutionLeaseRecord? {
         val existing = leases[leaseKey(taskId, stepId)] ?: return null
         return if (existing.isExpired(nowMs)) null else existing
+    }
+
+    /**
+     * Reconstructs lease state from persisted [OrqenTaskStore] after Android process recreation.
+     * Returns task IDs whose persisted leases have expired and are safe to reclaim.
+     */
+    @Synchronized
+    fun restoreAndIdentifyExpiredLeases(
+        leaseTtlMs: Long = 60_000L,
+        nowMs: Long = System.currentTimeMillis(),
+    ): List<String> {
+        val store = taskStore ?: return emptyList()
+        val expiredTaskIds = mutableListOf<String>()
+        for (task in store.listAllTasks()) {
+            val owner = task.executionLeaseOwner ?: continue
+            if (task.status != PersistentTaskStatus.RUNNING && task.status != PersistentTaskStatus.RECOVERING) continue
+            val expiresAt = task.lastHeartbeatAt + leaseTtlMs
+            if (nowMs >= expiresAt) {
+                leases.remove(leaseKey(task.taskId, task.currentStepId))
+                expiredTaskIds.add(task.taskId)
+            } else {
+                leases[leaseKey(task.taskId, task.currentStepId)] = ExecutionLeaseRecord(
+                    taskId = task.taskId,
+                    stepId = task.currentStepId,
+                    ownerId = owner,
+                    acquiredAtMs = task.lastHeartbeatAt,
+                    expiresAtMs = expiresAt,
+                    lastHeartbeatMs = task.lastHeartbeatAt,
+                )
+            }
+        }
+        return expiredTaskIds
+    }
+
+    private fun persistLeaseOwner(taskId: String, ownerId: String?, nowMs: Long) {
+        val store = taskStore ?: return
+        val task = store.getTask(taskId) ?: return
+        store.upsertTask(
+            task.copy(
+                executionLeaseOwner = ownerId,
+                lastHeartbeatAt = nowMs,
+                updatedAt = nowMs,
+            ),
+        )
     }
 
     private fun leaseKey(taskId: String, stepId: String?): String =

@@ -150,6 +150,7 @@ class TeamAgentRunner(
         prompt: String,
         useIsolatedHome: Boolean,
         knownAgyModels: List<String> = emptyList(),
+        allowSkipPermissions: Boolean = true,
         onProgress: suspend (String) -> Unit,
     ): TeamAgentExecutionResult {
         if (!installer.isAgentInstalled(AgentKind.ANTIGRAVITY)) {
@@ -183,7 +184,9 @@ class TeamAgentRunner(
             addAll(listOf("--input-format", "stream-json"))
             addAll(listOf("--output-format", "stream-json"))
             addAll(listOf("--print-timeout", "${defaultPolicy.cliPrintTimeoutMinutes}m"))
-            add("--dangerously-skip-permissions")
+            if (allowSkipPermissions) {
+                add("--dangerously-skip-permissions")
+            }
             if (!resolvedModel.isNullOrBlank()) {
                 addAll(listOf("--model", resolvedModel))
             }
@@ -215,6 +218,9 @@ class TeamAgentRunner(
 
                 var offset = 0L
                 var lastActivityAtMs = System.currentTimeMillis()
+                var activeToolName: String? = null
+                var toolStartedAtMs = 0L
+                val toolTimeoutMs = (defaultPolicy.idleStreamTimeoutMs * 2L).coerceAtLeast(180_000L)
                 val pending = StringBuilder()
                 val textAccumulator = StringBuilder()
                 var finalResponse: String? = null
@@ -224,10 +230,19 @@ class TeamAgentRunner(
                 while (!done && (process.isAlive || outputFile.length() > offset)) {
                     val available = outputFile.length() - offset
                     if (available <= 0L) {
-                        if (process.isAlive && (System.currentTimeMillis() - lastActivityAtMs) >= defaultPolicy.idleStreamTimeoutMs) {
-                            errorMessage = "Idle stream timeout (${defaultPolicy.idleStreamTimeoutMs / 1000}s without output)"
-                            done = true
-                            break
+                        val now = System.currentTimeMillis()
+                        if (process.isAlive) {
+                            if (activeToolName != null) {
+                                if ((now - toolStartedAtMs) >= toolTimeoutMs) {
+                                    errorMessage = "Tool execution timeout (${toolTimeoutMs / 1000}s running $activeToolName)"
+                                    done = true
+                                    break
+                                }
+                            } else if ((now - lastActivityAtMs) >= defaultPolicy.idleStreamTimeoutMs) {
+                                errorMessage = "Idle stream timeout (${defaultPolicy.idleStreamTimeoutMs / 1000}s without output)"
+                                done = true
+                                break
+                            }
                         }
                         delay(120)
                         continue
@@ -251,8 +266,15 @@ class TeamAgentRunner(
                                     textAccumulator.append(event.value)
                                 }
                             }
-                            is AntigravityParsedEvent.ToolStarted -> onProgress("${event.name}: ${event.detail.take(80)}")
-                            is AntigravityParsedEvent.ToolCompleted -> onProgress("Done: ${event.name}")
+                            is AntigravityParsedEvent.ToolStarted -> {
+                                activeToolName = event.name
+                                toolStartedAtMs = System.currentTimeMillis()
+                                onProgress("TOOL_STARTED:${event.name}:${event.detail.take(80)}")
+                            }
+                            is AntigravityParsedEvent.ToolCompleted -> {
+                                activeToolName = null
+                                onProgress("TOOL_COMPLETED:${event.name}")
+                            }
                             is AntigravityParsedEvent.Result -> {
                                 if (event.status.equals("SUCCESS", ignoreCase = true)) {
                                     finalResponse = event.response?.takeIf { it.isNotBlank() } ?: textAccumulator.toString()

@@ -1,5 +1,10 @@
 package com.jarves.mh.multiagent.engine
 
+import com.jarves.mh.multiagent.collab.AgentCommunicationManager
+import com.jarves.mh.multiagent.collab.AgentReviewEntity
+import com.jarves.mh.multiagent.collab.AgentReviewManager
+import com.jarves.mh.multiagent.collab.ReviewOutcome
+import com.jarves.mh.multiagent.collab.ReviewSeverity
 import com.jarves.mh.multiagent.locks.FileLockManager
 import com.jarves.mh.multiagent.model.AgentRole
 import com.jarves.mh.multiagent.model.AgentSlot
@@ -110,12 +115,20 @@ class PersistentTaskOrchestrator(
     private val policy: RequestExecutionPolicy = RequestExecutionPolicy(),
     private val teamRosterProvider: () -> List<DynamicAgentProfile> = { DynamicAgentProfile.defaultTeam() },
     private val delayFn: suspend (Long) -> Unit = { ms -> delay(ms) },
+    private val communicationManager: AgentCommunicationManager? = null,
+    private val reviewManager: AgentReviewManager? = null,
+    private val reviewFeedbackProvider: ((taskId: String) -> List<AgentReviewEntity>)? = null,
+    private val finalCompletionVerifier: ((TaskEntity, List<TaskStepEntity>) -> Pair<Boolean, String>)? = null,
+    private val maxReviewRejectCycles: Int = MAX_REVIEW_REJECT_CYCLES,
 ) {
     private val activeJobs = ConcurrentHashMap<String, Job>()
+    private val inFlightTaskIds = ConcurrentHashMap.newKeySet<String>()
     private val _activeTaskIds = MutableStateFlow<Set<String>>(emptySet())
     val activeTaskIds: StateFlow<Set<String>> = _activeTaskIds.asStateFlow()
 
     private val instanceOwnerId = "orch-${UUID.randomUUID().toString().take(8)}"
+
+    fun isTaskRunning(taskId: String): Boolean = inFlightTaskIds.contains(taskId) || (activeJobs[taskId]?.isActive == true)
 
     fun createTaskWithSteps(
         projectId: String,
@@ -277,18 +290,55 @@ class PersistentTaskOrchestrator(
             return task
         }
 
-        val project = store.getProject(task.projectId) ?: return task
+        if (!inFlightTaskIds.add(taskId)) {
+            store.insertTaskEvent(
+                TaskEventEntity(
+                    taskId = taskId,
+                    eventType = "DUPLICATE_EXECUTION_PREVENTED",
+                    eventPayload = "Task $taskId is already executing; duplicate run rejected.",
+                ),
+            )
+            return task
+        }
+
+        val project = store.getProject(task.projectId) ?: run {
+            inFlightTaskIds.remove(taskId)
+            return task
+        }
         val workspaceDir = File(project.workspacePath).apply { mkdirs() }
 
         supervisor.transition(taskId, ExecutionLifecycleState.STARTING, "Acquiring lease")
-        task = task.copy(
-            status = PersistentTaskStatus.RUNNING,
-            startedAt = task.startedAt ?: System.currentTimeMillis(),
-            executionLeaseOwner = instanceOwnerId,
-            lastHeartbeatAt = System.currentTimeMillis(),
-            updatedAt = System.currentTimeMillis(),
-        )
-        store.upsertTask(task)
+        val acquiredTask = store.runInTransaction {
+            val fresh = store.getTask(taskId) ?: return@runInTransaction null
+            if (fresh.ownerStopRequested || fresh.status == PersistentTaskStatus.CANCELLED ||
+                fresh.pauseRequested || fresh.status == PersistentTaskStatus.PAUSED
+            ) {
+                return@runInTransaction fresh
+            }
+            val started = fresh.copy(
+                status = PersistentTaskStatus.RUNNING,
+                startedAt = fresh.startedAt ?: System.currentTimeMillis(),
+                executionLeaseOwner = instanceOwnerId,
+                lastHeartbeatAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis(),
+            )
+            store.upsertTask(started)
+            started
+        } ?: run {
+            inFlightTaskIds.remove(taskId)
+            return null
+        }
+        task = acquiredTask
+        if (task.ownerStopRequested || task.status == PersistentTaskStatus.CANCELLED) {
+            inFlightTaskIds.remove(taskId)
+            supervisor.transition(taskId, ExecutionLifecycleState.CANCELLED, "Owner cancelled before start")
+            return task
+        }
+        if (task.pauseRequested || task.status == PersistentTaskStatus.PAUSED) {
+            inFlightTaskIds.remove(taskId)
+            supervisor.transition(taskId, ExecutionLifecycleState.PAUSED, "Owner paused before start")
+            return task
+        }
 
         val recentFailureSignatures = mutableListOf<String>()
         var reviewRejectCycles = 0
@@ -346,6 +396,10 @@ class PersistentTaskOrchestrator(
                     val allDone = allSteps.isNotEmpty() && allSteps.all { it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED }
                     return when {
                         allDone -> {
+                            val verificationResult = finalCompletionVerifier?.invoke(task, allSteps)
+                            if (verificationResult != null && !verificationResult.first) {
+                                return markBlocked(task, "Final verification failed: ${verificationResult.second}")
+                            }
                             task = task.copy(
                                 status = PersistentTaskStatus.COMPLETED,
                                 completedAt = System.currentTimeMillis(),
@@ -359,7 +413,7 @@ class PersistentTaskOrchestrator(
                                     TaskEventEntity(
                                         taskId = taskId,
                                         eventType = "TASK_COMPLETED",
-                                        eventPayload = "All ${allSteps.size} steps verified and completed.",
+                                        eventPayload = verificationResult?.second ?: "All ${allSteps.size} steps verified and completed.",
                                     ),
                                 )
                             }
@@ -458,14 +512,28 @@ class PersistentTaskOrchestrator(
 
                 val latestCheckpoint = store.getLatestCheckpoint(taskId)
                 val beforeSnap = checkpointManager.snapshotWorkspace(workspaceDir)
-                val compactContext = TaskContextBuilder.buildStepContext(
-                    project = project,
-                    task = task,
-                    step = runningStep,
-                    allSteps = allSteps,
-                    latestCheckpoint = latestCheckpoint,
-                    recentMessages = store.listAgentMessagesForTask(taskId, limit = 20),
-                )
+                val reviewFeedback = reviewFeedbackProvider?.invoke(taskId).orEmpty()
+                val compactContext = if (communicationManager != null) {
+                    TaskContextBuilder.buildAgentStepContext(
+                        project = project,
+                        task = task,
+                        step = runningStep,
+                        allSteps = allSteps,
+                        latestCheckpoint = latestCheckpoint,
+                        communicationManager = communicationManager,
+                        reviewFeedback = reviewFeedback,
+                    )
+                } else {
+                    TaskContextBuilder.buildStepContext(
+                        project = project,
+                        task = task,
+                        step = runningStep,
+                        allSteps = allSteps,
+                        latestCheckpoint = latestCheckpoint,
+                        recentMessages = store.listAgentMessagesForTask(taskId, limit = 20),
+                        reviewFeedback = reviewFeedback,
+                    )
+                }
 
                 val output = try {
                     stepAdapter.executeStep(
@@ -503,11 +571,25 @@ class PersistentTaskOrchestrator(
                     // Quality Gate: if reviewer rejected the work, schedule a corrective dev step + re-review!
                     if (runningStep.requiresReview && !output.reviewApproved) {
                         reviewRejectCycles++
-                        if (reviewRejectCycles > MAX_REVIEW_REJECT_CYCLES) {
+                        if (reviewRejectCycles > maxReviewRejectCycles) {
                             return markBlocked(task, "Quality gate rejected work $reviewRejectCycles consecutive times: ${output.reviewFeedback.orEmpty()}")
                         }
                         val nextSeq = (allSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
-                        val devAgentId = roster.firstOrNull { "code" in it.capabilities }?.agentId ?: agent.agentId
+                        val devAgentId = roster.firstOrNull { "code" in it.capabilities && it.agentId != agent.agentId }?.agentId
+                            ?: roster.firstOrNull { "code" in it.capabilities }?.agentId
+                            ?: agent.agentId
+                        reviewManager?.submitReview(
+                            taskId = taskId,
+                            reviewerAgentId = agent.agentId,
+                            implementingAgentId = devAgentId,
+                            reviewedExecutionId = execution.executionId,
+                            reviewedStepId = runningStep.stepId,
+                            outcome = ReviewOutcome.CHANGES_REQUESTED,
+                            findings = listOf(output.reviewFeedback ?: output.summary),
+                            severity = ReviewSeverity.HIGH,
+                            requiredChanges = listOf(output.reviewFeedback ?: "Address reviewer findings"),
+                            requireIndependentReviewer = (agent.agentId != devAgentId),
+                        )
                         val fixStep = TaskStepEntity(
                             taskId = taskId,
                             sequenceNumber = nextSeq,
@@ -570,6 +652,25 @@ class PersistentTaskOrchestrator(
                             )
                         }
                         continue
+                    }
+
+                    // Record structured review approval when a review step passes
+                    if (runningStep.requiresReview && output.reviewApproved && reviewManager != null) {
+                        val implAgentId = allSteps.lastOrNull {
+                            it.stepId in runningStep.dependencies && it.assignedAgentId != agent.agentId
+                        }?.assignedAgentId ?: roster.firstOrNull { "code" in it.capabilities && it.agentId != agent.agentId }?.agentId ?: "agent-developer"
+                        reviewManager.submitReview(
+                            taskId = taskId,
+                            reviewerAgentId = agent.agentId,
+                            implementingAgentId = implAgentId,
+                            reviewedExecutionId = execution.executionId,
+                            reviewedStepId = runningStep.stepId,
+                            outcome = ReviewOutcome.APPROVED,
+                            findings = listOf(output.summary.take(300)),
+                            severity = ReviewSeverity.INFO,
+                            evidenceReferences = detectedChanges,
+                            requireIndependentReviewer = (agent.agentId != implAgentId),
+                        )
                     }
 
                     // Step succeeded! Build checkpoint and commit atomically with step + task + idempotency
@@ -696,6 +797,8 @@ class PersistentTaskOrchestrator(
             }
         } catch (cancel: CancellationException) {
             throw cancel
+        } finally {
+            inFlightTaskIds.remove(taskId)
         }
         return store.getTask(taskId)
     }
