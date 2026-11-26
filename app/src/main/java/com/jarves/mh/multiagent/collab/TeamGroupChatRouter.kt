@@ -114,4 +114,32 @@ object TeamGroupChatRouter {
             shouldInterruptAndResume = false,
         )
     }
+
+    /**
+     * Detects whether the Owner's reply confirms continuing pending project work
+     * after Supervisor reported unfinished tasks upon pressing Start.
+     */
+    fun isContinueConfirmation(text: String): Boolean {
+        val normalized = text.trim().lowercase()
+        if (normalized.isBlank()) return false
+
+        val negativeKeywords = listOf(
+            "ไม่", "หยุด", "ยกเลิก", "รอ", "เดี๋ยว", "ยังก่อน", "ไม่ต้อง",
+            "no", "nope", "cancel", "stop", "wait", "not yet", "don't",
+        )
+        if (negativeKeywords.any { normalized.contains(it) }) return false
+
+        val affirmativeKeywords = listOf(
+            "โอเค", "ตกลง", "ทำต่อ", "ทำงานต่อ", "เริ่มเลย", "ลุยเลย", "ได้เลย", "ได้ครับ", "ได้ค่ะ",
+            "ใช่", "จัดไป", "เอาเลย", "ดำเนินการต่อ", "เริ่มทำ",
+            "ok", "okay", "yes", "yep", "yeah", "sure", "continue", "proceed", "go ahead", "start", "resume",
+        )
+        return affirmativeKeywords.any { kw ->
+            if (kw.all { it.isLetter() && it.code < 128 }) {
+                Regex("""(?<![a-z0-9])${Regex.escape(kw)}(?![a-z0-9])""").containsMatchIn(normalized)
+            } else {
+                normalized.contains(kw)
+            }
+        }
+    }
 }

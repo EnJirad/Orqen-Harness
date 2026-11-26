@@ -132,4 +132,18 @@ class TeamGroupChatPriorityTest {
     fun `empty agent list returns null safely`() {
         assertNull(TeamGroupChatRouter.selectResponder("hello", null, emptyList()))
     }
+
+    @Test
+    fun `continue confirmation detects Thai and English affirmatives and rejects negatives`() {
+        assertTrue(TeamGroupChatRouter.isContinueConfirmation("โอเค ทำต่อเลย"))
+        assertTrue(TeamGroupChatRouter.isContinueConfirmation("ทำต่อครับ"))
+        assertTrue(TeamGroupChatRouter.isContinueConfirmation("ok go ahead"))
+        assertTrue(TeamGroupChatRouter.isContinueConfirmation("Yes, continue"))
+        assertTrue(TeamGroupChatRouter.isContinueConfirmation("ลุยเลย"))
+
+        assertFalse(TeamGroupChatRouter.isContinueConfirmation("ยังก่อน เดี๋ยวค่อยทำ"))
+        assertFalse(TeamGroupChatRouter.isContinueConfirmation("ไม่ต้องทำ หยุดก่อน"))
+        assertFalse(TeamGroupChatRouter.isContinueConfirmation("no cancel"))
+        assertFalse(TeamGroupChatRouter.isContinueConfirmation("ขอดูโค้ดก่อน"))
+    }
 }

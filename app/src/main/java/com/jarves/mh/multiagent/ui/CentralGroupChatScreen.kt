@@ -321,12 +321,15 @@ fun CentralGroupChatScreen(
                 }
                 if (!typingAgentName.isNullOrBlank()) {
                     item(key = "typing-wave-indicator") {
-                        AiTypingWaveBubble(agentName = typingAgentName)
+                        AiTypingWaveBubble(
+                            agentName = typingAgentName,
+                            agentSlot = typingAgentSlot,
+                        )
                     }
                 }
             }
 
-            // Quick Mention Bar (Shows ONLY actual agents in this team with their custom names!)
+            // Quick Mention Bar (Shows ONLY actual agents in this team with their custom names & distinct colors!)
             if (agents.isNotEmpty()) {
                 LazyRow(
                     modifier = Modifier
@@ -338,6 +341,7 @@ fun CentralGroupChatScreen(
                         val slot = agent.config.slot
                         val agentName = agent.config.name
                         val isSelected = targetSlot == slot
+                        val slotColor = agentAccentColor(slot)
                         SuggestionChip(
                             onClick = {
                                 targetSlot = if (isSelected) null else slot
@@ -345,9 +349,28 @@ fun CentralGroupChatScreen(
                                     inputText = "@$agentName $inputText"
                                 }
                             },
-                            label = { Text("@$agentName", fontSize = 11.sp) },
+                            icon = {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(slotColor),
+                                )
+                            },
+                            label = {
+                                Text(
+                                    text = "@$agentName",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isSelected) slotColor else MaterialTheme.colorScheme.onSurface,
+                                )
+                            },
+                            border = BorderStroke(
+                                width = if (isSelected) 1.4.dp else 1.dp,
+                                color = slotColor.copy(alpha = if (isSelected) 0.85f else 0.4f),
+                            ),
                             colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                containerColor = if (isSelected) slotColor.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                             ),
                         )
                     }
@@ -546,8 +569,24 @@ internal fun BouncingWaveDots(
     }
 }
 
+/**
+ * Distinct high-contrast color per AI agent slot so Owner can tell at a glance
+ * which AI agent is speaking, typing, or working in Group Chat.
+ */
+internal fun agentAccentColor(slot: AgentSlot?): Color = when (slot) {
+    AgentSlot.AGENT_1 -> Color(0xFF10B981) // Emerald Mint (Supervisor)
+    AgentSlot.AGENT_2 -> Color(0xFF38BDF8) // Sky Blue
+    AgentSlot.AGENT_3 -> Color(0xFFA78BFA) // Violet Purple
+    AgentSlot.AGENT_4 -> Color(0xFFF59E0B) // Amber Gold
+    null -> OrqenMint
+}
+
 @Composable
-private fun AiTypingWaveBubble(agentName: String) {
+private fun AiTypingWaveBubble(
+    agentName: String,
+    agentSlot: AgentSlot? = null,
+) {
+    val accent = agentAccentColor(agentSlot)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -557,27 +596,29 @@ private fun AiTypingWaveBubble(agentName: String) {
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, OrqenMint.copy(alpha = 0.45f)),
+            border = BorderStroke(1.2.dp, accent.copy(alpha = 0.65f)),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                modifier = Modifier
+                    .background(accent.copy(alpha = 0.08f))
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
                 Icon(
                     painter = painterResource(id = R.drawable.ic_orqen_mark),
                     contentDescription = "ORQEN",
-                    tint = OrqenMint,
+                    tint = accent,
                     modifier = Modifier.size(15.dp),
                 )
                 Text(
                     text = agentName,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = accent,
                 )
                 BouncingWaveDots(
-                    color = OrqenMint,
+                    color = accent,
                     dotSize = 6.dp,
                     bounceHeight = -6f,
                     modifier = Modifier.padding(start = 2.dp, top = 2.dp),
@@ -595,6 +636,7 @@ private fun LiveAgentWorkingBubble(
     var expanded by remember(agent.config.slot) { mutableStateOf(false) }
     val act = agent.activityState.activity
     val actColor = ActivityVisuals.colorFor(act)
+    val agentColor = agentAccentColor(agent.config.slot)
     val actIcon = ActivityVisuals.iconFor(act)
     val shortStatus = stringResource(act.labelRes)
         .removePrefix("กำลัง")
@@ -609,7 +651,7 @@ private fun LiveAgentWorkingBubble(
             text = agent.config.name,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = agentColor,
         )
 
         Spacer(Modifier.height(3.dp))
@@ -617,10 +659,14 @@ private fun LiveAgentWorkingBubble(
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, actColor.copy(alpha = 0.5f)),
+            border = BorderStroke(1.2.dp, agentColor.copy(alpha = 0.65f)),
             modifier = Modifier.widthIn(max = 300.dp),
         ) {
-            Column(Modifier.padding(horizontal = 11.dp, vertical = 7.dp)) {
+            Column(
+                Modifier
+                    .background(agentColor.copy(alpha = 0.07f))
+                    .padding(horizontal = 11.dp, vertical = 7.dp),
+            ) {
                 // Clean pill format: [Status Icon] วิเคราะห์ ••• | ▼
                 Row(
                     modifier = Modifier.clickable { expanded = !expanded },
@@ -702,18 +748,20 @@ fun GroupChatBubble(
 ) {
     val isUser = message.isUser
     val alignment = if (isUser) Alignment.End else Alignment.Start
+    val agentColor = if (isUser) OrqenMint else agentAccentColor(message.senderSlot)
     val bg = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
-    val borderColor = if (isUser) OrqenMint.copy(alpha = 0.35f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+    val tintOverlay = if (isUser) Color.Transparent else agentColor.copy(alpha = 0.08f)
+    val borderColor = if (isUser) OrqenMint.copy(alpha = 0.4f) else agentColor.copy(alpha = 0.72f)
     val clipboard = LocalClipboardManager.current
     var copied by remember(message.id) { mutableStateOf(false) }
     var detailsExpanded by remember(message.id) { mutableStateOf(false) }
     val mentionedFiles = remember(message.id, message.text, message.relatedFilePath, message.workDetails) {
         extractMentionedFiles(message)
     }
-    val formattedText = remember(message.id, message.text, isUser) {
+    val formattedText = remember(message.id, message.text, isUser, agentColor) {
         buildOrqenFormattedMessage(
             raw = message.text,
-            mintColor = OrqenMint,
+            mintColor = agentColor,
             isUser = isUser,
         )
     }
@@ -737,7 +785,7 @@ fun GroupChatBubble(
                 Icon(
                     painter = painterResource(id = R.drawable.ic_orqen_mark),
                     contentDescription = null,
-                    tint = OrqenMint,
+                    tint = agentColor,
                     modifier = Modifier.size(13.dp),
                 )
             }
@@ -745,7 +793,7 @@ fun GroupChatBubble(
                 text = message.senderName,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
-                color = if (isUser) OrqenMint else MaterialTheme.colorScheme.onSurface,
+                color = agentColor,
             )
             Text(
                 text = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.timestamp)),
@@ -809,7 +857,8 @@ fun GroupChatBubble(
                 .widthIn(max = 315.dp)
                 .clip(RoundedCornerShape(15.dp))
                 .background(bg)
-                .border(1.dp, borderColor, RoundedCornerShape(15.dp))
+                .background(tintOverlay)
+                .border(1.3.dp, borderColor, RoundedCornerShape(15.dp))
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp),
         ) {

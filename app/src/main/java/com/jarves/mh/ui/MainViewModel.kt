@@ -315,6 +315,7 @@ data class AppUiState(
     val ownerDisplayName: String = "",
     val teamTypingAgentName: String? = null,
     val teamTypingAgentSlot: AgentSlot? = null,
+    val teamAwaitingStartConfirmation: Boolean = false,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
@@ -6268,6 +6269,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(activePrivateSlot = slot) }
     }
 
+    private data class PendingStartConfirmation(
+        val projectId: String,
+        val proactiveObjective: String,
+        val hasRecoverableTasks: Boolean,
+    )
+    private var pendingStartConfirmation: PendingStartConfirmation? = null
+
     fun startTeamWork() {
         val activeProj = _state.value.activeTeamProject
         if (activeProj == null) {
@@ -6298,15 +6306,121 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val nextDirective = pendingTeamDirectives.poll()
         _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
         if (!nextDirective.isNullOrBlank()) {
+            pendingStartConfirmation = null
+            _state.update { it.copy(teamAwaitingStartConfirmation = false) }
             submitAutonomousTeamObjective(nextDirective)
             return
         }
 
-        // Safe startup sequence: initialize & sync SQLite off the Main Thread, then mark running & start FGS
+        // Supervisor Check-and-Confirm Flow:
+        // When Owner presses Start, SPV inspects pending/unfinished tasks + workspace files,
+        // reports them in Group Chat, and asks Owner to confirm ("โอเค / ทำต่อ") before delegating to the team!
+        teamCycleJob?.cancel()
+        teamCycleJob = viewModelScope.launch {
+            val supName = agentNameFor(AgentSlot.AGENT_1)
+            val ownerName = effectiveOwnerName()
+            _state.update {
+                it.copy(
+                    teamTypingAgentName = supName,
+                    teamTypingAgentSlot = AgentSlot.AGENT_1,
+                )
+            }
+            try {
+                val (pendingTasks, workspaceSummary) = withContext(Dispatchers.IO) {
+                    val allTasks = runCatching { orqenTaskStore.listTasksForProject(activeProj.id) }.getOrDefault(emptyList())
+                    val unfinished = allTasks.filter {
+                        it.status != com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED &&
+                            it.status != com.jarves.mh.multiagent.persistence.PersistentTaskStatus.CANCELLED
+                    }
+                    val workspaceDir = File(getApplication<Application>().filesDir, "team_workspaces/${activeProj.id}").apply { mkdirs() }
+                    unfinished to workspaceFileListingSummary(workspaceDir)
+                }
+                delay(280L)
+                val proactiveObjective = "วิเคราะห์โปรเจกต์ '${activeProj.name}' จากไฟล์ทั้งหมดใน workspace ปัจจุบัน ทำความเข้าใจว่ากำลังพัฒนาอะไร ตรวจสอบส่วนที่ยังไม่สมบูรณ์หรือยังไม่ได้ทดสอบ จากนั้นวางแผนและพัฒนาต่อจนโปรเจกต์สมบูรณ์และผ่านการตรวจสอบ"
+                val reportText = buildString {
+                    appendLine("สวัสดีครับ $ownerName! ผม ($supName) ตรวจสอบโปรเจกต์ '${activeProj.name}' เรียบร้อยแล้วครับ:")
+                    if (pendingTasks.isNotEmpty()) {
+                        appendLine("พบงานค้างที่ยังไม่เสร็จ ${pendingTasks.size} รายการ:")
+                        pendingTasks.take(5).forEachIndexed { idx, t ->
+                            appendLine("${idx + 1}. ${t.title} [${t.status.name}]")
+                        }
+                    } else {
+                        appendLine("ยังไม่มีคิวงานค้างในระบบ แต่พบไฟล์ในโปรเจกต์ปัจจุบัน:")
+                        appendLine(workspaceSummary.take(400))
+                        appendLine("ผมสามารถวิเคราะห์โครงสร้างโปรเจกต์ วางแผน และให้ทีมพัฒนาต่อจนสมบูรณ์ได้ครับ")
+                    }
+                    appendLine()
+                    append("ต้องการให้ผมและทีมดำเนินการทำงานต่อเลยไหมครับ? พิมพ์ \"โอเค\" หรือ \"ทำต่อ\" (หรือกดปุ่มด้านล่าง) เพื่อให้ผมสั่งงานทีมต่อทันทีครับ")
+                }
+                pendingStartConfirmation = PendingStartConfirmation(
+                    projectId = activeProj.id,
+                    proactiveObjective = proactiveObjective,
+                    hasRecoverableTasks = pendingTasks.isNotEmpty(),
+                )
+                _state.update {
+                    it.copy(
+                        teamAwaitingStartConfirmation = true,
+                        teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.RUNNING,
+                        teamBannerMessage = "รอเจ้าของบริษัทยืนยันการทำงานต่อในแชทกลุ่ม",
+                    )
+                }
+                appendProjectTeamMessage(
+                    projectId = activeProj.id,
+                    senderSlot = AgentSlot.AGENT_1,
+                    senderName = supName,
+                    text = reportText,
+                    messageType = GroupMessageType.NORMAL,
+                    suggestedTaskPrompt = "โอเค ทำต่อเลย",
+                )
+            } catch (cancel: kotlinx.coroutines.CancellationException) {
+                throw cancel
+            } catch (err: Throwable) {
+                android.util.Log.e("OrqenMainViewModel", "Start AI Team inspection failed for project ${activeProj.id}", err)
+                val detail = err.message?.take(200) ?: err.javaClass.simpleName
+                _state.update {
+                    it.copy(
+                        teamAwaitingStartConfirmation = false,
+                        teamBannerHealth = com.jarves.mh.multiagent.ui.TeamBannerHealth.WARNING,
+                        teamBannerMessage = "Start AI Team failed",
+                        teamBannerDetail = detail,
+                        toastMessage = "Start AI Team failed: $detail",
+                    )
+                }
+            } finally {
+                _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+            }
+        }
+    }
+
+    private fun confirmAndStartPendingTeamWork(projectId: String) {
+        val pending = pendingStartConfirmation ?: return
+        if (pending.projectId != projectId) return
+        val activeProj = _state.value.teamProjects.firstOrNull { it.id == projectId } ?: _state.value.activeTeamProject ?: return
+        pendingStartConfirmation = null
+        _state.update { it.copy(teamAwaitingStartConfirmation = false) }
+
         teamCycleJob?.cancel()
         teamCycleJob = viewModelScope.launch {
             var serviceStarted = false
+            val supName = agentNameFor(AgentSlot.AGENT_1)
+            val ownerName = effectiveOwnerName()
             try {
+                _state.update {
+                    it.copy(
+                        teamTypingAgentName = supName,
+                        teamTypingAgentSlot = AgentSlot.AGENT_1,
+                    )
+                }
+                delay(240L)
+                appendProjectTeamMessage(
+                    projectId = activeProj.id,
+                    senderSlot = AgentSlot.AGENT_1,
+                    senderName = supName,
+                    text = "รับทราบครับ $ownerName! ผมจะสั่งการและกระจายงานให้ทีมดำเนินการต่อทันทีครับ",
+                    messageType = GroupMessageType.TASK_ASSIGNMENT,
+                )
+                _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+
                 ensureSupervisorSnapshotCollector()
                 val team = withContext(Dispatchers.IO) {
                     syncTeamProfilesForProject(activeProj)
@@ -6335,32 +6449,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     autonomousSupervisorEngine.reconcileActiveTasksOnce(team)
                 }
                 if (reconciled.isEmpty()) {
-                    // Proactive Autonomous Continuation: when Start is pressed with no queued tasks,
-                    // Supervisor inspects the project workspace, determines what the project is building,
-                    // and plans/continues development until complete!
-                    val supName = agentNameFor(AgentSlot.AGENT_1)
-                    val ownerName = effectiveOwnerName()
-                    _state.update {
-                        it.copy(
-                            teamTypingAgentName = supName,
-                            teamTypingAgentSlot = AgentSlot.AGENT_1,
-                        )
-                    }
-                    delay(280L)
-                    appendProjectTeamMessage(
-                        projectId = activeProj.id,
-                        senderSlot = AgentSlot.AGENT_1,
-                        senderName = supName,
-                        text = "รับทราบครับ $ownerName! กำลังตรวจสอบไฟล์และโครงสร้างของโปรเจกต์ '${activeProj.name}' เพื่อวางแผนและพัฒนาต่อให้อัตโนมัติจนเสร็จสมบูรณ์ครับ",
-                        messageType = GroupMessageType.TASK_ASSIGNMENT,
-                    )
-                    _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
-                    val proactiveObjective = "วิเคราะห์โปรเจกต์ '${activeProj.name}' จากไฟล์ทั้งหมดใน workspace ปัจจุบัน ทำความเข้าใจว่ากำลังพัฒนาอะไร ตรวจสอบส่วนที่ยังไม่สมบูรณ์หรือยังไม่ได้ทดสอบ จากนั้นวางแผนและพัฒนาต่อจนโปรเจกต์สมบูรณ์และผ่านการตรวจสอบ"
                     val result = withContext(Dispatchers.IO) {
                         autonomousSupervisorEngine.submitAndSupervise(
                             projectId = activeProj.id,
                             team = team,
-                            objective = proactiveObjective,
+                            objective = pending.proactiveObjective,
                             onTaskCreated = { created ->
                                 activeSupervisedTaskId = created.taskId
                                 _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
@@ -6413,7 +6506,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 throw cancel
             } catch (err: Throwable) {
-                android.util.Log.e("OrqenMainViewModel", "Start AI Team failed for project ${activeProj.id}", err)
+                android.util.Log.e("OrqenMainViewModel", "Confirmed AI Team execution failed for project ${activeProj.id}", err)
                 val detail = err.message?.take(200) ?: err.javaClass.simpleName
                 _state.update {
                     it.copy(
@@ -7061,7 +7154,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun postTeamChatMessage(text: String, type: GroupMessageType = GroupMessageType.NORMAL, targetSlot: AgentSlot? = null) {
         val projectId = _state.value.activeTeamProject?.id
         val ownerName = effectiveOwnerName()
-        // CHAT mode (GroupMessageType.NORMAL): converse with an IDLE agent without interrupting working agents!
+
+        // If Supervisor is awaiting Owner's confirmation after pressing Start,
+        // accept affirmative replies ("โอเค", "ทำต่อ", "ok", "yes", etc.) in either Chat or Task mode!
+        if (projectId != null &&
+            pendingStartConfirmation?.projectId == projectId &&
+            com.jarves.mh.multiagent.collab.TeamGroupChatRouter.isContinueConfirmation(text)
+        ) {
+            appendProjectTeamMessage(
+                projectId = projectId,
+                senderSlot = null,
+                senderName = ownerName,
+                text = text,
+                messageType = GroupMessageType.APPROVAL,
+            )
+            confirmAndStartPendingTeamWork(projectId)
+            return
+        }
+
+        // CHAT mode (GroupMessageType.NORMAL): converse with an IDLE agent (or @mentioned agent) without interrupting others!
         if (type == GroupMessageType.NORMAL) {
             appendProjectTeamMessage(
                 projectId = projectId,
@@ -7075,6 +7186,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
+
+        // Explicit new task cancels any pending Start confirmation prompt
+        pendingStartConfirmation = null
+        _state.update { it.copy(teamAwaitingStartConfirmation = false) }
 
         // TASK / BUG / REVIEW / PROGRESS mode: dispatch real work to the AI Team!
         appendProjectTeamMessage(

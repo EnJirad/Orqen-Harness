@@ -432,13 +432,6 @@ fun TeamDashboardScreen(
                     }
                     item {
                         AssistChip(
-                            onClick = onOpenActivityFeed,
-                            label = { Text(stringResource(R.string.nav_tab_feed)) },
-                            leadingIcon = { Icon(Icons.Default.DynamicFeed, contentDescription = null, Modifier.size(16.dp)) },
-                        )
-                    }
-                    item {
-                        AssistChip(
                             onClick = onOpenGroupChat,
                             label = { Text(stringResource(R.string.nav_tab_chat)) },
                             leadingIcon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, Modifier.size(16.dp)) },

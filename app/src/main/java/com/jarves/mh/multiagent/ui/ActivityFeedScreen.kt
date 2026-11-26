@@ -30,14 +30,11 @@ import com.jarves.mh.multiagent.model.PrioritizedCollaborationEvent
 import java.text.SimpleDateFormat
 import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ActivityFeedScreen(
+fun ActivityFeedContent(
     events: List<PrioritizedCollaborationEvent>,
-    onClearEvents: () -> Unit = {},
-    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    BackHandler(onBack = onBack)
     var selectedFilter by remember { mutableStateOf("ALL") }
 
     val filteredEvents = remember(events, selectedFilter) {
@@ -53,6 +50,110 @@ fun ActivityFeedScreen(
 
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        // Filter Chips Row
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                FilterChip(
+                    selected = selectedFilter == "ALL",
+                    onClick = { selectedFilter = "ALL" },
+                    label = { Text(stringResource(R.string.feed_filter_all)) },
+                )
+            }
+            item {
+                FilterChip(
+                    selected = selectedFilter == "CRITICAL",
+                    onClick = { selectedFilter = "CRITICAL" },
+                    label = { Text(stringResource(R.string.feed_filter_critical)) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                    },
+                )
+            }
+            item {
+                FilterChip(
+                    selected = selectedFilter == "LOCKS",
+                    onClick = { selectedFilter = "LOCKS" },
+                    label = { Text(stringResource(R.string.feed_filter_locks)) },
+                )
+            }
+            item {
+                FilterChip(
+                    selected = selectedFilter == "COMMITS",
+                    onClick = { selectedFilter = "COMMITS" },
+                    label = { Text(stringResource(R.string.feed_filter_commits)) },
+                )
+            }
+            item {
+                FilterChip(
+                    selected = selectedFilter == "REVIEWS",
+                    onClick = { selectedFilter = "REVIEWS" },
+                    label = { Text(stringResource(R.string.feed_filter_reviews)) },
+                )
+            }
+            item {
+                FilterChip(
+                    selected = selectedFilter == "TESTS",
+                    onClick = { selectedFilter = "TESTS" },
+                    label = { Text(stringResource(R.string.feed_filter_tests)) },
+                )
+            }
+        }
+
+        if (filteredEvents.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.DynamicFeed, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = stringResource(R.string.feed_empty),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                contentPadding = PaddingValues(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(filteredEvents) { item ->
+                    ActivityEventItem(
+                        item = item,
+                        formattedTime = timeFormat.format(Date(item.event.timestamp)),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ActivityFeedScreen(
+    events: List<PrioritizedCollaborationEvent>,
+    onClearEvents: () -> Unit = {},
+    onBack: () -> Unit,
+) {
+    BackHandler(onBack = onBack)
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -64,7 +165,7 @@ fun ActivityFeedScreen(
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            text = "${filteredEvents.size} Real-time collaboration events",
+                            text = "${events.size} Real-time collaboration events",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -84,100 +185,10 @@ fun ActivityFeedScreen(
             )
         },
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(MaterialTheme.colorScheme.background),
-        ) {
-            // Filter Chips Row
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedFilter == "ALL",
-                        onClick = { selectedFilter = "ALL" },
-                        label = { Text(stringResource(R.string.feed_filter_all)) },
-                    )
-                }
-                item {
-                    FilterChip(
-                        selected = selectedFilter == "CRITICAL",
-                        onClick = { selectedFilter = "CRITICAL" },
-                        label = { Text(stringResource(R.string.feed_filter_critical)) },
-                        leadingIcon = {
-                            Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
-                        },
-                    )
-                }
-                item {
-                    FilterChip(
-                        selected = selectedFilter == "LOCKS",
-                        onClick = { selectedFilter = "LOCKS" },
-                        label = { Text(stringResource(R.string.feed_filter_locks)) },
-                    )
-                }
-                item {
-                    FilterChip(
-                        selected = selectedFilter == "COMMITS",
-                        onClick = { selectedFilter = "COMMITS" },
-                        label = { Text(stringResource(R.string.feed_filter_commits)) },
-                    )
-                }
-                item {
-                    FilterChip(
-                        selected = selectedFilter == "REVIEWS",
-                        onClick = { selectedFilter = "REVIEWS" },
-                        label = { Text(stringResource(R.string.feed_filter_reviews)) },
-                    )
-                }
-                item {
-                    FilterChip(
-                        selected = selectedFilter == "TESTS",
-                        onClick = { selectedFilter = "TESTS" },
-                        label = { Text(stringResource(R.string.feed_filter_tests)) },
-                    )
-                }
-            }
-
-            if (filteredEvents.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.DynamicFeed, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outlineVariant)
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            text = stringResource(R.string.feed_empty),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 16.dp),
-                    contentPadding = PaddingValues(vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(filteredEvents) { item ->
-                        ActivityEventItem(
-                            item = item,
-                            formattedTime = timeFormat.format(Date(item.event.timestamp)),
-                        )
-                    }
-                }
-            }
-        }
+        ActivityFeedContent(
+            events = events,
+            modifier = Modifier.padding(padding),
+        )
     }
 }
 

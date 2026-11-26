@@ -120,6 +120,8 @@ fun TeamWorkspaceScreen(
     ownerName: String = "",
     typingAgentName: String? = null,
     typingAgentSlot: AgentSlot? = null,
+    awaitingStartConfirmation: Boolean = false,
+    collaborationEvents: List<com.jarves.mh.multiagent.model.PrioritizedCollaborationEvent> = emptyList(),
     runningTeamProjectId: String?,
     runningTeamProjectName: String?,
     activeSupervisedTaskId: String? = null,
@@ -172,6 +174,7 @@ fun TeamWorkspaceScreen(
     onToggleAgentEnabled: (AgentSlot) -> Unit,
     onOpenQuotaDashboard: () -> Unit,
     onOpenActivityFeed: () -> Unit,
+    onClearCollaborationEvents: () -> Unit = {},
     onReleaseFileLock: (String, AgentSlot) -> Unit,
     onNextPart: () -> Unit,
 ) {
@@ -290,8 +293,10 @@ fun TeamWorkspaceScreen(
                     projectSlug = project.slug,
                     output = teamTerminalOutput,
                     isRunning = teamTerminalRunning,
+                    collaborationEvents = collaborationEvents,
                     onRunCommand = onRunTeamTerminalCommand,
                     onClear = onClearTeamTerminal,
+                    onClearLogs = onClearCollaborationEvents,
                     onBack = onBackToFolders,
                 )
 
@@ -377,6 +382,7 @@ fun TeamWorkspaceScreen(
                     agents = agents,
                     isTeamRunning = isTeamRunning && runningTeamProjectId == project.id,
                     typingAgentSlot = typingAgentSlot,
+                    isAwaitingConfirmation = awaitingStartConfirmation,
                     parentBounds = workspaceBounds,
                     modifier = Modifier.align(Alignment.TopEnd),
                 )
@@ -391,6 +397,7 @@ private fun TeamTopRightStatusOverlay(
     agents: List<AgentState>,
     isTeamRunning: Boolean,
     typingAgentSlot: AgentSlot? = null,
+    isAwaitingConfirmation: Boolean = false,
     parentBounds: IntSize,
     modifier: Modifier = Modifier,
 ) {
@@ -405,7 +412,10 @@ private fun TeamTopRightStatusOverlay(
     val isAnyTyping = typingAgentSlot != null && agents.any { it.config.slot == typingAgentSlot }
     val workingCount = agents.count { it.isWorking && it.config.slot != typingAgentSlot }
     val pausedCount = agents.count { it.activityState.activity == ActivityType.PAUSED || !it.config.isEnabled }
+    val errorCount = agents.count { it.activityState.activity == ActivityType.ERROR }
+    val completedCount = agents.count { it.activityState.activity == ActivityType.COMPLETED }
     val typingCyan = Color(0xFF06B6D4)
+    val confirmViolet = Color(0xFFA78BFA)
 
     // Clamp offset inside parent screen bounds so it can never be dragged off-screen
     val minX = if (parentBounds.width > 0 && overlaySize.width > 0) {
@@ -492,21 +502,31 @@ private fun TeamTopRightStatusOverlay(
                         color = Color(0xFF16A34A),
                     )
                 }
+                val pillText = when {
+                    isAnyTyping && workingCount == 0 -> "กำลังตอบ..."
+                    workingCount > 0 -> stringResource(R.string.team_overlay_working_count, workingCount, agents.size)
+                    isAwaitingConfirmation -> "รอยืนยัน"
+                    errorCount > 0 -> "พบข้อผิดพลาด"
+                    pausedCount > 0 && !isTeamRunning -> stringResource(R.string.team_overlay_paused)
+                    completedCount == agents.size && agents.isNotEmpty() -> "เสร็จสิ้น"
+                    isTeamRunning -> stringResource(R.string.team_overlay_standby)
+                    else -> "รอคำสั่ง"
+                }
+                val pillColor = when {
+                    isAnyTyping && workingCount == 0 -> typingCyan
+                    workingCount > 0 -> Color(0xFF16A34A)
+                    isAwaitingConfirmation -> confirmViolet
+                    errorCount > 0 -> Color(0xFFDC2626)
+                    pausedCount > 0 && !isTeamRunning -> Color(0xFFF59E0B)
+                    completedCount == agents.size && agents.isNotEmpty() -> Color(0xFF10B981)
+                    isTeamRunning -> Color(0xFF3B82F6)
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
                 Text(
-                    text = when {
-                        isAnyTyping && workingCount == 0 -> "กำลังตอบ..."
-                        workingCount > 0 -> stringResource(R.string.team_overlay_working_count, workingCount, agents.size)
-                        isTeamRunning -> stringResource(R.string.team_overlay_standby)
-                        pausedCount == agents.size -> stringResource(R.string.team_overlay_paused)
-                        else -> "${agents.size} AI"
-                    },
+                    text = pillText,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = when {
-                        isAnyTyping && workingCount == 0 -> typingCyan
-                        workingCount > 0 -> Color(0xFF16A34A)
-                        else -> MaterialTheme.colorScheme.onSurface
-                    },
+                    color = pillColor,
                     maxLines = 1,
                     softWrap = false,
                 )
@@ -893,11 +913,14 @@ private fun TeamTerminalTab(
     projectSlug: String,
     output: String,
     isRunning: Boolean,
+    collaborationEvents: List<com.jarves.mh.multiagent.model.PrioritizedCollaborationEvent> = emptyList(),
     onRunCommand: (String) -> Unit,
     onClear: () -> Unit,
+    onClearLogs: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     var cmdInput by remember { mutableStateOf("") }
+    var selectedSubTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Terminal, 1 = Log
     Scaffold(
         topBar = {
             TopAppBar(
@@ -909,56 +932,118 @@ private fun TeamTerminalTab(
                 },
                 title = {
                     Column {
-                        Text("$projectName · ${stringResource(R.string.tab_terminal)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("/workspace/$projectSlug", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = if (selectedSubTab == 0) "$projectName · ${stringResource(R.string.tab_terminal)}" else "$projectName · Log",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            text = if (selectedSubTab == 0) "/workspace/$projectSlug" else "${collaborationEvents.size} Real-time collaboration events",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 },
                 actions = {
-                    IconButton(onClick = onClear) {
+                    IconButton(onClick = { if (selectedSubTab == 0) onClear() else onClearLogs() }) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = "Clear")
                     }
                 },
             )
         },
     ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad).imePadding().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = Color(0xFF0D1117),
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(pad)
+                .imePadding(),
+        ) {
+            // 2-Tab Sub-Switcher: Terminal | Log
+            TabRow(
+                selectedTabIndex = selectedSubTab,
+                containerColor = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
-                    Text(
-                        text = output.ifBlank { "$ /workspace/$projectSlug ready…" },
-                        color = Color(0xFFE6EDF3),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp,
-                    )
-                }
-            }
-            if (isRunning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = cmdInput,
-                    onValueChange = { cmdInput = it },
-                    placeholder = { Text("ls -la, npm run dev, python3 -m http.server 8080…", fontSize = 12.sp) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(12.dp),
-                )
-                IconButton(
-                    onClick = {
-                        if (cmdInput.isNotBlank() && !isRunning) {
-                            onRunCommand(cmdInput.trim())
-                            cmdInput = ""
+                Tab(
+                    selected = selectedSubTab == 0,
+                    onClick = { selectedSubTab = 0 },
+                    text = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text(stringResource(R.string.tab_terminal), fontWeight = FontWeight.SemiBold)
                         }
                     },
-                    enabled = cmdInput.isNotBlank() && !isRunning,
-                    modifier = Modifier.background(PocketOrange, CircleShape),
+                )
+                Tab(
+                    selected = selectedSubTab == 1,
+                    onClick = { selectedSubTab = 1 },
+                    text = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(Icons.Default.DynamicFeed, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text("Log (${collaborationEvents.size})", fontWeight = FontWeight.SemiBold)
+                        }
+                    },
+                )
+            }
+
+            if (selectedSubTab == 0) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Run", tint = Color.White)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF0D1117),
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                    ) {
+                        Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
+                            Text(
+                                text = output.ifBlank { "$ /workspace/$projectSlug ready…" },
+                                color = Color(0xFFE6EDF3),
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                            )
+                        }
+                    }
+                    if (isRunning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = cmdInput,
+                            onValueChange = { cmdInput = it },
+                            placeholder = { Text("ls -la, npm run dev, python3 -m http.server 8080…", fontSize = 12.sp) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        IconButton(
+                            onClick = {
+                                if (cmdInput.isNotBlank() && !isRunning) {
+                                    onRunCommand(cmdInput.trim())
+                                    cmdInput = ""
+                                }
+                            },
+                            enabled = cmdInput.isNotBlank() && !isRunning,
+                            modifier = Modifier.background(PocketOrange, CircleShape),
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Run", tint = Color.White)
+                        }
+                    }
                 }
+            } else {
+                ActivityFeedContent(
+                    events = collaborationEvents,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
             }
         }
     }

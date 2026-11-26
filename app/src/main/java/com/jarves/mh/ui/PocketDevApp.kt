@@ -2677,6 +2677,8 @@ private fun RootScreenHost(
                                 ownerName = state.ownerDisplayName,
                                 typingAgentName = state.teamTypingAgentName,
                                 typingAgentSlot = state.teamTypingAgentSlot,
+                                awaitingStartConfirmation = state.teamAwaitingStartConfirmation,
+                                collaborationEvents = state.teamCollaborationEvents,
                                 runningTeamProjectId = state.runningTeamProjectId,
                                 runningTeamProjectName = state.teamProjects.firstOrNull { it.id == state.runningTeamProjectId }?.name,
                                 activeSupervisedTaskId = state.activeSupervisedTaskId,
@@ -2738,6 +2740,7 @@ private fun RootScreenHost(
                                 onToggleAgentEnabled = viewModel::toggleAgentEnabled,
                                 onOpenQuotaDashboard = { viewModel.setTeamScreenMode(TeamScreenMode.QUOTA_DASHBOARD) },
                                 onOpenActivityFeed = { viewModel.setTeamScreenMode(TeamScreenMode.ACTIVITY_FEED) },
+                                onClearCollaborationEvents = viewModel::clearTeamCollaborationEvents,
                                 onReleaseFileLock = viewModel::releaseFileLock,
                                 onNextPart = viewModel::advanceTeamPart,
                             )
