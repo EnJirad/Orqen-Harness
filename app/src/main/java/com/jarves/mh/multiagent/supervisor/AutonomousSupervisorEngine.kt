@@ -89,6 +89,7 @@ class AutonomousSupervisorEngine(
     private val timeoutPolicy: GranularTimeoutPolicy = GranularTimeoutPolicy(),
     private val limits: RecoveryLimitsConfig = RecoveryLimitsConfig(),
     private val modelPoolProvider: () -> List<ModelCandidate> = { emptyList() },
+    private val providerConfigResolver: (providerId: String) -> com.jarves.mh.provider.core.ProviderConfig? = { null },
     private val supervisorModelPoolProvider: () -> List<ModelCandidate> = { emptyList() },
     private val unavailableProviders: () -> Set<String> = { emptySet() },
     private val advisor: SupervisorAdvisor = DeterministicNoOpAdvisor,
@@ -447,6 +448,7 @@ class AutonomousSupervisorEngine(
                                     )
                                     val pAdapter = RuntimeStepExecutionAdapter(
                                         runtime = runtime,
+                                        providerConfigResolver = providerConfigResolver,
                                         communicationManager = communicationManager,
                                         stepTimeoutMs = timeoutPolicy.forProvider(prof.providerId).agentExecutionTimeoutMs,
                                     )
@@ -640,6 +642,7 @@ class AutonomousSupervisorEngine(
 
                 val adapter = RuntimeStepExecutionAdapter(
                     runtime = runtime,
+                    providerConfigResolver = providerConfigResolver,
                     communicationManager = communicationManager,
                     stepTimeoutMs = timeoutPolicy.forProvider(agentProfile.providerId).agentExecutionTimeoutMs,
                     onProgress = { tid, sid, aid, prog ->

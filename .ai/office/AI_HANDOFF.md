@@ -2,14 +2,13 @@
 
 ## Current Project State
 - **Branch**: `main`
-- **Previous Verified Commit**: `cbafbf7e85db7909e0ace08ab7975437b451ad15` (Part A.5)
-- **Current Milestone**: **PART A.5.1 Completed** — Autonomous persistent project queue continuation (`superviseProjectQueue`), parallel independent subtask execution within `team.maxConcurrentAgents`, persistent image/attachment handoff (`TaskAttachmentCodec` -> `RuntimeExecutionRequest.imageFiles`) surviving queuing & process recreation, and end-to-end continuity tests (`PartA51TeamContinuityTest`).
-- **Build & Test Status**: `42 suites / 284 tests / 284 PASSED / 0 FAILED / 0 SKIPPED`; `ORQEN-debug.apk` (`70M`) `BUILD SUCCESSFUL`.
+- **Status**: **READY WITH LIMITATIONS** (All P0/P1 code blockers resolved; `43 suites / 286 tests / 286 PASS`; `ORQEN-debug.apk` `70M` built cleanly).
+- **Latest Fixes (Final Production Readiness)**:
+  - P0: Wired `providerConfigResolver` from `MainViewModel` (`providerManager.configs.value`) through `AutonomousSupervisorEngine` and `MultiAgentTeamCoordinator` into `RuntimeStepExecutionAdapter` so all real API providers receive their live `ProviderConfig` on initial runs and after failover.
+  - P1: Upgraded `AutonomousRecoveryEngine` retry backoff to bounded exponential backoff with jitter + `Retry-After` respect.
+  - Added `FinalProductionReadinessTest` (`2/2 PASS`).
 
-## Active Issues & Next Recommended Action
-1. Install `ORQEN-debug.apk` on a physical Android device with real provider credentials to complete `ANDROID_RUNTIME_TESTED` and `REAL_PROVIDER_TESTED` verification.
-2. After on-device verification passes, remove the unused private `runTeamCycle()` helper from `MainViewModel.kt`.
-
-## Standing Rules
-- Never use plain `gradle build`; use the cached offline debug build command in `.ai/office/QUICK_START.md`.
-- User standing rule: commit and `git push origin main` after completing, testing, and building each round of work (never commit `ORQEN-debug.apk`).
+## Remaining Steps Before Unconditional Production Release
+1. Install `ORQEN-debug.apk` on a physical Android device, configure real provider API keys (or Antigravity login), and execute live smoke tests (single task, multi-agent task, 3-task queue, image attachment, Pause/Stop, and `adb shell am kill` recovery).
+2. Remove the unused private `runTeamCycle()` helper from `MainViewModel.kt` after on-device confirmation.
+3. Configure upload signing keystore to build a signed release bundle (`assembleOnlineRelease` / `bundleOnlineRelease`).

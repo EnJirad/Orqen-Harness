@@ -576,6 +576,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             },
+            providerConfigResolver = { providerId ->
+                providerManager.configs.value.firstOrNull { it.id == providerId }
+            },
             chatProjectionSink = com.jarves.mh.multiagent.collab.TeamChatManagerBridge.createSink(teamChatManager),
         )
     }

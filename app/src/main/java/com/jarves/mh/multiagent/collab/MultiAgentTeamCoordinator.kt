@@ -122,6 +122,7 @@ class MultiAgentTeamCoordinator(
     private val planner: StructuredTaskPlanner = StructuredTaskPlanner(),
     private val policy: RequestExecutionPolicy = RequestExecutionPolicy(),
     private val unavailableProviders: () -> Set<String> = { emptySet() },
+    private val providerConfigResolver: (providerId: String) -> com.jarves.mh.provider.core.ProviderConfig? = { null },
     private val chatProjectionSink: TeamChatProjectionSink? = null,
     private val maxReviewRejectCycles: Int = 3,
     private val stepTimeoutMs: Long = 180_000L,
@@ -137,6 +138,7 @@ class MultiAgentTeamCoordinator(
 
     private val stepAdapter = RuntimeStepExecutionAdapter(
         runtime = runtime,
+        providerConfigResolver = providerConfigResolver,
         communicationManager = communicationManager,
         stepTimeoutMs = stepTimeoutMs,
     )

@@ -189,7 +189,10 @@ class AutonomousRecoveryEngine(
             error.category != ExecutionErrorCategory.INVALID_MODEL
 
         if (canRetrySameModel) {
-            val backoff = error.retryAfterMs ?: (1_000L * (step.retryCount + 1))
+            val backoff = calculateExponentialBackoffWithJitterMs(
+                attempt = step.retryCount + 1,
+                retryAfterMs = error.retryAfterMs,
+            )
             val plan = RecoveryPlan(
                 strategy = RecoveryStrategyKind.RETRY_SAME_MODEL,
                 targetAgentId = failedAgent.agentId,
@@ -355,6 +358,23 @@ class AutonomousRecoveryEngine(
             reason = reason,
             preservedModifiedFiles = preservedFiles,
         )
+    }
+
+    fun calculateExponentialBackoffWithJitterMs(
+        attempt: Int,
+        retryAfterMs: Long? = null,
+        baseDelayMs: Long = 1_500L,
+        maxDelayMs: Long = 60_000L,
+        jitterRatio: Double = 0.2,
+    ): Long {
+        if (retryAfterMs != null && retryAfterMs > 0L) {
+            return retryAfterMs.coerceAtMost(maxDelayMs * 2L)
+        }
+        val safeAttempt = (attempt - 1).coerceIn(0, 10)
+        val exp = (baseDelayMs shl safeAttempt).coerceAtMost(maxDelayMs)
+        val maxJitter = (exp * jitterRatio).toLong().coerceAtLeast(1L)
+        val jitter = kotlin.random.Random.nextLong(0L, maxJitter + 1L)
+        return (exp + jitter).coerceAtMost(maxDelayMs)
     }
 
     fun resetProviderFailures(providerId: String) {
