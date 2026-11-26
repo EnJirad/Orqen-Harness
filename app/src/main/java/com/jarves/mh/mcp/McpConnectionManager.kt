@@ -32,35 +32,37 @@ class McpConnectionManager(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val clients = ConcurrentHashMap<String, McpTransportClient>()
 
-    private val _servers = MutableStateFlow(store.listServers())
+    private val _servers = MutableStateFlow(runCatching { store.listServers() }.getOrDefault(emptyList()))
     val servers: StateFlow<List<McpServerConfig>> = _servers.asStateFlow()
 
     private val _runtimeStates = MutableStateFlow<Map<String, McpServerRuntimeState>>(
-        store.listServers().associate { s -> s.serverId to McpServerRuntimeState(serverId = s.serverId) },
+        _servers.value.associate { s -> s.serverId to McpServerRuntimeState(serverId = s.serverId) },
     )
     val runtimeStates: StateFlow<Map<String, McpServerRuntimeState>> = _runtimeStates.asStateFlow()
 
-    private val _tools = MutableStateFlow(toolRegistry.listAllTools())
+    private val _tools = MutableStateFlow(runCatching { toolRegistry.listAllTools() }.getOrDefault(emptyList()))
     val tools: StateFlow<List<McpToolDefinition>> = _tools.asStateFlow()
 
     private val _diagnostics = MutableStateFlow<List<McpDiagnosticEvent>>(emptyList())
     val diagnostics: StateFlow<List<McpDiagnosticEvent>> = _diagnostics.asStateFlow()
 
-    private val _requests = MutableStateFlow(authEngine.listRequests())
+    private val _requests = MutableStateFlow(runCatching { authEngine.listRequests() }.getOrDefault(emptyList()))
     val permissionRequests: StateFlow<List<McpPermissionRequest>> = _requests.asStateFlow()
 
-    private val _grants = MutableStateFlow(authEngine.listGrants())
+    private val _grants = MutableStateFlow(runCatching { authEngine.listGrants() }.getOrDefault(emptyList()))
     val permissionGrants: StateFlow<List<McpScopedPermissionGrant>> = _grants.asStateFlow()
 
-    private val _auditLog = MutableStateFlow(authEngine.listAuditLog())
+    private val _auditLog = MutableStateFlow(runCatching { authEngine.listAuditLog() }.getOrDefault(emptyList()))
     val permissionAuditLog: StateFlow<List<McpPermissionAuditRecord>> = _auditLog.asStateFlow()
 
     fun refreshStateFlows() {
-        _servers.value = store.listServers()
-        _tools.value = toolRegistry.listAllTools()
-        _requests.value = authEngine.listRequests()
-        _grants.value = authEngine.listGrants()
-        _auditLog.value = authEngine.listAuditLog()
+        runCatching {
+            _servers.value = store.listServers()
+            _tools.value = toolRegistry.listAllTools()
+            _requests.value = authEngine.listRequests()
+            _grants.value = authEngine.listGrants()
+            _auditLog.value = authEngine.listAuditLog()
+        }
     }
 
     fun saveServer(

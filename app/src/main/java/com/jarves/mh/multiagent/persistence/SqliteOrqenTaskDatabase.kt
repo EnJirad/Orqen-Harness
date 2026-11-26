@@ -23,10 +23,15 @@ class OrqenTaskDatabaseHelper(
     dbName: String = DATABASE_NAME,
 ) : SQLiteOpenHelper(context.applicationContext, dbName, null, DATABASE_VERSION) {
 
+    init {
+        runCatching { setWriteAheadLoggingEnabled(true) }
+    }
+
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
-        db.setForeignKeyConstraintsEnabled(true)
-        db.enableWriteAheadLogging()
+        if (!db.isReadOnly) {
+            runCatching { db.setForeignKeyConstraintsEnabled(true) }
+        }
     }
 
     override fun onCreate(db: SQLiteDatabase) {

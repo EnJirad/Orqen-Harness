@@ -16,7 +16,9 @@ class McpToolRegistry(
     private val toolsById = ConcurrentHashMap<String, McpToolDefinition>()
 
     init {
-        store.listTools().forEach { toolsById[it.namespacedToolId] = it }
+        runCatching {
+            store.listTools().forEach { toolsById[it.namespacedToolId] = it }
+        }
     }
 
     fun registerDiscoveredTools(
