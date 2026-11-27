@@ -1,5 +1,0 @@
-Initial ORQEN alpha:
-- Local-first AI collaboration workspace on ARM64 Android
-- Claude Code, Antigravity CLI, and DeepSeek Harness integrations
-- Private PRoot Ubuntu runtime environment
-- Built-in terminals, file manager, and local web preview

@@ -567,6 +567,54 @@ fun CentralGroupChatScreen(
                 contentPadding = PaddingValues(vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                if (messages.isEmpty() && workingAgents.isEmpty() && !hasStreaming && typingAgentName.isNullOrBlank()) {
+                    item(key = "chat-welcome-guide") {
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Text(
+                                    text = "พร้อมช่วยคุณแล้ว · $teamName",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text = "• โหมด คุยปรึกษา (Chat): ถาม-ตอบ วางแผน และตรวจวิเคราะห์โค้ด (ยังไม่แก้ไฟล์)\n• โหมด สั่งงาน (Task): ทีม AI ลงมือเขียนโค้ด ทดสอบ และบิ้ว APK ให้ครบจบ\n• พิมพ์ @ชื่อเอเจนต์ เพื่อคุยข้ามสายงานหรือโอนหน้าที่ได้ทันที",
+                                    fontSize = 12.5.sp,
+                                    lineHeight = 19.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    AssistChip(
+                                        onClick = {
+                                            pendingUserSendScroll = true
+                                            onSendMessage("ช่วยวิเคราะห์โปรเจกต์และวางแผนการทำงานให้หน่อยครับ", GroupMessageType.NORMAL, null)
+                                        },
+                                        label = { Text("วางแผนโปรเจกต์", fontSize = 11.5.sp) },
+                                        leadingIcon = { Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(15.dp)) },
+                                    )
+                                    AssistChip(
+                                        onClick = {
+                                            pendingUserSendScroll = true
+                                            onSendMessage("ช่วยตรวจสอบโครงสร้างไฟล์ที่มีอยู่ตอนนี้ให้หน่อยครับ", GroupMessageType.NORMAL, null)
+                                        },
+                                        label = { Text("ตรวจไฟล์ในโปรเจกต์", fontSize = 11.5.sp) },
+                                        leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(15.dp)) },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 items(messages, key = { it.id }) { msg ->
                     val senderAgent = msg.senderSlot?.let { slot -> agents.firstOrNull { it.config.slot == slot } }
                     GroupChatBubble(
@@ -664,16 +712,58 @@ fun CentralGroupChatScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(12.dp)) {
-                    // Mode selector (Chat = consultation/design only; Task = explicit multi-part execution!)
+                    // Clean, Beginner-Friendly Mode Selector: Chat (Consult) vs Task (Build) + More menu
+                    var moreModeMenuOpen by remember { mutableStateOf(false) }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        TypeSelectorChip("Chat", GroupMessageType.NORMAL, selectedType) { selectedType = it }
-                        TypeSelectorChip("Task", GroupMessageType.TASK_ASSIGNMENT, selectedType) { selectedType = it }
-                        TypeSelectorChip("Bug", GroupMessageType.BUG_REPORT, selectedType) { selectedType = it }
-                        TypeSelectorChip("Review", GroupMessageType.REVIEW_REQUEST, selectedType) { selectedType = it }
+                        TypeSelectorChip("คุยปรึกษา", GroupMessageType.NORMAL, selectedType) { selectedType = it }
+                        TypeSelectorChip("สั่งทำงาน", GroupMessageType.TASK_ASSIGNMENT, selectedType) { selectedType = it }
+                        Box {
+                            val extraSelected = selectedType == GroupMessageType.BUG_REPORT || selectedType == GroupMessageType.REVIEW_REQUEST
+                            val extraLabel = when (selectedType) {
+                                GroupMessageType.BUG_REPORT -> "แจ้งบั๊ก"
+                                GroupMessageType.REVIEW_REQUEST -> "รีวิว"
+                                else -> "อื่นๆ ▾"
+                            }
+                            Surface(
+                                onClick = { moreModeMenuOpen = true },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (extraSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                border = if (extraSelected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)) else null,
+                            ) {
+                                Text(
+                                    text = extraLabel,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = if (extraSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                    color = if (extraSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = moreModeMenuOpen,
+                                onDismissRequest = { moreModeMenuOpen = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("แจ้งบั๊ก (Bug Report)") },
+                                    leadingIcon = { Icon(Icons.Default.BugReport, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        selectedType = GroupMessageType.BUG_REPORT
+                                        moreModeMenuOpen = false
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("ขอรีวิวโค้ด (Review)") },
+                                    leadingIcon = { Icon(Icons.Default.RateReview, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        selectedType = GroupMessageType.REVIEW_REQUEST
+                                        moreModeMenuOpen = false
+                                    },
+                                )
+                            }
+                        }
                         if (onStartImplementation != null && !isTeamRunning && messages.isNotEmpty() && selectedType == GroupMessageType.NORMAL) {
                             Spacer(Modifier.weight(1f))
                             FilledTonalButton(
@@ -684,10 +774,24 @@ fun CentralGroupChatScreen(
                             ) {
                                 Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(14.dp))
                                 Spacer(Modifier.width(3.dp))
-                                Text("Start Build", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                                Text("เริ่มสร้างเลย", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
+                    Text(
+                        text = when (selectedType) {
+                            GroupMessageType.NORMAL -> "โหมดคุยปรึกษา — ตอบคำถาม/วิเคราะห์โค้ดอย่างเดียว ยังไม่แก้ไฟล์"
+                            GroupMessageType.TASK_ASSIGNMENT -> "โหมดสั่งทำงาน — ทีม AI จะวางแผน แก้โค้ด ทดสอบ และบิ้ว APK ให้ทันที"
+                            GroupMessageType.BUG_REPORT -> "โหมดแจ้งบั๊ก — ทีม AI จะไล่หาสาเหตุและแก้บั๊กพร้อมทดสอบซ้ำ"
+                            GroupMessageType.REVIEW_REQUEST -> "โหมดรีวิว — ทีม AI จะตรวจสอบคุณภาพและความปลอดภัยของโค้ด"
+                            else -> ""
+                        },
+                        fontSize = 10.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
 
                     Spacer(Modifier.height(8.dp))
 

@@ -415,96 +415,108 @@ fun TeamProjectsHomeScreen(
                 }
             }
 
-            // Quick Actions Card (Create / Clone from Solo / ZIP / Git / GitHub)
+            // Clean Modern Action Bar: 1 Primary CTA + Quick Start + Compact Import Menu (Zero Clutter)
             item {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        // Row 1: โปรเจคด่วน | โปรเจคใหม่ | โคลนจากงานเดี่ยว
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Button(
-                                onClick = onCreateQuickTeamProject,
+                var importMenuExpanded by remember { mutableStateOf(false) }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Button(
+                            onClick = { showNewFolderDialog = true },
+                            enabled = !projectImporting && !gitCloneRunning,
+                            modifier = Modifier.weight(1.35f).height(44.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = stringResource(R.string.projects_new_project),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        FilledTonalButton(
+                            onClick = onCreateQuickTeamProject,
+                            enabled = !projectImporting && !gitCloneRunning,
+                            modifier = Modifier.weight(0.95f).height(44.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp),
+                        ) {
+                            Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = stringResource(R.string.projects_quick_project),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Box {
+                            OutlinedButton(
+                                onClick = { importMenuExpanded = true },
                                 enabled = !projectImporting && !gitCloneRunning,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                                modifier = Modifier.height(44.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp),
                             ) {
-                                Icon(Icons.Default.Bolt, contentDescription = null, Modifier.size(15.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text(stringResource(R.string.projects_quick_project), fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("นำเข้า", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
                             }
-                            FilledTonalButton(
-                                onClick = { showNewFolderDialog = true },
-                                enabled = !projectImporting && !gitCloneRunning,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+                            DropdownMenu(
+                                expanded = importMenuExpanded,
+                                onDismissRequest = { importMenuExpanded = false },
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null, Modifier.size(15.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text(stringResource(R.string.projects_new_project), fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                            FilledTonalButton(
-                                onClick = { showCloneSoloDialog = true },
-                                enabled = !projectImporting && !gitCloneRunning,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                            ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null, Modifier.size(14.dp))
-                                Spacer(Modifier.width(3.dp))
-                                Text(stringResource(R.string.team_clone_from_solo), fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                DropdownMenuItem(
+                                    text = { Text("นำเข้าไฟล์ ZIP") },
+                                    leadingIcon = { Icon(Icons.Default.FolderZip, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        importMenuExpanded = false
+                                        importZipLauncher.launch("*/*")
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("โคลนจาก Git URL") },
+                                    leadingIcon = { Icon(Icons.Default.Code, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        importMenuExpanded = false
+                                        showGitCloneDialog = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(githubLogin?.let { "GitHub ($it)" } ?: "เชื่อมต่อ GitHub") },
+                                    leadingIcon = { Icon(Icons.Default.CloudSync, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        importMenuExpanded = false
+                                        showGitHubDialog = true
+                                        if (githubAuthStatus == GitHubAuthStatus.CONNECTED && githubRepositories.isEmpty()) {
+                                            onRefreshGitHub()
+                                        }
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.team_clone_from_solo)) },
+                                    leadingIcon = { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        importMenuExpanded = false
+                                        showCloneSoloDialog = true
+                                    },
+                                )
                             }
                         }
-                        // Row 2: Zip | Git URL | GitHub
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(
-                                onClick = { importZipLauncher.launch("*/*") },
-                                enabled = !projectImporting && !gitCloneRunning,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, Modifier.size(14.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("ZIP", fontSize = 11.sp, maxLines = 1)
-                            }
-                            OutlinedButton(
-                                onClick = { showGitCloneDialog = true },
-                                enabled = !gitCloneRunning,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                            ) {
-                                Icon(Icons.Default.Code, contentDescription = null, Modifier.size(14.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Git URL", fontSize = 11.sp, maxLines = 1)
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    showGitHubDialog = true
-                                    if (githubAuthStatus == GitHubAuthStatus.CONNECTED && githubRepositories.isEmpty()) {
-                                        onRefreshGitHub()
-                                    }
-                                },
-                                enabled = !gitCloneRunning,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
-                            ) {
-                                Icon(Icons.Default.CloudSync, contentDescription = null, Modifier.size(14.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text(githubLogin?.take(8) ?: "GitHub", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                        }
-                        if (projectImporting || gitCloneRunning) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        }
+                    }
+                    if (projectImporting || gitCloneRunning) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)),
+                        )
                     }
                 }
             }
@@ -513,20 +525,40 @@ fun TeamProjectsHomeScreen(
             if (teamProjects.isEmpty()) {
                 item {
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Column(
-                            modifier = Modifier.padding(28.dp),
+                            modifier = Modifier.padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            Icon(Icons.Default.FolderShared, contentDescription = null, tint = PocketOrange, modifier = Modifier.size(40.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Default.FolderShared,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(28.dp),
+                                )
+                            }
                             Text(
-                                text = stringResource(R.string.team_no_projects_yet),
+                                text = "เริ่มต้นสร้างโปรเจกต์แรกของคุณ",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = "1. กดสร้างโปรเจกต์ใหม่  →  2. คุยออกแบบกับทีม AI ในโหมด Chat  →  3. สลับเป็นโหมด Task เพื่อให้ทีมลงมือสร้างและบิ้ว APK อัตโนมัติ",
                                 textAlign = TextAlign.Center,
-                                fontSize = 13.sp,
+                                fontSize = 12.5.sp,
+                                lineHeight = 18.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
