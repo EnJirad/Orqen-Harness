@@ -25,6 +25,15 @@ data class GranularTimeoutPolicy(
         providerOverrides[providerId] ?: this
 }
 
+enum class ModelConnectionState {
+    CONNECTED,
+    CONNECTING,
+    DEGRADED,
+    RETRYING,
+    FAILOVER,
+    DISCONNECTED,
+}
+
 enum class AgentHealthState {
     HEALTHY,
     BUSY,
@@ -89,6 +98,7 @@ data class AgentHealthRecord(
     val recentProviderErrors: List<String> = emptyList(),
     val rateLimitedUntilMs: Long = 0L,
     val connectionAlive: Boolean = true,
+    val connectionState: ModelConnectionState = ModelConnectionState.CONNECTED,
 )
 
 /**
@@ -152,6 +162,7 @@ class AgentHealthMonitor(
                 activeToolName = null,
                 toolStartedAtMs = null,
                 connectionAlive = true,
+                connectionState = ModelConnectionState.CONNECTED,
             )
 
             ProgressEventType.HEARTBEAT -> current.copy(
@@ -188,6 +199,7 @@ class AgentHealthMonitor(
                 activeToolName = null,
                 toolStartedAtMs = null,
                 connectionAlive = true,
+                connectionState = ModelConnectionState.CONNECTED,
             )
 
             ProgressEventType.COMPLETED -> current.copy(
@@ -228,6 +240,11 @@ class AgentHealthMonitor(
                 val rateLimitUntil = if (event.errorCategory == ExecutionErrorCategory.RATE_LIMIT) {
                     now + (event.retryAfterMs ?: 30_000L)
                 } else current.rateLimitedUntilMs
+                val connState = when (event.errorCategory) {
+                    ExecutionErrorCategory.NETWORK_ERROR, ExecutionErrorCategory.AUTH_FAILURE -> ModelConnectionState.DISCONNECTED
+                    ExecutionErrorCategory.RATE_LIMIT, ExecutionErrorCategory.TIMEOUT, ExecutionErrorCategory.IDLE_STREAM -> ModelConnectionState.DEGRADED
+                    else -> ModelConnectionState.DEGRADED
+                }
                 current.copy(
                     healthState = state,
                     activeToolName = null,
@@ -237,6 +254,7 @@ class AgentHealthMonitor(
                     recentProviderErrors = (current.recentProviderErrors + SecretSanitizer.sanitize(event.details)).takeLast(10),
                     rateLimitedUntilMs = rateLimitUntil,
                     connectionAlive = event.errorCategory != ExecutionErrorCategory.NETWORK_ERROR,
+                    connectionState = connState,
                 )
             }
         }

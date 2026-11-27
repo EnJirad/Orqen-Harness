@@ -41,6 +41,13 @@ data class SupervisorUiSnapshot(
     val recoveryHistory: List<SupervisorDecisionRecord>,
     val completedSteps: Int,
     val totalSteps: Int,
+    val activeAgentId: String? = null,
+    val activeAgentName: String? = null,
+    val activeStepTitle: String? = null,
+    val activePhase: String = status.name,
+    val efficiencyMetrics: TaskEfficiencyMetrics = TaskEfficiencyMetrics(),
+    val spvConnectionState: ModelConnectionState = ModelConnectionState.CONNECTED,
+    val devConnectionState: ModelConnectionState = ModelConnectionState.CONNECTED,
 )
 
 data class StepLifecycleUpdate(
@@ -140,8 +147,24 @@ class AutonomousSupervisorEngine(
     private val activeSupervisedTasks = ConcurrentHashMap.newKeySet<String>()
     private val _snapshots = MutableStateFlow<Map<String, SupervisorUiSnapshot>>(emptyMap())
     val snapshots: StateFlow<Map<String, SupervisorUiSnapshot>> = _snapshots.asStateFlow()
+    private val efficiencyMetricsByTask = ConcurrentHashMap<String, TaskEfficiencyMetrics>()
+    private val spvConnectionStates = ConcurrentHashMap<String, ModelConnectionState>()
+    private val devConnectionStates = ConcurrentHashMap<String, ModelConnectionState>()
 
     fun snapshotFor(taskId: String): SupervisorUiSnapshot? = _snapshots.value[taskId]
+
+    fun efficiencyMetricsFor(taskId: String): TaskEfficiencyMetrics =
+        efficiencyMetricsByTask[taskId] ?: TaskEfficiencyMetrics()
+
+    fun connectionStateFor(taskId: String, isSupervisor: Boolean): ModelConnectionState =
+        if (isSupervisor) spvConnectionStates[taskId] ?: ModelConnectionState.CONNECTED
+        else devConnectionStates[taskId] ?: ModelConnectionState.CONNECTED
+
+    private fun updateMetrics(taskId: String, transform: (TaskEfficiencyMetrics) -> TaskEfficiencyMetrics) {
+        efficiencyMetricsByTask.compute(taskId) { _, cur ->
+            transform(cur ?: TaskEfficiencyMetrics())
+        }
+    }
 
     /**
      * Phase 2 (Part A.5): Creates and persists the task + plan BEFORE execution starts,
@@ -162,7 +185,9 @@ class AutonomousSupervisorEngine(
             acceptanceChecks = acceptanceCriteria,
         ),
     ): TaskEntity? {
+        val planStartMs = nowProvider()
         val project = taskStore.getProject(projectId) ?: return null
+        val allTeamMembers = teamManager.getTeamProfiles(team.teamId, onlyEnabled = false)
         val candidates = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
         if (candidates.isEmpty()) return null
 
@@ -200,12 +225,24 @@ class AutonomousSupervisorEngine(
             normalizedObj.contains("apk", ignoreCase = true)
         val leaderAgentId = candidates.firstOrNull { "lead" in it.capabilities || "architect" in it.capabilities }?.agentId
             ?: candidates.first().agentId
-        // P0 Fix: Prefer an enabled non-SPV Developer agent for implementation steps so SPV
-        // remains the Supervisor/Planner and never steals Step 1 when a Developer is enabled.
-        val devAgentId = capabilityResolver.selectBestAgent(candidates, setOf("code"), excludeAgentIds = setOf(leaderAgentId))?.agentId
+        // Strict Role Ownership: In a multi-agent team, never silently fall back to SPV when all
+        // Developer members are disabled — fail explicitly with an actionable assignment error.
+        val hasDisabledDeveloper = allTeamMembers.any {
+            !it.isEnabled && it.agentId != leaderAgentId && ("code" in it.capabilities || it.role.contains("dev", ignoreCase = true))
+        }
+        val nonLeaderDev = capabilityResolver.selectBestAgent(candidates, setOf("code"), excludeAgentIds = setOf(leaderAgentId))
+            ?: candidates.firstOrNull { it.agentId != leaderAgentId && ("code" in it.capabilities || it.role.contains("dev", ignoreCase = true)) }
+        if (nonLeaderDev == null && hasDisabledDeveloper) {
+            throw IllegalStateException(
+                "Role assignment error: No enabled Developer agent is available in team '${team.teamName}'. " +
+                    "Enable a Developer agent instead of silently assigning implementation to SPV ($leaderAgentId).",
+            )
+        }
+        val devAgentId = nonLeaderDev?.agentId
             ?: capabilityResolver.selectBestAgent(candidates, setOf("code"))?.agentId
             ?: candidates.firstOrNull { it.agentId != leaderAgentId }?.agentId
             ?: candidates.first().agentId
+        // 2-Agent Team Rule: SPV acts as Planner + Supervisor + Independent QA when only SPV + Dev exist.
         val qaAgentId = capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"), excludeAgentIds = setOf(devAgentId))?.agentId
             ?: capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"))?.agentId
             ?: candidates.firstOrNull { it.agentId != devAgentId }?.agentId
@@ -282,7 +319,19 @@ class AutonomousSupervisorEngine(
         require(persistedSteps.any { it.status == StepStatus.READY || it.dependencies.isEmpty() }) {
             "Plan persistence verification failed: no dispatchable Step 1 found for ${plannedTask.taskId}."
         }
-        updateSnapshot(plannedTask.taskId, SupervisorOperationalStatus.PLANNING, "Plan approved with ${persistedSteps.size} steps — handing off Step 1")
+        val planElapsedMs = (nowProvider() - planStartMs).coerceAtLeast(0L)
+        updateMetrics(plannedTask.taskId) { it.copy(planningDurationMs = it.planningDurationMs + planElapsedMs) }
+        spvConnectionStates[plannedTask.taskId] = ModelConnectionState.CONNECTED
+        devConnectionStates[plannedTask.taskId] = ModelConnectionState.CONNECTED
+        updateSnapshot(
+            taskId = plannedTask.taskId,
+            status = SupervisorOperationalStatus.PLANNING,
+            detail = "Plan approved with ${persistedSteps.size} steps — handing off Step 1",
+            activeAgentId = leaderAgentId,
+            activeAgentName = candidates.firstOrNull { it.agentId == leaderAgentId }?.displayName ?: "SPV",
+            activeStepTitle = plannedTask.title,
+            activePhase = "PLANNING",
+        )
         val planSummary = assignedSteps.joinToString("\n") { s ->
             val name = candidates.firstOrNull { it.agentId == s.assignedAgentId }?.displayName ?: s.assignedAgentId
             "• #${s.sequenceNumber} ${s.title} → $name"
@@ -412,8 +461,10 @@ class AutonomousSupervisorEngine(
         }
 
         val loopStartedAt = nowProvider()
+        var sessionActiveExecutionMs = 0L
         var reviewRejectCycles = 0
         var replanAttempts = 0
+        var lastReplanProgressSignature: String? = null
         val emittedStartedSteps = mutableSetOf<String>()
 
         try {
@@ -480,7 +531,38 @@ class AutonomousSupervisorEngine(
                     updateSnapshot(taskId, SupervisorOperationalStatus.PAUSED, paused.lastError.orEmpty())
                     return paused
                 }
-                if ((nowProvider() - loopStartedAt) > limits.maxTotalTaskDurationMs) {
+                val wallClockElapsedMs = (nowProvider() - loopStartedAt).coerceAtLeast(0L)
+                updateMetrics(taskId) { it.copy(wallClockDurationMs = wallClockElapsedMs) }
+                val activeBudgetExceeded = sessionActiveExecutionMs > limits.maxActiveExecutionBudgetMs
+                val wallClockBudgetExceeded = wallClockElapsedMs > limits.maxTotalTaskDurationMs
+                if (activeBudgetExceeded || wallClockBudgetExceeded) {
+                    if (limits.pauseOnDurationBudgetExceeded) {
+                        val budgetCheckpoint = checkpointManager.buildCheckpoint(
+                            taskId = taskId,
+                            stepId = task.currentStepId ?: "budget-checkpoint",
+                            workspaceDir = workspaceDir,
+                            modifiedFiles = emptyList(),
+                            contextSummary = "Safe execution budget checkpoint (active=${sessionActiveExecutionMs}ms, wall=${wallClockElapsedMs}ms). Resume continues from latest step.",
+                        )
+                        taskStore.insertCheckpoint(budgetCheckpoint)
+                        val paused = task.copy(
+                            status = PersistentTaskStatus.PAUSED,
+                            pauseRequested = false,
+                            executionLeaseOwner = null,
+                            lastError = "Execution budget checkpoint reached (active=${sessionActiveExecutionMs}ms, wall=${wallClockElapsedMs}ms). Safe to resume from latest step.",
+                            updatedAt = nowProvider(),
+                        )
+                        taskStore.upsertTask(paused)
+                        taskStore.insertTaskEvent(
+                            TaskEventEntity(
+                                taskId = taskId,
+                                eventType = "TASK_CHECKPOINT_PAUSED",
+                                eventPayload = paused.lastError.orEmpty(),
+                            ),
+                        )
+                        updateSnapshot(taskId, SupervisorOperationalStatus.PAUSED, paused.lastError.orEmpty(), activePhase = "PAUSED")
+                        return paused
+                    }
                     return blockTask(task, "Exceeded maximum autonomous task duration (${limits.maxTotalTaskDurationMs}ms).")
                 }
 
@@ -674,8 +756,14 @@ class AutonomousSupervisorEngine(
                     }
 
                     // Deterministic Completion Verifier found missing deliverables/tests/reviews -> auto-replan!
+                    val progressSignature = "${allSteps.count { it.status == StepStatus.COMPLETED }}:${taskStore.listVerificationEvidenceForTask(taskId).size}:${collabStore.listReviewsForTask(taskId).size}"
+                    if (replanAttempts > 0 && lastReplanProgressSignature == progressSignature) {
+                        return blockTask(task, "Stopped safely: zero forward progress across consecutive recovery/replan cycles. Remaining gaps: ${missing.joinToString(" | ")}")
+                    }
                     if (replanAttempts < limits.maxReplanAttempts) {
                         replanAttempts++
+                        lastReplanProgressSignature = progressSignature
+                        updateMetrics(taskId) { it.copy(replanCount = it.replanCount + 1) }
                         val followUpSteps = buildRemediationSteps(task, team, allSteps, missing, requiredDeliverableFiles)
                         if (followUpSteps.isNotEmpty()) {
                             appendFollowUpSteps(task, team, allSteps, followUpSteps, "Missing completion criteria: ${missing.joinToString("; ")}")
@@ -698,9 +786,30 @@ class AutonomousSupervisorEngine(
                     continue
                 }
 
-                // 6. Resolve active agent profile (respecting dynamic model/provider overrides)
+                // 6. Resolve active agent profile with Strict Role Ownership Enforcement
                 val teamProfiles = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
-                val agentProfile = teamProfiles.firstOrNull { it.agentId == nextStep.assignedAgentId }
+                val leaderProfile = teamProfiles.firstOrNull { "lead" in it.capabilities || "architect" in it.capabilities }
+                var effectiveStep = nextStep
+                if (!effectiveStep.requiresReview && leaderProfile != null && effectiveStep.assignedAgentId == leaderProfile.agentId && teamProfiles.size > 1) {
+                    val enforcedDev = capabilityResolver.selectBestAgent(
+                        candidates = teamProfiles,
+                        requiredCapabilities = setOf("code"),
+                        excludeAgentIds = setOf(leaderProfile.agentId),
+                    ) ?: teamProfiles.firstOrNull { it.agentId != leaderProfile.agentId && ("code" in it.capabilities || it.role.contains("dev", ignoreCase = true)) }
+                    if (enforcedDev != null) {
+                        effectiveStep = effectiveStep.copy(assignedAgentId = enforcedDev.agentId)
+                        taskStore.upsertStep(effectiveStep)
+                        taskStore.insertTaskEvent(
+                            TaskEventEntity(
+                                taskId = taskId,
+                                stepId = effectiveStep.stepId,
+                                eventType = "ROLE_ENFORCEMENT_REDIRECTED",
+                                eventPayload = "Implementation step '${effectiveStep.title}' redirected from SPV (${leaderProfile.agentId}) to Developer (${enforcedDev.agentId}).",
+                            ),
+                        )
+                    }
+                }
+                val agentProfile = teamProfiles.firstOrNull { it.agentId == effectiveStep.assignedAgentId }
                     ?: teamProfiles.firstOrNull()
                     ?: return blockTask(task, "No enabled agents available in team '${team.teamName}'.")
 
@@ -766,30 +875,39 @@ class AutonomousSupervisorEngine(
                 }
                 val totalPlannedSteps = allSteps.size.coerceAtLeast(nextStep.sequenceNumber)
                 val retrySuffix = if (nextStep.retryCount > 0) " (ลองใหม่รอบที่ ${nextStep.retryCount + 1})" else ""
-                val stepOperationalStatus = if (nextStep.requiresReview) {
+                val stepOperationalStatus = if (effectiveStep.requiresReview) {
                     SupervisorOperationalStatus.VERIFYING
                 } else {
                     SupervisorOperationalStatus.SUPERVISING
                 }
-                updateSnapshot(taskId, stepOperationalStatus, "ขั้นตอน ${nextStep.sequenceNumber}/$totalPlannedSteps: ${nextStep.title}$retrySuffix (${agentProfile.displayName} / ${agentProfile.modelId})")
-                val startKey = "${nextStep.stepId}:${nextStep.retryCount}"
+                val stepPhase = if (effectiveStep.requiresReview) "REVIEW" else "IMPLEMENTATION"
+                updateSnapshot(
+                    taskId = taskId,
+                    status = stepOperationalStatus,
+                    detail = "ขั้นตอน ${effectiveStep.sequenceNumber}/$totalPlannedSteps: ${effectiveStep.title}$retrySuffix (${agentProfile.displayName} / ${agentProfile.modelId})",
+                    activeAgentId = agentProfile.agentId,
+                    activeAgentName = agentProfile.displayName,
+                    activeStepTitle = effectiveStep.title,
+                    activePhase = stepPhase,
+                )
+                val startKey = "${effectiveStep.stepId}:${effectiveStep.retryCount}"
                 if (emittedStartedSteps.add(startKey)) {
                     onStepLifecycleUpdate(
                         StepLifecycleUpdate(
                             projectId = task.projectId,
                             taskId = taskId,
-                            stepId = nextStep.stepId,
-                            stepTitle = nextStep.title,
+                            stepId = effectiveStep.stepId,
+                            stepTitle = effectiveStep.title,
                             agentId = agentProfile.agentId,
                             agentDisplayName = agentProfile.displayName,
                             phase = "STARTED",
-                            detail = "📌 เริ่มขั้นตอนที่ ${nextStep.sequenceNumber}/$totalPlannedSteps: ${nextStep.title}$retrySuffix (ใช้โมเดล ${agentProfile.modelId})",
-                            stepNumber = nextStep.sequenceNumber,
+                            detail = "📌 เริ่มขั้นตอนที่ ${effectiveStep.sequenceNumber}/$totalPlannedSteps: ${effectiveStep.title}$retrySuffix (ใช้โมเดล ${agentProfile.modelId})",
+                            stepNumber = effectiveStep.sequenceNumber,
                             totalSteps = totalPlannedSteps,
                         ),
                     )
                 }
-                val runningStep = nextStep.copy(status = StepStatus.RUNNING, startedAt = nextStep.startedAt ?: nowProvider())
+                val runningStep = effectiveStep.copy(status = StepStatus.RUNNING, startedAt = effectiveStep.startedAt ?: nowProvider())
                 val execRecord = AgentExecutionEntity(
                     executionId = executionId,
                     taskId = taskId,
@@ -885,6 +1003,7 @@ class AutonomousSupervisorEngine(
                     },
                 )
 
+                val stepExecStartMs = nowProvider()
                 val accessibleImages = TaskAttachmentCodec.resolveAccessibleFiles(task.taskMemory, workspaceDir)
                 val output = try {
                     adapter.executeStep(
@@ -915,6 +1034,21 @@ class AutonomousSupervisorEngine(
                 } finally {
                     acquiredLocks.forEach { fileLockManager.release(it, lockSlot) }
                     livenessMonitor.releaseLease(taskId, runningStep.stepId, agentProfile.agentId)
+                }
+                val stepElapsedMs = (nowProvider() - stepExecStartMs).coerceAtLeast(0L)
+                sessionActiveExecutionMs += stepElapsedMs
+                val isSpvStep = (leaderProfile != null && agentProfile.agentId == leaderProfile.agentId) || runningStep.requiresReview
+                updateMetrics(taskId) { m ->
+                    m.copy(
+                        activeExecutionDurationMs = m.activeExecutionDurationMs + stepElapsedMs,
+                        reviewDurationMs = if (runningStep.requiresReview) m.reviewDurationMs + stepElapsedMs else m.reviewDurationMs,
+                        totalInputTokens = m.totalInputTokens + output.inputTokens,
+                        totalOutputTokens = m.totalOutputTokens + output.outputTokens,
+                    )
+                }
+                if (output.success) {
+                    if (isSpvStep) spvConnectionStates[taskId] = ModelConnectionState.CONNECTED
+                    else devConnectionStates[taskId] = ModelConnectionState.CONNECTED
                 }
 
                 val afterSnap = checkpointManager.snapshotWorkspace(workspaceDir)
@@ -1166,7 +1300,8 @@ class AutonomousSupervisorEngine(
                 } else {
                     assignmentLedger.releaseActive(assignmentEnvelope.assignmentId)
                     // Failure OR Failed Test Verification!
-                    if (verificationFailed && output.verificationSpec?.mode == VerificationMode.TEST_VERIFICATION) {
+                    val hasActualFailedTestCommand = output.testEvidence.any { it.exitCode != 0 }
+                    if (verificationFailed && output.verificationSpec?.mode == VerificationMode.TEST_VERIFICATION && hasActualFailedTestCommand) {
                         // Failed tests trigger automatic correction + retest cycle!
                         if (replanAttempts < limits.maxReplanAttempts) {
                             replanAttempts++
@@ -1307,14 +1442,22 @@ class AutonomousSupervisorEngine(
                         nowMs = nowProvider(),
                     )
 
+                    val recoveryStartMs = nowProvider()
                     when (recoveryPlan.strategy) {
                         RecoveryStrategyKind.RETRY_SAME_MODEL -> {
+                            if (isSpvStep) spvConnectionStates[taskId] = ModelConnectionState.RETRYING
+                            else devConnectionStates[taskId] = ModelConnectionState.RETRYING
+                            updateMetrics(taskId) { it.copy(retryCount = it.retryCount + 1, recoveryCount = it.recoveryCount + 1) }
                             if (recoveryPlan.backoffMs > 0L) delayFn(recoveryPlan.backoffMs)
+                            updateMetrics(taskId) { it.copy(recoveryDurationMs = it.recoveryDurationMs + (nowProvider() - recoveryStartMs).coerceAtLeast(0L)) }
                             taskStore.upsertStep(runningStep.copy(status = StepStatus.READY, retryCount = runningStep.retryCount + 1))
                         }
 
                         RecoveryStrategyKind.SWITCH_MODEL_SAME_PROVIDER,
                         RecoveryStrategyKind.SWITCH_PROVIDER_AND_MODEL -> {
+                            if (isSpvStep) spvConnectionStates[taskId] = ModelConnectionState.FAILOVER
+                            else devConnectionStates[taskId] = ModelConnectionState.FAILOVER
+                            updateMetrics(taskId) { it.copy(recoveryCount = it.recoveryCount + 1) }
                             val updatedProfile = agentProfile.copy(
                                 providerId = recoveryPlan.targetProviderId,
                                 modelId = recoveryPlan.targetModelId,
@@ -1370,6 +1513,8 @@ class AutonomousSupervisorEngine(
                         }
 
                         RecoveryStrategyKind.BLOCK_NEEDS_ATTENTION -> {
+                            if (isSpvStep) spvConnectionStates[taskId] = ModelConnectionState.DISCONNECTED
+                            else devConnectionStates[taskId] = ModelConnectionState.DISCONNECTED
                             taskStore.upsertStep(runningStep.copy(status = StepStatus.BLOCKED, outputSummary = recoveryPlan.reason))
                             return blockTask(task, recoveryPlan.reason)
                         }
@@ -1409,13 +1554,18 @@ class AutonomousSupervisorEngine(
     ): List<PlannedStep> {
         val pool = supervisorModelPoolProvider().filter { it.isEnabled && it.providerId !in unavailableProviders() }
         if (pool.isEmpty()) return emptyList()
+        spvConnectionStates[task.taskId] = ModelConnectionState.CONNECTING
         var lastErr: String? = null
-        for (model in pool) {
+        for ((idx, model) in pool.withIndex()) {
             try {
-                return advisor.evaluateMissingRequirements(model, task, completedSteps, workspaceDir)
+                if (idx > 0) spvConnectionStates[task.taskId] = ModelConnectionState.FAILOVER
+                val result = advisor.evaluateMissingRequirements(model, task, completedSteps, workspaceDir)
+                spvConnectionStates[task.taskId] = ModelConnectionState.CONNECTED
+                return result
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (err: Throwable) {
+                spvConnectionStates[task.taskId] = ModelConnectionState.RETRYING
                 lastErr = "${model.providerId}/${model.modelId}: ${err.message}"
                 recoveryEngine.recordDecision(
                     SupervisorDecisionRecord(
@@ -1429,6 +1579,7 @@ class AutonomousSupervisorEngine(
                 )
             }
         }
+        spvConnectionStates[task.taskId] = ModelConnectionState.DISCONNECTED
         taskStore.insertTaskEvent(
             TaskEventEntity(
                 taskId = task.taskId,
@@ -1813,8 +1964,20 @@ class AutonomousSupervisorEngine(
         val profiles = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
         var seq = (existingSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
         val createdSummary = mutableListOf<String>()
+        val activeSteps = existingSteps.filter { it.status in setOf(StepStatus.PENDING, StepStatus.READY, StepStatus.RUNNING) }
         taskStore.runInTransaction {
             newSteps.forEach { p ->
+                // Duplicate Step Prevention: never append a duplicate remediation step when an
+                // active/pending step with the same review/implementation purpose already exists.
+                val duplicateExists = activeSteps.any { existing ->
+                    existing.requiresReview == p.requiresReview &&
+                        (existing.title.equals(p.title, ignoreCase = true) ||
+                            (p.partId != null && existing.partId == p.partId))
+                }
+                if (duplicateExists) {
+                    updateMetrics(task.taskId) { it.copy(duplicateStepsPrevented = it.duplicateStepsPrevented + 1) }
+                    return@forEach
+                }
                 val assignee = profiles.firstOrNull { it.agentId == p.assignedAgentId }
                     ?: capabilityResolver.selectBestAgent(profiles, p.requiredCapabilities)
                     ?: profiles.first()
@@ -1833,6 +1996,7 @@ class AutonomousSupervisorEngine(
                         inputContext = p.expectedOutput,
                         targetFiles = p.targetFiles,
                         requiresReview = p.requiresReview,
+                        partId = p.partId,
                     ),
                 )
             }
@@ -1894,7 +2058,15 @@ class AutonomousSupervisorEngine(
         return blocked
     }
 
-    private fun updateSnapshot(taskId: String, status: SupervisorOperationalStatus, detail: String) {
+    private fun updateSnapshot(
+        taskId: String,
+        status: SupervisorOperationalStatus,
+        detail: String,
+        activeAgentId: String? = null,
+        activeAgentName: String? = null,
+        activeStepTitle: String? = null,
+        activePhase: String = status.name,
+    ) {
         val steps = taskStore.listStepsForTask(taskId)
         val snap = SupervisorUiSnapshot(
             taskId = taskId,
@@ -1904,6 +2076,13 @@ class AutonomousSupervisorEngine(
             recoveryHistory = recoveryEngine.auditTrail(taskId),
             completedSteps = steps.count { it.status == StepStatus.COMPLETED },
             totalSteps = steps.size,
+            activeAgentId = activeAgentId,
+            activeAgentName = activeAgentName,
+            activeStepTitle = activeStepTitle,
+            activePhase = activePhase,
+            efficiencyMetrics = efficiencyMetricsFor(taskId),
+            spvConnectionState = spvConnectionStates[taskId] ?: ModelConnectionState.CONNECTED,
+            devConnectionState = devConnectionStates[taskId] ?: ModelConnectionState.CONNECTED,
         )
         val next = LinkedHashMap(_snapshots.value)
         next[taskId] = snap

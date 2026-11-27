@@ -59,7 +59,27 @@ data class ModelCandidate(
 )
 
 /**
- * Configurable anti-infinite-loop recovery limits.
+ * Real per-task efficiency and timing telemetry.
+ * Separates active execution time from model/provider waiting and recovery overhead.
+ */
+data class TaskEfficiencyMetrics(
+    val planningDurationMs: Long = 0L,
+    val modelWaitDurationMs: Long = 0L,
+    val toolExecutionDurationMs: Long = 0L,
+    val reviewDurationMs: Long = 0L,
+    val recoveryDurationMs: Long = 0L,
+    val activeExecutionDurationMs: Long = 0L,
+    val wallClockDurationMs: Long = 0L,
+    val totalInputTokens: Long = 0L,
+    val totalOutputTokens: Long = 0L,
+    val replanCount: Int = 0,
+    val retryCount: Int = 0,
+    val recoveryCount: Int = 0,
+    val duplicateStepsPrevented: Int = 0,
+)
+
+/**
+ * Configurable anti-infinite-loop recovery limits & execution budget.
  */
 data class RecoveryLimitsConfig(
     val maxRetriesPerExecution: Int = 2,
@@ -69,6 +89,8 @@ data class RecoveryLimitsConfig(
     val maxReviewCycles: Int = 3,
     val maxReplanAttempts: Int = 2,
     val maxTotalTaskDurationMs: Long = 3_600_000L,
+    val maxActiveExecutionBudgetMs: Long = 3_600_000L,
+    val pauseOnDurationBudgetExceeded: Boolean = true,
 )
 
 enum class RecoveryStrategyKind {

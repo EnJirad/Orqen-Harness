@@ -189,11 +189,13 @@ object MultiPartPlanManager {
             }
         }.trim().ifBlank { inspectWorkspaceSummary(workspaceDir) }
         val relevantSourceSample = inspection.sourceFiles.filterNot { it.startsWith(".orqen/") }.take(10)
+        val complexity = assessTaskComplexity(cleanObj, explicitSubtasks)
         val rawPartDefs: List<Pair<String, String>> = when {
             explicitSubtasks.isNotEmpty() -> explicitSubtasks.mapIndexed { idx, sub ->
                 "Part ${idx + 1}: ${sub.take(48)}" to sub
             }
-            isSubstantialObjective(cleanObj) -> buildDefaultMultiPartBreakdown(cleanObj, isAndroidProject)
+            complexity == TaskComplexityTier.LARGE -> buildDefaultMultiPartBreakdown(cleanObj, isAndroidProject)
+            complexity == TaskComplexityTier.MEDIUM -> buildMediumMultiPartBreakdown(cleanObj, isAndroidProject)
             else -> listOf("Core Implementation & Verification" to cleanObj)
         }
 
@@ -796,11 +798,60 @@ object MultiPartPlanManager {
         return if (f.isFile) runCatching { f.readText() }.getOrDefault("") else ""
     }
 
-    private fun isSubstantialObjective(objective: String): Boolean {
-        val lower = objective.lowercase()
-        val multiSignals = listOf("app", "application", "system", "api", "ui", "database", "auth", "screen", "calculator", "dashboard", "android", "web", "แอป", "ระบบ", "หน้าจอ")
-        return objective.length >= 45 || multiSignals.count { lower.contains(it) } >= 2
+    enum class TaskComplexityTier {
+        SMALL,
+        MEDIUM,
+        LARGE,
     }
+
+    /**
+     * Adaptive task sizing:
+     * - SMALL: single focused app/feature/screen/bugfix (e.g., Calculator, Todo, UI tweak) -> 1 Part
+     *   (Dev: Implement + Build + Tests -> SPV: Independent Review & QA).
+     * - MEDIUM: multi-layer feature combining backend/persistence + UI -> 2 Parts.
+     * - LARGE: multi-subsystem architecture (auth + database + API + analytics + multiple screens) -> 3+ Parts.
+     */
+    fun assessTaskComplexity(objective: String, explicitSubtasks: List<String> = emptyList()): TaskComplexityTier {
+        if (explicitSubtasks.size >= 3) return TaskComplexityTier.LARGE
+        if (explicitSubtasks.size == 2) return TaskComplexityTier.MEDIUM
+        val lower = objective.lowercase()
+        val smallAppSignals = listOf("calculator", "เครื่องคิดเลข", "todo", "to-do", "timer", "stopwatch", "converter", "counter", "bug", "fix", "แก้บั๊ก", "ปุ่ม", "หน้าจอ")
+        val largeArchSignals = listOf(
+            "authentication", "oauth", "database", "persistence", "analytics", "dashboard",
+            "microservice", "sync", "csv export", "multiple screens", "clean architecture",
+            "multi-tenant", "graphql", "backend", "migration", "full-stack", "offline-first",
+        )
+        val largeHits = largeArchSignals.count { lower.contains(it) }
+        if (largeHits >= 3 || (objective.length >= 160 && largeHits >= 2)) {
+            return TaskComplexityTier.LARGE
+        }
+        val explicitMultiStageDelivery = (lower.contains("debug apk") || lower.contains("generate a debug apk")) &&
+            (lower.contains("test") || lower.contains("database") || lower.contains("compose"))
+        if (explicitMultiStageDelivery) {
+            return TaskComplexityTier.MEDIUM
+        }
+        val isFocusedSmallApp = smallAppSignals.any { lower.contains(it) } && largeHits < 2
+        if (isFocusedSmallApp) {
+            return TaskComplexityTier.SMALL
+        }
+        if (largeHits >= 2 || (objective.length >= 110 && largeHits >= 1)) {
+            return TaskComplexityTier.MEDIUM
+        }
+        return TaskComplexityTier.SMALL
+    }
+
+    private fun buildMediumMultiPartBreakdown(objective: String, isAndroid: Boolean): List<Pair<String, String>> =
+        if (isAndroid) {
+            listOf(
+                "Core Domain, Logic & UI Implementation" to "Implement core domain models, business logic, and Android UI for: $objective",
+                "Integration, Tests & APK Verification" to "Integrate components, run real unit tests, and verify debug APK build for: $objective",
+            )
+        } else {
+            listOf(
+                "Core Implementation" to "Design and implement core modules and features for: $objective",
+                "Integration & Verification" to "Integrate components, execute real automated tests, and verify deliverables for: $objective",
+            )
+        }
 
     private fun buildDefaultMultiPartBreakdown(objective: String, isAndroid: Boolean): List<Pair<String, String>> =
         if (isAndroid) {
