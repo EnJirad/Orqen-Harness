@@ -780,6 +780,25 @@ class SqliteOrqenTaskStore(
         }
     }
 
+    /**
+     * P0 Fix: Performs an UPDATE-then-INSERT upsert instead of `CONFLICT_REPLACE`
+     * (`INSERT OR REPLACE`). With `PRAGMA foreign_keys = ON`, SQLite's `INSERT OR REPLACE`
+     * deletes the existing row before inserting, which fires `ON DELETE CASCADE` and wipes
+     * child rows (`task_steps`, `agent_reviews`, `verification_evidence`, `checkpoints`, etc.).
+     */
+    private fun upsertSafe(
+        table: String,
+        cv: ContentValues,
+        whereClause: String,
+        whereArgs: Array<String>,
+    ) {
+        val db = dbHelper.writableDatabase
+        val updated = db.update(table, cv, whereClause, whereArgs)
+        if (updated == 0) {
+            db.insertOrThrow(table, null, cv)
+        }
+    }
+
     override fun upsertProject(project: ProjectEntity) {
         val cv = ContentValues().apply {
             put("project_id", project.projectId)
@@ -794,7 +813,7 @@ class SqliteOrqenTaskStore(
             put("icon_id", project.iconId)
             put("custom_icon_ref", project.customIconRef)
         }
-        dbHelper.writableDatabase.insertWithOnConflict("projects", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        upsertSafe("projects", cv, "project_id = ?", arrayOf(project.projectId))
     }
 
     override fun getProject(projectId: String): ProjectEntity? {
@@ -823,7 +842,7 @@ class SqliteOrqenTaskStore(
             put("active_agent_id", conversation.activeAgentId)
             put("archived", if (conversation.archived) 1 else 0)
         }
-        dbHelper.writableDatabase.insertWithOnConflict("conversations", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        upsertSafe("conversations", cv, "conversation_id = ?", arrayOf(conversation.conversationId))
     }
 
     override fun getConversation(conversationId: String): ConversationEntity? {
@@ -957,7 +976,7 @@ class SqliteOrqenTaskStore(
             put("plan_version", task.planVersion)
             put("current_part_id", task.currentPartId)
         }
-        dbHelper.writableDatabase.insertWithOnConflict("tasks", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        upsertSafe("tasks", cv, "task_id = ?", arrayOf(task.taskId))
     }
 
     override fun getTask(taskId: String): TaskEntity? {
@@ -1029,7 +1048,7 @@ class SqliteOrqenTaskStore(
             put("idempotency_key", step.idempotencyKey)
             put("part_id", step.partId)
         }
-        dbHelper.writableDatabase.insertWithOnConflict("task_steps", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        upsertSafe("task_steps", cv, "step_id = ?", arrayOf(step.stepId))
     }
 
     override fun getStep(stepId: String): TaskStepEntity? {
@@ -1078,7 +1097,7 @@ class SqliteOrqenTaskStore(
             put("estimated_cost_usd", execution.estimatedCostUsd)
             if (execution.processPid != null) put("process_pid", execution.processPid) else putNull("process_pid")
         }
-        dbHelper.writableDatabase.insertWithOnConflict("agent_executions", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        upsertSafe("agent_executions", cv, "execution_id = ?", arrayOf(execution.executionId))
     }
 
     override fun listExecutionsForTask(taskId: String): List<AgentExecutionEntity> {
@@ -1251,7 +1270,7 @@ class SqliteOrqenTaskStore(
             put("created_at", session.createdAt)
             put("updated_at", session.updatedAt)
         }
-        dbHelper.writableDatabase.insertWithOnConflict("agent_sessions", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        upsertSafe("agent_sessions", cv, "session_id = ?", arrayOf(session.sessionId))
     }
 
     override fun getAgentSession(sessionId: String): AgentSessionEntity? {
@@ -1338,7 +1357,7 @@ class SqliteOrqenTaskStore(
             put("revision", draft.revision)
             put("updated_at_ms", draft.updatedAtMs)
         }
-        dbHelper.writableDatabase.insertWithOnConflict("chat_drafts", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+        upsertSafe("chat_drafts", cv, "draft_key = ?", arrayOf(draft.draftKey))
     }
 
     override fun getChatDraft(draftKey: String): PersistentChatDraftEntity? {

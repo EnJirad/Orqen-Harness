@@ -227,7 +227,8 @@ object MultiPartPlanManager {
                     "Build cleanly on verified outputs from ${prevDeps.joinToString(", ")}."
                 },
                 relevantFiles = relevantSourceSample,
-                assignedAgentId = if (idx == 0 && rawPartDefs.size > 2) leaderAgentId else devAgentId,
+                // P0 Fix: Implementation Parts must ALWAYS be assigned to a Developer worker, never SPV.
+                assignedAgentId = devAgentId,
                 dependencies = prevDeps,
                 requiredMcpTools = if (isAndroidProject) listOf("workspace_files", "terminal_gradle") else listOf("workspace_files", "terminal"),
                 requiredPermissions = listOf("workspace:read", "workspace:write", "terminal:execute_tests"),

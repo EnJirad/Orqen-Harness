@@ -819,14 +819,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     when (upd.phase) {
                         "PLANNED" -> {
                             val supName = agentNameFor(AgentSlot.AGENT_1)
-                            // Acknowledge-first: show 3-dot typing wave while posting plan, then transition to working spinner
-                            _state.update {
-                                it.copy(
-                                    teamTypingAgentName = supName,
-                                    teamTypingAgentSlot = AgentSlot.AGENT_1,
-                                )
-                            }
-                            delay(250L)
+                            // P0 Fix: Post plan synchronously without artificial delay(250L) so it can NEVER
+                            // race with and overwrite the immediate Step 1 "STARTED" handoff back to PLANNING.
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
                                 senderSlot = AgentSlot.AGENT_1,
@@ -835,7 +829,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 messageType = GroupMessageType.TASK_ASSIGNMENT,
                             )
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
-                            updateAgentActivity(AgentSlot.AGENT_1, ActivityType.PLANNING, upd.stepTitle, "วางแผนและแบ่งงาน")
+                            val anyWorkerExecuting = _state.value.teamAgents.any { agent ->
+                                agent.config.slot != AgentSlot.AGENT_1 && agent.activityState.activity in setOf(
+                                    ActivityType.WRITING_CODE,
+                                    ActivityType.REVIEWING,
+                                    ActivityType.FIXING_BUG,
+                                    ActivityType.ANALYZING,
+                                )
+                            }
+                            if (!anyWorkerExecuting) {
+                                updateAgentActivity(AgentSlot.AGENT_1, ActivityType.PLANNING, upd.stepTitle, "แผนพร้อมแล้ว กำลังส่งต่องาน")
+                            }
+                        }
+                        "REMEDIATION" -> {
+                            val supName = agentNameFor(AgentSlot.AGENT_1)
+                            appendAgentLiveLog(AgentSlot.AGENT_1, upd.detail)
+                            appendProjectTeamMessage(
+                                projectId = upd.projectId,
+                                senderSlot = AgentSlot.AGENT_1,
+                                senderName = supName,
+                                text = upd.detail,
+                                messageType = GroupMessageType.PROGRESS_UPDATE,
+                                workStatus = "Working",
+                            )
                         }
                         "STARTED" -> {
                             val act = when {

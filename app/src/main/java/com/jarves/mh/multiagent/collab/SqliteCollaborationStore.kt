@@ -21,8 +21,25 @@ class SqliteCollaborationStore(
 
     constructor(context: Context) : this(OrqenTaskDatabaseHelper(context))
 
-    override fun upsertProfile(profile: AgentProfileEntity) {
+    /**
+     * P0 Fix: UPDATE-then-INSERT upsert avoids SQLite `CONFLICT_REPLACE` (`INSERT OR REPLACE`)
+     * deleting parent rows and firing `ON DELETE CASCADE` on child tables like `agent_team_members`.
+     */
+    private fun upsertSafe(
+        table: String,
+        cv: ContentValues,
+        whereClause: String,
+        whereArgs: Array<String>,
+    ) {
         val db = dbHelper.writableDatabase
+        val updated = db.update(table, cv, whereClause, whereArgs)
+        if (updated == 0) {
+            val rowId = db.insertOrThrow(table, null, cv)
+            check(rowId != -1L) { "Failed to persist row into SQLite table $table." }
+        }
+    }
+
+    override fun upsertProfile(profile: AgentProfileEntity) {
         val cv = ContentValues().apply {
             put("agent_id", profile.agentId)
             put("display_name", profile.displayName)
@@ -39,8 +56,7 @@ class SqliteCollaborationStore(
             put("created_at", profile.createdAt)
             put("updated_at", profile.updatedAt)
         }
-        val rowId = db.insertWithOnConflict("agent_profiles", null, cv, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE)
-        check(rowId != -1L) { "Failed to persist agent profile '${profile.agentId}' into SQLite table agent_profiles." }
+        upsertSafe("agent_profiles", cv, "agent_id = ?", arrayOf(profile.agentId))
     }
 
     override fun getProfile(agentId: String): AgentProfileEntity? {
@@ -77,7 +93,7 @@ class SqliteCollaborationStore(
             put("created_at", team.createdAt)
             put("updated_at", team.updatedAt)
         }
-        db.insertWithOnConflict("agent_teams", null, cv, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE)
+        upsertSafe("agent_teams", cv, "team_id = ?", arrayOf(team.teamId))
     }
 
     override fun getTeam(teamId: String): AgentTeamEntity? {

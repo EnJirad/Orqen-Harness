@@ -170,7 +170,10 @@ class SqliteMcpStore(
             put("created_at", config.createdAt)
             put("updated_at", config.updatedAt)
         }
-        db.insertWithOnConflict("mcp_servers", null, cv, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE)
+        val updated = db.update("mcp_servers", cv, "server_id = ?", arrayOf(config.serverId))
+        if (updated == 0) {
+            db.insertOrThrow("mcp_servers", null, cv)
+        }
     }
 
     override fun getServer(serverId: String): McpServerConfig? {

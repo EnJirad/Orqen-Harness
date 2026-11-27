@@ -200,9 +200,15 @@ class AutonomousSupervisorEngine(
             normalizedObj.contains("apk", ignoreCase = true)
         val leaderAgentId = candidates.firstOrNull { "lead" in it.capabilities || "architect" in it.capabilities }?.agentId
             ?: candidates.first().agentId
-        val devAgentId = capabilityResolver.selectBestAgent(candidates, setOf("code"))?.agentId
+        // P0 Fix: Prefer an enabled non-SPV Developer agent for implementation steps so SPV
+        // remains the Supervisor/Planner and never steals Step 1 when a Developer is enabled.
+        val devAgentId = capabilityResolver.selectBestAgent(candidates, setOf("code"), excludeAgentIds = setOf(leaderAgentId))?.agentId
+            ?: capabilityResolver.selectBestAgent(candidates, setOf("code"))?.agentId
+            ?: candidates.firstOrNull { it.agentId != leaderAgentId }?.agentId
             ?: candidates.first().agentId
         val qaAgentId = capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"), excludeAgentIds = setOf(devAgentId))?.agentId
+            ?: capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"))?.agentId
+            ?: candidates.firstOrNull { it.agentId != devAgentId }?.agentId
             ?: candidates.last().agentId
 
         val preTaskId = "T-${UUID.randomUUID().toString().take(8).uppercase()}"
@@ -234,13 +240,18 @@ class AutonomousSupervisorEngine(
         val rawPlan = planner.planFromMultiPart(project, mpPlan, wsDir)
         val workloads = mutableMapOf<String, Int>()
         val assignedSteps = rawPlan.steps.map { step ->
-            val exclude = if (step.requiresReview) setOf(devAgentId) else emptySet()
+            val exclude = when {
+                step.requiresReview -> setOf(devAgentId)
+                candidates.size > 1 -> setOf(leaderAgentId)
+                else -> emptySet()
+            }
             val selected = capabilityResolver.selectBestAgent(
                 candidates = candidates,
                 requiredCapabilities = step.requiredCapabilities,
                 excludeAgentIds = exclude,
                 activeWorkloads = workloads,
             ) ?: capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities, activeWorkloads = workloads)
+                ?: candidates.firstOrNull { it.agentId == if (step.requiresReview) qaAgentId else devAgentId }
                 ?: candidates.first()
             workloads[selected.agentId] = (workloads[selected.agentId] ?: 0) + 1
             step.copy(assignedAgentId = selected.agentId)
@@ -260,7 +271,18 @@ class AutonomousSupervisorEngine(
             taskStore.upsertTask(updated)
             updated
         }
-        updateSnapshot(plannedTask.taskId, SupervisorOperationalStatus.PLANNING, "Plan created with ${assignedSteps.size} steps")
+        // P0 Fix: Mandatory post-persist validation before leaving PLANNING or delegating Step 1.
+        val persistedSteps = taskStore.listStepsForTask(plannedTask.taskId)
+        require(persistedSteps.isNotEmpty() && persistedSteps.size == assignedSteps.size) {
+            "Plan persistence verification failed for task ${plannedTask.taskId}: expected ${assignedSteps.size} step(s), found ${persistedSteps.size}."
+        }
+        require(persistedSteps.all { it.taskId == plannedTask.taskId }) {
+            "Plan persistence verification failed: persisted step taskId mismatch for ${plannedTask.taskId}."
+        }
+        require(persistedSteps.any { it.status == StepStatus.READY || it.dependencies.isEmpty() }) {
+            "Plan persistence verification failed: no dispatchable Step 1 found for ${plannedTask.taskId}."
+        }
+        updateSnapshot(plannedTask.taskId, SupervisorOperationalStatus.PLANNING, "Plan approved with ${persistedSteps.size} steps — handing off Step 1")
         val planSummary = assignedSteps.joinToString("\n") { s ->
             val name = candidates.firstOrNull { it.agentId == s.assignedAgentId }?.displayName ?: s.assignedAgentId
             "• #${s.sequenceNumber} ${s.title} → $name"
@@ -392,6 +414,7 @@ class AutonomousSupervisorEngine(
         val loopStartedAt = nowProvider()
         var reviewRejectCycles = 0
         var replanAttempts = 0
+        val emittedStartedSteps = mutableSetOf<String>()
 
         try {
             val initialTask = taskStore.getTask(taskId) ?: return null
@@ -713,23 +736,59 @@ class AutonomousSupervisorEngine(
                 }
 
                 // 8. Execute step via real RuntimeStepExecutionAdapter with HealthMonitor + Watchdog
+                val assignmentEnvelope = TaskAssignmentEnvelope(
+                    taskId = taskId,
+                    planId = task.planId ?: "plan-$taskId",
+                    planVersion = task.planVersion,
+                    partId = nextStep.partId ?: "part-${nextStep.sequenceNumber}",
+                    stepId = nextStep.stepId,
+                    assignmentId = "asgn-${nextStep.stepId}-r${nextStep.retryCount}",
+                    assignedAgentId = agentProfile.agentId,
+                    specificationPath = ".orqen/plan/overview.md",
+                    specificationContent = nextStep.description,
+                    immutableUserGoal = task.description.ifBlank { task.title },
+                    currentScope = nextStep.title,
+                    expectedDeliverables = nextStep.targetFiles,
+                    dependencies = nextStep.dependencies,
+                )
+                if (!assignmentLedger.registerAssignment(assignmentEnvelope)) {
+                    acquiredLocks.forEach { fileLockManager.release(it, lockSlot) }
+                    livenessMonitor.releaseLease(taskId, nextStep.stepId, agentProfile.agentId)
+                    delayFn(100L)
+                    continue
+                }
+                if (!nextStep.requiresReview && !nextStep.partId.isNullOrBlank()) {
+                    runCatching {
+                        MultiPartPlanManager.loadPlan(workspaceDir)?.let { mpPlan ->
+                            MultiPartPlanManager.beginPartExecution(workspaceDir, mpPlan, nextStep.partId)
+                        }
+                    }
+                }
                 val totalPlannedSteps = allSteps.size.coerceAtLeast(nextStep.sequenceNumber)
                 val retrySuffix = if (nextStep.retryCount > 0) " (ลองใหม่รอบที่ ${nextStep.retryCount + 1})" else ""
-                updateSnapshot(taskId, SupervisorOperationalStatus.SUPERVISING, "ขั้นตอน ${nextStep.sequenceNumber}/$totalPlannedSteps: ${nextStep.title}$retrySuffix (${agentProfile.displayName} / ${agentProfile.modelId})")
-                onStepLifecycleUpdate(
-                    StepLifecycleUpdate(
-                        projectId = task.projectId,
-                        taskId = taskId,
-                        stepId = nextStep.stepId,
-                        stepTitle = nextStep.title,
-                        agentId = agentProfile.agentId,
-                        agentDisplayName = agentProfile.displayName,
-                        phase = "STARTED",
-                        detail = "📌 เริ่มขั้นตอนที่ ${nextStep.sequenceNumber}/$totalPlannedSteps: ${nextStep.title}$retrySuffix (ใช้โมเดล ${agentProfile.modelId})",
-                        stepNumber = nextStep.sequenceNumber,
-                        totalSteps = totalPlannedSteps,
-                    ),
-                )
+                val stepOperationalStatus = if (nextStep.requiresReview) {
+                    SupervisorOperationalStatus.VERIFYING
+                } else {
+                    SupervisorOperationalStatus.SUPERVISING
+                }
+                updateSnapshot(taskId, stepOperationalStatus, "ขั้นตอน ${nextStep.sequenceNumber}/$totalPlannedSteps: ${nextStep.title}$retrySuffix (${agentProfile.displayName} / ${agentProfile.modelId})")
+                val startKey = "${nextStep.stepId}:${nextStep.retryCount}"
+                if (emittedStartedSteps.add(startKey)) {
+                    onStepLifecycleUpdate(
+                        StepLifecycleUpdate(
+                            projectId = task.projectId,
+                            taskId = taskId,
+                            stepId = nextStep.stepId,
+                            stepTitle = nextStep.title,
+                            agentId = agentProfile.agentId,
+                            agentDisplayName = agentProfile.displayName,
+                            phase = "STARTED",
+                            detail = "📌 เริ่มขั้นตอนที่ ${nextStep.sequenceNumber}/$totalPlannedSteps: ${nextStep.title}$retrySuffix (ใช้โมเดล ${agentProfile.modelId})",
+                            stepNumber = nextStep.sequenceNumber,
+                            totalSteps = totalPlannedSteps,
+                        ),
+                    )
+                }
                 val runningStep = nextStep.copy(status = StepStatus.RUNNING, startedAt = nextStep.startedAt ?: nowProvider())
                 val execRecord = AgentExecutionEntity(
                     executionId = executionId,
@@ -840,6 +899,7 @@ class AutonomousSupervisorEngine(
                         ),
                     )
                 } catch (cancel: CancellationException) {
+                    assignmentLedger.releaseActive(assignmentEnvelope.assignmentId)
                     healthMonitor.recordEvent(
                         AgentProgressEvent(
                             taskId = taskId,
@@ -863,7 +923,15 @@ class AutonomousSupervisorEngine(
                 val verificationFailed = output.success && verificationOutcome != null && !verificationOutcome.passed
                 persistStepVerificationEvidence(taskId, runningStep, output, changedFiles)
 
-                if (output.success && !verificationFailed) {
+                // P0 Fix: Explicit REVIEW_REJECTED must always route to the Developer fix + Re-Review
+                // cycle even if tests failed or were not yet passing (verificationFailed == true).
+                val isExplicitReviewRejection = output.success && runningStep.requiresReview && !output.reviewApproved
+                if (output.success && (!verificationFailed || isExplicitReviewRejection)) {
+                    assignmentLedger.validateAndComplete(
+                        assignmentId = assignmentEnvelope.assignmentId,
+                        partId = assignmentEnvelope.partId,
+                        stepId = assignmentEnvelope.stepId,
+                    )
                     recoveryEngine.resetProviderFailures(agentProfile.providerId)
                     healthMonitor.recordEvent(
                         AgentProgressEvent(
@@ -885,7 +953,12 @@ class AutonomousSupervisorEngine(
                         if (reviewRejectCycles > limits.maxReviewCycles) {
                             return blockTask(task, "Review rejection cycle limit (${limits.maxReviewCycles}) exceeded: ${output.reviewFeedback.orEmpty()}")
                         }
+                        val leaderId = teamProfiles.firstOrNull { "lead" in it.capabilities || "architect" in it.capabilities }?.agentId
                         val devAgent = capabilityResolver.selectBestAgent(
+                            candidates = teamProfiles,
+                            requiredCapabilities = setOf("code"),
+                            excludeAgentIds = setOfNotNull(agentProfile.agentId, leaderId),
+                        ) ?: capabilityResolver.selectBestAgent(
                             candidates = teamProfiles,
                             requiredCapabilities = setOf("code"),
                             excludeAgentIds = setOf(agentProfile.agentId),
@@ -1091,12 +1164,16 @@ class AutonomousSupervisorEngine(
                         ),
                     )
                 } else {
+                    assignmentLedger.releaseActive(assignmentEnvelope.assignmentId)
                     // Failure OR Failed Test Verification!
                     if (verificationFailed && output.verificationSpec?.mode == VerificationMode.TEST_VERIFICATION) {
                         // Failed tests trigger automatic correction + retest cycle!
                         if (replanAttempts < limits.maxReplanAttempts) {
                             replanAttempts++
-                            val devAgent = capabilityResolver.selectBestAgent(teamProfiles, setOf("code"), excludeAgentIds = setOf(agentProfile.agentId)) ?: agentProfile
+                            val leaderId = teamProfiles.firstOrNull { "lead" in it.capabilities || "architect" in it.capabilities }?.agentId
+                            val devAgent = capabilityResolver.selectBestAgent(teamProfiles, setOf("code"), excludeAgentIds = setOfNotNull(agentProfile.agentId, leaderId))
+                                ?: capabilityResolver.selectBestAgent(teamProfiles, setOf("code"), excludeAgentIds = setOf(agentProfile.agentId))
+                                ?: agentProfile
                             recoveryEngine.recordDecision(
                                 SupervisorDecisionRecord(
                                     taskId = taskId,
@@ -1666,7 +1743,11 @@ class AutonomousSupervisorEngine(
         requiredDeliverableFiles: List<String>,
     ): List<PlannedStep> {
         val profiles = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
-        val dev = capabilityResolver.selectBestAgent(profiles, setOf("code")) ?: profiles.firstOrNull() ?: return emptyList()
+        val leaderId = profiles.firstOrNull { "lead" in it.capabilities || "architect" in it.capabilities }?.agentId
+        val dev = capabilityResolver.selectBestAgent(profiles, setOf("code"), excludeAgentIds = setOfNotNull(leaderId))
+            ?: capabilityResolver.selectBestAgent(profiles, setOf("code"))
+            ?: profiles.firstOrNull()
+            ?: return emptyList()
         val reviewer = capabilityResolver.selectBestAgent(profiles, setOf("review", "qa"), excludeAgentIds = setOf(dev.agentId)) ?: dev
         val nextSeq = (existingSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
         val lastStepIds = existingSteps.lastOrNull()?.let { listOf(it.stepId) }.orEmpty()
@@ -1757,6 +1838,8 @@ class AutonomousSupervisorEngine(
             }
         }
         if (createdSummary.isNotEmpty()) {
+            // P0 Fix: Emit "REMEDIATION" (not "PLANNED") so the UI never jumps back to PLANNING
+            // or spams "Updated active plan" during active execution/verification.
             onStepLifecycleUpdate(
                 StepLifecycleUpdate(
                     projectId = task.projectId,
@@ -1765,8 +1848,8 @@ class AutonomousSupervisorEngine(
                     stepTitle = newSteps.first().title,
                     agentId = AgentSlot.AGENT_1.id,
                     agentDisplayName = "Supervisor",
-                    phase = "PLANNED",
-                    detail = "Updated active plan (${createdSummary.size} remediation step(s)):\n" + createdSummary.joinToString("\n") { "• $it" },
+                    phase = "REMEDIATION",
+                    detail = "Scheduled ${createdSummary.size} remediation step(s):\n" + createdSummary.joinToString("\n") { "• $it" },
                     stepNumber = (existingSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1,
                     totalSteps = seq - 1,
                 ),
