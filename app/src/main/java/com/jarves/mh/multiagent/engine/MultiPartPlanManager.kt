@@ -190,13 +190,19 @@ object MultiPartPlanManager {
         }.trim().ifBlank { inspectWorkspaceSummary(workspaceDir) }
         val relevantSourceSample = inspection.sourceFiles.filterNot { it.startsWith(".orqen/") }.take(10)
         val complexity = assessTaskComplexity(cleanObj, explicitSubtasks)
+        val shortObjTitle = cleanObj.lineSequence()
+            .map { it.trim().removePrefix("-").removePrefix("•").trim() }
+            .firstOrNull { it.isNotBlank() && !it.startsWith("Context", ignoreCase = true) }
+            ?.take(56)
+            ?.ifBlank { projectName }
+            ?: projectName
         val rawPartDefs: List<Pair<String, String>> = when {
             explicitSubtasks.isNotEmpty() -> explicitSubtasks.mapIndexed { idx, sub ->
                 "Part ${idx + 1}: ${sub.take(48)}" to sub
             }
             complexity == TaskComplexityTier.LARGE -> buildDefaultMultiPartBreakdown(cleanObj, isAndroidProject)
             complexity == TaskComplexityTier.MEDIUM -> buildMediumMultiPartBreakdown(cleanObj, isAndroidProject)
-            else -> listOf("Core Implementation & Verification" to cleanObj)
+            else -> listOf(shortObjTitle to cleanObj)
         }
 
         val parts = mutableListOf<MultiPartSpec>()

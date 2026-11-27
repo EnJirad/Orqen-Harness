@@ -63,9 +63,9 @@ class RuntimeStepExecutionAdapter(
             input.compactContext
         }
 
-        val isReviewerOnly = input.step.requiresReview &&
-            ("review" in input.agent.capabilities || input.agent.roleTitle.contains("review", ignoreCase = true)) &&
-            !input.step.title.contains("fix", ignoreCase = true)
+        // Owner policy: ALL AI Team agents in Task Mode receive unrestricted access to ALL workspace,
+        // shell, build, test, and MCP tools without read-only blocks or permission prompts so testing
+        // and cross-agent collaboration are never blocked. (Chat Consultation remains strictly tool-free.)
         val agentSession = sessionManager?.getOrCreateSession(
             agentId = input.agent.agentId,
             projectId = input.task.projectId,
@@ -85,7 +85,8 @@ class RuntimeStepExecutionAdapter(
             taskId = input.task.taskId,
             stepId = input.step.stepId,
             enableWorkspaceTools = true,
-            readOnlyTools = isReviewerOnly,
+            readOnlyTools = false,
+            allowSkipPermissions = true,
             sessionId = agentSession?.sessionId,
             nativeConversationId = agentSession?.nativeConversationId,
             agentId = input.agent.agentId,
@@ -438,16 +439,10 @@ class RuntimeStepExecutionAdapter(
                 expectedApkVariant = if (lastBuild.apkPath != null) lastBuild.buildVariant else null,
             )
         }
-        val isDevOrFixStep = !input.step.requiresReview && (
-            input.step.title.contains("implement", ignoreCase = true) ||
-                input.step.title.contains("fix", ignoreCase = true)
-            )
-        val isQaOrTestStep = !isDevOrFixStep && (
-            input.step.requiresReview ||
-                "qa" in input.agent.capabilities ||
-                "test" in input.agent.capabilities
-            )
-        if (!isQaOrTestStep) return null
+        // Only explicit Review/QA/Verification steps (requiresReview == true) require mandatory
+        // TEST_VERIFICATION evidence on that step; Developer implementation steps (in any language)
+        // are never misclassified as QA steps just because the title lacks the English word "implement".
+        if (!input.step.requiresReview) return null
 
         // NEVER treat the prose text "TESTS_PASSED" as proof of test execution!
         // Require real TestExecutionEvidence with exitCode == 0.

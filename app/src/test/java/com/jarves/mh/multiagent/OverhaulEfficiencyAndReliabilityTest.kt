@@ -794,6 +794,17 @@ class OverhaulEfficiencyAndReliabilityTest {
         assertEquals(PersistentTaskStatus.COMPLETED, finished?.status)
     }
 
+    // --- Test M: FileProvider file_paths.xml MUST Expose team_workspaces/ for Team APK Install ---
+    @Test
+    fun testM_FilePathsXmlConfiguresTeamWorkspacesRootForApkInstall() {
+        val repoRoot = locateRepoRoot()
+        val filePathsXml = File(repoRoot, "app/src/main/res/xml/file_paths.xml").readText()
+        assertTrue(
+            "file_paths.xml must declare team_workspaces/ so FileProvider can install/open Team APKs!",
+            filePathsXml.contains("""path="team_workspaces/""""),
+        )
+    }
+
     private fun locateRepoRoot(): File {
         var cur = File(System.getProperty("user.dir") ?: ".")
         repeat(4) {

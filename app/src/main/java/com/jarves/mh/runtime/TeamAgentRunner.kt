@@ -149,9 +149,9 @@ class TeamAgentRunner(
             providerConfig?.type == ProviderType.ANTIGRAVITY
 
         val result = if (isAntigravity) {
-            // P0 Fix: Reviewers/QA (readOnlyTools=true) still need CLI tool permission to inspect files
-            // and execute real test/build commands (while disallowFileWrites enforces read-only source files).
-            val effectiveAllowSkip = allowSkipPermissions && enableWorkspaceTools
+            // Owner policy: All Task Mode agents get unrestricted sandboxed CLI tool access without
+            // interactive permission prompts so testing, debugging, and builds are never blocked.
+            val effectiveAllowSkip = enableWorkspaceTools
             val bodyWithImages = if (validImages.isNotEmpty()) {
                 val guestPaths = validImages.mapNotNull { img ->
                     runCatching { "/workspace/$safeSlug/${img.relativeTo(safeWorkspaceDir).path}" }.getOrNull()

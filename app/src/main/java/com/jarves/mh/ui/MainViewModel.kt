@@ -7253,17 +7253,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     android.util.Log.w("OrqenMainViewModel", "Failed to schedule TaskRecoveryJobService", err)
                 }
                 val result = withContext(Dispatchers.IO) {
-                    autonomousSupervisorEngine.submitAndSupervise(
-                        projectId = activeProj.id,
-                        team = team,
-                        objective = cleanObjective,
-                        requiredDeliverableFiles = requiredDeliverableFiles,
-                        attachmentPaths = attachmentPaths,
-                        onTaskCreated = { created ->
-                            activeSupervisedTaskId = created.taskId
-                            _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
-                        },
-                    )
+                    val lowerObj = cleanObjective.lowercase()
+                    val isResumeDirective = listOf(
+                        "ทำงานต่อ", "ทำต่อ", "ต่อจากเดิม", "ต่อเลย", "ลุยต่อ",
+                        "continue", "resume", "keep going", "start building this based on our finalized discussion",
+                    ).any { lowerObj.contains(it) }
+                    val resumableTask = if (isResumeDirective) {
+                        orqenTaskStore.listTasksForProject(activeProj.id)
+                            .firstOrNull { t ->
+                                t.status in setOf(
+                                    com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PAUSED,
+                                    com.jarves.mh.multiagent.persistence.PersistentTaskStatus.BLOCKED,
+                                    com.jarves.mh.multiagent.persistence.PersistentTaskStatus.READY,
+                                    com.jarves.mh.multiagent.persistence.PersistentTaskStatus.QUEUED,
+                                ) && orqenTaskStore.listStepsForTask(t.taskId).isNotEmpty()
+                            }
+                    } else null
+
+                    if (resumableTask != null) {
+                        // Resume existing task directly without creating a duplicate plan or repeating "วางแผนงานเสร็จแล้ว"!
+                        orqenTaskStore.runInTransaction {
+                            orqenTaskStore.listStepsForTask(resumableTask.taskId).forEach { st ->
+                                if (st.status == com.jarves.mh.multiagent.persistence.StepStatus.BLOCKED ||
+                                    st.status == com.jarves.mh.multiagent.persistence.StepStatus.FAILED ||
+                                    st.status == com.jarves.mh.multiagent.persistence.StepStatus.RUNNING
+                                ) {
+                                    orqenTaskStore.upsertStep(
+                                        st.copy(
+                                            status = com.jarves.mh.multiagent.persistence.StepStatus.READY,
+                                            retryCount = 0,
+                                        ),
+                                    )
+                                }
+                            }
+                            orqenTaskStore.upsertTask(
+                                resumableTask.copy(
+                                    status = com.jarves.mh.multiagent.persistence.PersistentTaskStatus.READY,
+                                    pauseRequested = false,
+                                    ownerStopRequested = false,
+                                    lastError = null,
+                                    updatedAt = System.currentTimeMillis(),
+                                ),
+                            )
+                        }
+                        activeSupervisedTaskId = resumableTask.taskId
+                        _state.update { it.copy(activeSupervisedTaskId = resumableTask.taskId) }
+                        appendProjectTeamMessage(
+                            projectId = activeProj.id,
+                            senderSlot = AgentSlot.AGENT_1,
+                            senderName = agentNameFor(AgentSlot.AGENT_1),
+                            text = "▶️ รับทราบครับ กำลังทำงานต่อจากจุดที่ค้างไว้ (${resumableTask.taskId}: ${resumableTask.title}) ทันทีโดยไม่วางแผนซ้ำครับ",
+                            messageType = GroupMessageType.PROGRESS_UPDATE,
+                            workStatus = "Working",
+                        )
+                        autonomousSupervisorEngine.superviseTask(
+                            taskId = resumableTask.taskId,
+                            team = team,
+                            requiredDeliverableFiles = requiredDeliverableFiles,
+                        )
+                    } else {
+                        autonomousSupervisorEngine.submitAndSupervise(
+                            projectId = activeProj.id,
+                            team = team,
+                            objective = cleanObjective,
+                            requiredDeliverableFiles = requiredDeliverableFiles,
+                            attachmentPaths = attachmentPaths,
+                            onTaskCreated = { created ->
+                                activeSupervisedTaskId = created.taskId
+                                _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
+                            },
+                        )
+                    }
                 }
                 if (result != null) {
                     activeSupervisedTaskId = result.taskId
@@ -8041,7 +8101,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             proc.waitFor()
             runCatching { outFile.delete() }
         }
-        findNewestApk()
+        val built = findNewestApk()
+        if (built != null && built.isFile && built.length() > 0L) {
+            val safeSlug = project.slug.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "team-project" }
+            val visibleApk = File(workspace, "apk/$safeSlug-debug.apk").apply { parentFile?.mkdirs() }
+            runCatching { built.copyTo(visibleApk, overwrite = true) }
+            if (visibleApk.isFile && visibleApk.length() > 0L) return@withContext visibleApk
+        }
+        built
     }
 
     fun clearTeamTerminal() {

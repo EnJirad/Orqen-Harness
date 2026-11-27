@@ -332,7 +332,7 @@ class AiTeamArchitectureRebuildTest {
                     }
                     "agent-03" -> {
                         reviewCalls++
-                        assertTrue("Reviewer must run read-only", request.readOnlyTools)
+                        assertTrue("Reviewer must have full workspace/test tools enabled", request.enableWorkspaceTools && !request.readOnlyTools)
                         if (reviewCalls == 1) {
                             // First review rejects and requests overflow safety fix
                             RuntimeExecutionResponse(
