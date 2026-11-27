@@ -27,21 +27,21 @@ object ActivityVisuals {
     }
 
     fun colorFor(type: ActivityType): Color = when (type) {
-        ActivityType.ANALYZING -> Color(0xFF64B5F6) // Blue
-        ActivityType.PLANNING -> Color(0xFFBA68C8) // Purple
-        ActivityType.READING_FILES -> Color(0xFF4DD0E1) // Cyan
-        ActivityType.WRITING_CODE -> Color(0xFF81C784) // Green
-        ActivityType.FIXING_BUG -> Color(0xFFFFB74D) // Orange
-        ActivityType.TESTING -> Color(0xFF4FC3F7) // Light Blue
-        ActivityType.REVIEWING -> Color(0xFFAED581) // Light Green
-        ActivityType.BUILDING_APK -> Color(0xFF81C784) // Android Green
-        ActivityType.INSTALLING_DEPS -> Color(0xFFFFD54F) // Yellow
-        ActivityType.COMMITTING -> Color(0xFF90CAF9)
-        ActivityType.PUSHING -> Color(0xFF80CBC4)
-        ActivityType.MERGING -> Color(0xFFB39DDB)
-        ActivityType.WAITING -> Color(0xFF9E9E9E) // Gray
-        ActivityType.PAUSED -> Color(0xFFFFB74D) // Amber
-        ActivityType.COMPLETED -> Color(0xFF66BB6A) // Green
-        ActivityType.ERROR -> Color(0xFFE57373) // Red
+        ActivityType.ANALYZING -> Color(0xFF7B8FA6)
+        ActivityType.PLANNING -> Color(0xFF8E86B8)
+        ActivityType.READING_FILES -> Color(0xFF7B8FA6)
+        ActivityType.WRITING_CODE -> Color(0xFF6B9E78)
+        ActivityType.FIXING_BUG -> Color(0xFFC49449)
+        ActivityType.TESTING -> Color(0xFF7B8FA6)
+        ActivityType.REVIEWING -> Color(0xFF8E86B8)
+        ActivityType.BUILDING_APK -> Color(0xFF6B9E78)
+        ActivityType.INSTALLING_DEPS -> Color(0xFFC49449)
+        ActivityType.COMMITTING -> Color(0xFF7B8FA6)
+        ActivityType.PUSHING -> Color(0xFF7B8FA6)
+        ActivityType.MERGING -> Color(0xFF8E86B8)
+        ActivityType.WAITING -> Color(0xFF8B909A)
+        ActivityType.PAUSED -> Color(0xFFC49449)
+        ActivityType.COMPLETED -> Color(0xFF6B9E78)
+        ActivityType.ERROR -> Color(0xFFC96868)
     }
 }

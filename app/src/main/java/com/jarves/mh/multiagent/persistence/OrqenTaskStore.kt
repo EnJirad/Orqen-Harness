@@ -77,6 +77,23 @@ interface OrqenTaskStore {
     fun recordIdempotency(record: IdempotencyRecordEntity)
     fun findIdempotency(idempotencyKey: String): IdempotencyRecordEntity?
 
+    // Agent Sessions (v8 — isolated per-agent provider/runtime sessions)
+    fun upsertAgentSession(session: AgentSessionEntity) {}
+    fun getAgentSession(sessionId: String): AgentSessionEntity? = null
+    fun findActiveAgentSession(agentId: String, projectId: String, taskId: String? = null): AgentSessionEntity? = null
+    fun listAgentSessionsForProject(projectId: String): List<AgentSessionEntity> = emptyList()
+
+    // Verification Evidence (v8 — real test/build/review evidence)
+    fun insertVerificationEvidence(evidence: VerificationEvidenceEntity) {}
+    fun listVerificationEvidenceForTask(taskId: String): List<VerificationEvidenceEntity> = emptyList()
+    fun listVerificationEvidenceForPart(taskId: String, partId: String): List<VerificationEvidenceEntity> = emptyList()
+
+    // Persistent Chat Drafts (v8 — shared Solo + Team drafts)
+    fun upsertChatDraft(draft: PersistentChatDraftEntity) {}
+    fun getChatDraft(draftKey: String): PersistentChatDraftEntity? = null
+    fun deleteChatDraft(draftKey: String) {}
+    fun listAllChatDrafts(): List<PersistentChatDraftEntity> = emptyList()
+
     /**
      * Transaction-safe step completion + task progress update + optional checkpoint + event.
      */
@@ -122,6 +139,9 @@ class InMemoryOrqenTaskStore(
     private val idempotencyRecords = LinkedHashMap<String, IdempotencyRecordEntity>()
     private val taskConversationLinks = LinkedHashSet<TaskConversationCrossRef>()
     private val migrationMarkers = LinkedHashMap<String, String>()
+    private val agentSessions = LinkedHashMap<String, AgentSessionEntity>()
+    private val verificationEvidence = mutableListOf<VerificationEvidenceEntity>()
+    private val chatDrafts = LinkedHashMap<String, PersistentChatDraftEntity>()
 
     fun migrateToLatest(): Int = synchronized(lock) {
         if (_schemaVersion < 2) {
@@ -148,6 +168,11 @@ class InMemoryOrqenTaskStore(
         if (_schemaVersion < 4) {
             // v3 -> v4 adds collaboration tables non-destructively while preserving all tasks/executions
             _schemaVersion = 4
+        }
+        if (_schemaVersion < 8) {
+            // v4 -> v8 adds owner_approvals, preferred_tools_json, MCP tables, agent_sessions,
+            // verification_evidence, chat_drafts, project metadata, and plan version tracking
+            _schemaVersion = 8
         }
         _schemaVersion
     }
@@ -409,7 +434,75 @@ class InMemoryOrqenTaskStore(
         idempotencyRecords[idempotencyKey]
     }
 
+    override fun upsertAgentSession(session: AgentSessionEntity) = synchronized(lock) {
+        agentSessions[session.sessionId] = session
+    }
+
+    override fun getAgentSession(sessionId: String): AgentSessionEntity? = synchronized(lock) {
+        agentSessions[sessionId]
+    }
+
+    override fun findActiveAgentSession(agentId: String, projectId: String, taskId: String?): AgentSessionEntity? =
+        synchronized(lock) {
+            agentSessions.values
+                .filter {
+                    it.agentId == agentId &&
+                        it.projectId == projectId &&
+                        it.status == "ACTIVE" &&
+                        (taskId == null || it.taskId == taskId)
+                }
+                .maxByOrNull { it.updatedAt }
+        }
+
+    override fun listAgentSessionsForProject(projectId: String): List<AgentSessionEntity> = synchronized(lock) {
+        agentSessions.values.filter { it.projectId == projectId }.sortedByDescending { it.updatedAt }
+    }
+
+    override fun insertVerificationEvidence(evidence: VerificationEvidenceEntity) {
+        synchronized(lock) {
+            verificationEvidence.add(
+                evidence.copy(
+                    stdout = SecretSanitizer.sanitize(evidence.stdout),
+                    stderr = SecretSanitizer.sanitize(evidence.stderr),
+                ),
+            )
+        }
+    }
+
+    override fun listVerificationEvidenceForTask(taskId: String): List<VerificationEvidenceEntity> = synchronized(lock) {
+        verificationEvidence.filter { it.taskId == taskId }.sortedBy { it.timestampMs }
+    }
+
+    override fun listVerificationEvidenceForPart(taskId: String, partId: String): List<VerificationEvidenceEntity> =
+        synchronized(lock) {
+            verificationEvidence.filter { it.taskId == taskId && it.partId == partId }.sortedBy { it.timestampMs }
+        }
+
+    override fun upsertChatDraft(draft: PersistentChatDraftEntity) = synchronized(lock) {
+        val existing = chatDrafts[draft.draftKey]
+        if (existing != null && draft.revision < existing.revision) return@synchronized
+        if (draft.draftText.isEmpty() && draft.attachments.isEmpty()) {
+            chatDrafts.remove(draft.draftKey)
+        } else {
+            chatDrafts[draft.draftKey] = draft
+        }
+    }
+
+    override fun getChatDraft(draftKey: String): PersistentChatDraftEntity? = synchronized(lock) {
+        chatDrafts[draftKey]
+    }
+
+    override fun deleteChatDraft(draftKey: String) {
+        synchronized(lock) {
+            chatDrafts.remove(draftKey)
+        }
+    }
+
+    override fun listAllChatDrafts(): List<PersistentChatDraftEntity> = synchronized(lock) {
+        chatDrafts.values.sortedByDescending { it.updatedAtMs }
+    }
+
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 4
+        const val CURRENT_SCHEMA_VERSION = 8
     }
 }

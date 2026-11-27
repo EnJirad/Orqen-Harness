@@ -36,7 +36,7 @@ import java.util.Locale
 private val McpEmerald = Color(0xFF10B981)
 private val McpAmber = Color(0xFFF59E0B)
 private val McpRed = Color(0xFFDC2626)
-private val McpBlue = Color(0xFF38BDF8)
+private val McpBlue = Color(0xFF6B80A8)
 
 /**
  * Complete ORQEN MCP Management & SPV Authorization UI (Parts 5, 6, 16.10).

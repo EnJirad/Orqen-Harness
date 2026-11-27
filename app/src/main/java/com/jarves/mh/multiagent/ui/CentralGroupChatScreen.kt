@@ -100,16 +100,42 @@ fun CentralGroupChatScreen(
     onPushToGit: ((gitUrl: String?, apiKey: String?) -> Unit)? = null,
     onInstallApk: ((String) -> Unit)? = null,
     onOpenFile: ((String) -> Unit)? = null,
+    draftConversationKey: String = "",
+    initialDraftText: String = "",
+    onDraftTextChanged: (String) -> Unit = {},
+    onStartImplementation: (() -> Unit)? = null,
     onSendMessageWithImages: ((text: String, type: GroupMessageType, targetSlot: AgentSlot?, imageUris: List<Uri>) -> Unit)? = null,
     onSendMessage: (text: String, type: GroupMessageType, targetSlot: AgentSlot?) -> Unit,
     onBack: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
-    var inputText by remember { mutableStateOf("") }
+    var inputText by remember(draftConversationKey) { mutableStateOf(initialDraftText) }
     var selectedType by remember { mutableStateOf(GroupMessageType.NORMAL) }
     var targetSlot by remember { mutableStateOf<AgentSlot?>(null) }
     var selectedImageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+
+    // Phase 9: Debounced autosave + immediate lifecycle flush (ON_PAUSE/ON_STOP + onDispose)!
+    val latestInputText by rememberUpdatedState(inputText)
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(draftConversationKey, inputText) {
+        delay(220L)
+        onDraftTextChanged(inputText)
+    }
+    DisposableEffect(draftConversationKey, lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE ||
+                event == androidx.lifecycle.Lifecycle.Event.ON_STOP
+            ) {
+                onDraftTextChanged(latestInputText)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            onDraftTextChanged(latestInputText)
+        }
+    }
     var showClearConfirm by remember { mutableStateOf(false) }
     var showGitPushDialog by remember { mutableStateOf(false) }
     var gitPushUrlInput by remember { mutableStateOf("") }
@@ -354,48 +380,48 @@ fun CentralGroupChatScreen(
                 val hasIssueDetail = teamBannerHealth != TeamBannerHealth.RUNNING && !teamBannerDetail.isNullOrBlank()
                 val (bannerBg, bannerFg, bannerText) = when {
                     teamBannerHealth == TeamBannerHealth.DISCONNECTED -> Triple(
-                        Color(0xFFDC2626).copy(alpha = 0.14f),
-                        Color(0xFFDC2626),
+                        OrqenSemanticColors.Error.copy(alpha = 0.14f),
+                        OrqenSemanticColors.Error,
                         teamBannerMessage?.takeIf { it.isNotBlank() } ?: stringResource(R.string.team_status_disconnected_agent),
                     )
                     teamBannerHealth == TeamBannerHealth.WARNING -> Triple(
-                        Color(0xFFF59E0B).copy(alpha = 0.16f),
-                        Color(0xFFD97706),
+                        OrqenSemanticColors.Warning.copy(alpha = 0.16f),
+                        OrqenSemanticColors.Warning,
                         teamBannerMessage?.takeIf { it.isNotBlank() } ?: stringResource(R.string.team_status_warning_network),
                     )
                     isAnyTyping && activeWorkingAgents.isEmpty() -> Triple(
-                        Color(0xFF06B6D4).copy(alpha = 0.14f),
-                        Color(0xFF06B6D4),
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                        MaterialTheme.colorScheme.primary,
                         "${typingAgentName ?: "AI"} กำลังคิด...",
                     )
                     activeWorkingAgents.isNotEmpty() -> {
                         val lead = activeWorkingAgents.first()
                         val actLabel = stringResource(lead.activityState.activity.labelRes)
                         Triple(
-                            Color(0xFF22C55E).copy(alpha = 0.14f),
-                            Color(0xFF16A34A),
+                            OrqenSemanticColors.Success.copy(alpha = 0.14f),
+                            OrqenSemanticColors.Success,
                             "กำลังทำงาน ${activeWorkingAgents.size}/${agents.size} · ${lead.config.name}: $actLabel" +
                                 if (pendingDirectivesCount > 0) " (+$pendingDirectivesCount)" else "",
                         )
                     }
                     awaitingStartConfirmation -> Triple(
-                        Color(0xFFA78BFA).copy(alpha = 0.14f),
-                        Color(0xFFA78BFA),
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                        MaterialTheme.colorScheme.primary,
                         "SPV รอยืนยันการทำงานต่อจากเจ้าของบริษัท",
                     )
                     errorAgentsCount > 0 -> Triple(
-                        Color(0xFFDC2626).copy(alpha = 0.14f),
-                        Color(0xFFDC2626),
+                        OrqenSemanticColors.Error.copy(alpha = 0.14f),
+                        OrqenSemanticColors.Error,
                         "พบข้อผิดพลาด ($errorAgentsCount ตัว) · แตะเพื่อดูรายละเอียด",
                     )
                     pausedAgentsCount > 0 && !isTeamRunning -> Triple(
-                        Color(0xFFF59E0B).copy(alpha = 0.14f),
-                        Color(0xFFD97706),
+                        OrqenSemanticColors.Warning.copy(alpha = 0.14f),
+                        OrqenSemanticColors.Warning,
                         "พักงาน (${pausedAgentsCount}/${agents.size} ตัว)",
                     )
                     isTeamRunning -> Triple(
-                        Color(0xFF3B82F6).copy(alpha = 0.12f),
-                        Color(0xFF3B82F6),
+                        OrqenSemanticColors.Info.copy(alpha = 0.14f),
+                        OrqenSemanticColors.Info,
                         stringResource(R.string.team_status_running_short) +
                             if (pendingDirectivesCount > 0) " ($pendingDirectivesCount)" else "",
                     )
@@ -636,7 +662,7 @@ fun CentralGroupChatScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(12.dp)) {
-                    // Mode selector (Chat = talk freely with idle AI; Task/Bug/Review = dispatch work to team!)
+                    // Mode selector (Chat = consultation/design only; Task = explicit multi-part execution!)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -644,9 +670,21 @@ fun CentralGroupChatScreen(
                     ) {
                         TypeSelectorChip("Chat", GroupMessageType.NORMAL, selectedType) { selectedType = it }
                         TypeSelectorChip("Task", GroupMessageType.TASK_ASSIGNMENT, selectedType) { selectedType = it }
-                        TypeSelectorChip("Progress", GroupMessageType.PROGRESS_UPDATE, selectedType) { selectedType = it }
                         TypeSelectorChip("Bug", GroupMessageType.BUG_REPORT, selectedType) { selectedType = it }
                         TypeSelectorChip("Review", GroupMessageType.REVIEW_REQUEST, selectedType) { selectedType = it }
+                        if (onStartImplementation != null && !isTeamRunning && messages.isNotEmpty() && selectedType == GroupMessageType.NORMAL) {
+                            Spacer(Modifier.weight(1f))
+                            FilledTonalButton(
+                                onClick = onStartImplementation,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                modifier = Modifier.height(28.dp),
+                                shape = RoundedCornerShape(14.dp),
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(3.dp))
+                                Text("Start Build", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
                     }
 
                     Spacer(Modifier.height(8.dp))
@@ -749,15 +787,21 @@ fun CentralGroupChatScreen(
                                 if (canSend) {
                                     pendingUserSendScroll = true
                                     val finalPrompt = inputText.ifBlank { "ช่วยวิเคราะห์รูปภาพที่แนบมาและออกแบบ/สร้างตามภาพนี้" }
-                                    if (selectedImageUris.isNotEmpty() && onSendMessageWithImages != null) {
-                                        onSendMessageWithImages(finalPrompt, selectedType, targetSlot, selectedImageUris)
-                                    } else {
-                                        onSendMessage(finalPrompt, selectedType, targetSlot)
+                                    val sendOk = runCatching {
+                                        if (selectedImageUris.isNotEmpty() && onSendMessageWithImages != null) {
+                                            onSendMessageWithImages(finalPrompt, selectedType, targetSlot, selectedImageUris)
+                                        } else {
+                                            onSendMessage(finalPrompt, selectedType, targetSlot)
+                                        }
+                                        true
+                                    }.getOrDefault(false)
+                                    if (sendOk) {
+                                        inputText = ""
+                                        onDraftTextChanged("")
+                                        selectedImageUris = emptyList()
+                                        selectedType = GroupMessageType.NORMAL
+                                        targetSlot = null
                                     }
-                                    inputText = ""
-                                    selectedImageUris = emptyList()
-                                    selectedType = GroupMessageType.NORMAL
-                                    targetSlot = null
                                 }
                             },
                             enabled = canSend,
@@ -827,7 +871,7 @@ internal fun BouncingWaveDots(
  */
 internal fun agentAccentColor(slot: AgentSlot?): Color = when (slot) {
     AgentSlot.AGENT_1 -> Color(0xFF10B981) // Emerald Mint (Supervisor)
-    AgentSlot.AGENT_2 -> Color(0xFF38BDF8) // Sky Blue
+    AgentSlot.AGENT_2 -> Color(0xFF6B80A8) // Muted Slate Blue
     AgentSlot.AGENT_3 -> Color(0xFFA78BFA) // Violet Purple
     AgentSlot.AGENT_4 -> Color(0xFFF59E0B) // Amber Gold
     null -> OrqenMint
@@ -1326,8 +1370,8 @@ fun GroupChatBubble(
                 Button(
                     onClick = { onSendAsTask(message.suggestedTaskPrompt) },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = OrqenMint,
-                        contentColor = Color(0xFF031F1B),
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
                     ),
                     shape = RoundedCornerShape(10.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),

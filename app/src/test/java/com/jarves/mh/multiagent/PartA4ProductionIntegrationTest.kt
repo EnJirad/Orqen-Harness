@@ -66,7 +66,10 @@ class PartA4ProductionIntegrationTest {
         val runtime = object : AIExecutionRuntime {
             override suspend fun execute(request: RuntimeExecutionRequest, onProgress: suspend (String) -> Unit): RuntimeExecutionResponse {
                 return if (request.agent.config.slot.id == "agent-03") {
-                    RuntimeExecutionResponse(request.requestId, request.agent.config.providerId, request.agent.config.modelId, 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED")
+                    RuntimeExecutionResponse(
+                        request.requestId, request.agent.config.providerId, request.agent.config.modelId, 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED",
+                        testEvidence = listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok")),
+                    )
                 } else {
                     File(wsDir, "Feature.kt").writeText("class Feature")
                     RuntimeExecutionResponse(request.requestId, request.agent.config.providerId, request.agent.config.modelId, 0L, 1L, true, "Recovered and finished Feature.kt", modifiedFiles = listOf("Feature.kt"))

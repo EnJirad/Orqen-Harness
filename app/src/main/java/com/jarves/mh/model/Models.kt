@@ -166,7 +166,20 @@ data class ProviderProfile(
 
 enum class ProjectKind { PROJECT, QUICK_PROJECT }
 
-enum class ProjectType { GENERAL, ANDROID }
+enum class WorkspaceKind(val displayName: String) {
+    APP_PROJECT("App Project"),
+    FOLDER_WORKSPACE("Folder Workspace"),
+}
+
+enum class ProjectType(val displayName: String) {
+    GENERAL("Folder Project"),
+    ANDROID("Android App"),
+    IOS("iOS App"),
+    WEB("Web App"),
+    DESKTOP("Desktop App"),
+    BACKEND("Backend / API"),
+    CUSTOM("Custom Project"),
+}
 
 enum class AndroidTemplate(val label: String) {
     COMPOSE("Jetpack Compose"),
@@ -180,10 +193,14 @@ data class Project(
     val language: String,
     val slug: String = projectSlug(name),
     val rootPath: String = "",
+    val createdAtMillis: Long = System.currentTimeMillis(),
     val updatedAtMillis: Long = System.currentTimeMillis(),
     val kind: ProjectKind = ProjectKind.PROJECT,
+    val workspaceKind: WorkspaceKind = WorkspaceKind.APP_PROJECT,
     val type: ProjectType = ProjectType.GENERAL,
     val androidTemplate: AndroidTemplate? = null,
+    val iconKey: String = "",
+    val customIconPath: String? = null,
 ) {
     val formattedUpdatedAt: String
         get() {

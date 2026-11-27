@@ -113,6 +113,8 @@ fun TeamDashboardScreen(
     onToggleAgentEnabled: (AgentSlot) -> Unit = {},
     onOpenQuotaDashboard: () -> Unit = {},
     onOpenActivityFeed: () -> Unit = {},
+    onOpenTeamMcpSettings: () -> Unit = {},
+    onAutoOptimizeModels: () -> Unit = {},
     onReleaseFileLock: (String, AgentSlot) -> Unit = { _, _ -> },
     onOpenGroupChat: () -> Unit,
     onOpenProviderSettings: () -> Unit,
@@ -430,6 +432,20 @@ fun TeamDashboardScreen(
                             onClick = onOpenQuotaDashboard,
                             label = { Text(stringResource(R.string.nav_tab_quota)) },
                             leadingIcon = { Icon(Icons.Default.Paid, contentDescription = null, Modifier.size(16.dp)) },
+                        )
+                    }
+                    item {
+                        AssistChip(
+                            onClick = onOpenTeamMcpSettings,
+                            label = { Text("Team MCP") },
+                            leadingIcon = { Icon(Icons.Default.Hub, contentDescription = null, Modifier.size(16.dp)) },
+                        )
+                    }
+                    item {
+                        AssistChip(
+                            onClick = onAutoOptimizeModels,
+                            label = { Text("Auto-Models") },
+                            leadingIcon = { Icon(Icons.Default.AutoFixHigh, contentDescription = null, Modifier.size(16.dp)) },
                         )
                     }
                 }

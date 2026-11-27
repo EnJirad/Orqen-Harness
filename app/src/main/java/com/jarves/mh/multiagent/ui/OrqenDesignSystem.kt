@@ -21,18 +21,21 @@ import com.jarves.mh.ui.theme.OrqenMint
 
 /**
  * Centralized ORQEN semantic design tokens for Dark, Light, and System themes.
+ * Calm, soft, low-visual-noise palette (no harsh neon accents).
  */
 object OrqenSemanticColors {
-    val Success = Color(0xFF22C55E)
-    val Warning = Color(0xFFF59E0B)
-    val Error = Color(0xFFEF4444)
+    val Success = Color(0xFF3E8E68)
+    val Warning = Color(0xFFC28B37)
+    val Error = Color(0xFFC65A5A)
+    val Info = Color(0xFF537380)
     val Running = OrqenMint
-    val Pending = Color(0xFF60A5FA)
-    val Paused = Color(0xFFFBBF24)
-    val Recovery = Color(0xFFA78BFA)
-    val RemoteHost = Color(0xFF38BDF8)
-    val LocalHost = Color(0xFF34D399)
-    val Neutral = Color(0xFF94A3B8)
+    val Pending = Color(0xFF6B80A8)
+    val Paused = Color(0xFFB58A44)
+    val Recovery = Color(0xFF7D74A8)
+    val RemoteHost = Color(0xFF537380)
+    val LocalHost = Color(0xFF4B8A72)
+    val Neutral = Color(0xFF7E8694)
+    val Disabled = Color(0xFF8C929D)
 }
 
 object OrqenSpacing {

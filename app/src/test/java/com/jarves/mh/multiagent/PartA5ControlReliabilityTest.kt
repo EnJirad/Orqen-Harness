@@ -57,13 +57,18 @@ class PartA5ControlReliabilityTest {
         val runtime = object : AIExecutionRuntime {
             override suspend fun execute(request: RuntimeExecutionRequest, onProgress: suspend (String) -> Unit): RuntimeExecutionResponse {
                 val aid = request.agent.config.slot.id
-                if (aid == "agent-01") {
+                if (!step1Started.isCompleted) {
                     step1Started.complete(Unit)
                     releaseStep1.await()
+                }
+                if (aid == "agent-01") {
                     return RuntimeExecutionResponse(request.requestId, "p1", "m1", 0L, 1L, true, "Plan analyzed")
                 }
                 if (aid == "agent-03") {
-                    return RuntimeExecutionResponse(request.requestId, "p2", "m2", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED")
+                    return RuntimeExecutionResponse(
+                        request.requestId, "p2", "m2", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED",
+                        testEvidence = listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok")),
+                    )
                 }
                 File(request.workspaceDir, "App.kt").writeText("class App")
                 return RuntimeExecutionResponse(request.requestId, "p1", "m1", 0L, 1L, true, "Implemented App.kt", modifiedFiles = listOf("App.kt"))
@@ -112,7 +117,10 @@ class PartA5ControlReliabilityTest {
         val collab = InMemoryCollaborationStore()
         val dummyRuntime = object : AIExecutionRuntime {
             override suspend fun execute(request: RuntimeExecutionRequest, onProgress: suspend (String) -> Unit) =
-                RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED")
+                RuntimeExecutionResponse(
+                    request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED",
+                    testEvidence = listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok")),
+                )
             override fun cancel(requestId: String) = true
             override fun getProviderCapabilities(providerId: String) = RuntimeCapabilities(true, false, false, false)
         }

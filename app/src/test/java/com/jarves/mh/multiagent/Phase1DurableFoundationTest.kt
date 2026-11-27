@@ -27,7 +27,7 @@ class Phase1DurableFoundationTest {
     @Test
     fun test01_databaseInitializationAndSchemaValidation() {
         val (_, store) = openStore("t01.db")
-        assertEquals(4, store.schemaVersion)
+        assertEquals(InMemoryOrqenTaskStore.CURRENT_SCHEMA_VERSION, store.schemaVersion)
         assertTrue(store.validateIntegrity())
     }
 
@@ -277,7 +277,7 @@ class Phase1DurableFoundationTest {
         store.upsertConversation(ConversationEntity(conversationId = "c15", projectId = "p15", title = "Chat", linkedTaskIds = listOf("T-15-ACT")))
 
         val migratedVersion = store.migrateToLatest()
-        assertEquals(4, migratedVersion)
+        assertEquals(InMemoryOrqenTaskStore.CURRENT_SCHEMA_VERSION, migratedVersion)
         assertTrue(store.validateIntegrity())
         assertEquals(PersistentTaskStatus.RUNNING, store.getTask("T-15-ACT")?.status)
         assertEquals(PersistentTaskStatus.COMPLETED, store.getTask("T-15-DONE")?.status)

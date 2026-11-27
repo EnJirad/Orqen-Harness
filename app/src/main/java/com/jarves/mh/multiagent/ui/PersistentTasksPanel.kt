@@ -127,7 +127,10 @@ fun PersistentSessionsAndTasksDialog(
                             onCreateConversation(newChatTitle.ifBlank { "Chat ${conversations.size + 1}" })
                             newChatTitle = ""
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = OrqenMint, contentColor = Color(0xFF031F1B)),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
                     ) {
                         Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     }

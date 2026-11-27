@@ -673,6 +673,7 @@ class AutonomousPlatformLifecycleTest {
             ).taskId
         }
         ids.forEach { host.submitTask(this, it) }
+        kotlinx.coroutines.delay(50L)
         val stopped = host.stopAllTasks("Owner emergency stop")
 
         assertEquals(3, stopped)
@@ -696,7 +697,7 @@ class AutonomousPlatformLifecycleTest {
         assertEquals(1, store.schemaVersion)
         val newVer = store.migrateToLatest()
 
-        assertEquals(4, newVer)
+        assertEquals(InMemoryOrqenTaskStore.CURRENT_SCHEMA_VERSION, newVer)
         assertTrue(store.validateIntegrity())
         assertEquals(PersistentTaskStatus.RUNNING, store.getTask("T-ACTIVE")?.status)
         assertEquals(PersistentTaskStatus.COMPLETED, store.getTask("T-DONE")?.status)

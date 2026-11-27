@@ -1,6 +1,7 @@
 package com.jarves.mh.multiagent.engine
 
 import com.jarves.mh.multiagent.persistence.*
+import java.io.File
 import java.util.UUID
 
 data class PlannedStep(
@@ -16,6 +17,7 @@ data class PlannedStep(
     val targetFiles: List<String> = emptyList(),
     val requiresReview: Boolean = false,
     val idempotencyKey: String = "idem-${UUID.randomUUID().toString().take(12)}",
+    val partId: String? = null,
 )
 
 data class TaskPlan(
@@ -30,19 +32,6 @@ data class PlanValidationResult(
     val valid: Boolean,
     val errors: List<String> = emptyList(),
 )
-
-/**
- * Converts a user development objective into a validated, persistent multi-step execution plan.
- * Never hardcodes a fixed step count — plans scale dynamically with objective complexity.
- */
-interface TaskPlanner {
-    fun planTask(
-        project: ProjectEntity,
-        objective: String,
-        requestedSubtasks: List<String> = emptyList(),
-        acceptanceCriteria: List<String> = emptyList(),
-    ): TaskPlan
-}
 
 object PlanValidator {
     fun validate(plan: TaskPlan): PlanValidationResult {
@@ -65,7 +54,6 @@ object PlanValidator {
             }
         }
 
-        // Verify all dependencies reference existing steps
         for (step in plan.steps) {
             for (dep in step.dependencies) {
                 if (dep !in seenIds) {
@@ -77,7 +65,6 @@ object PlanValidator {
             }
         }
 
-        // Verify DAG has no cycles
         if (DependencyResolver.hasCycle(plan.steps.associate { it.stepId to it.dependencies })) {
             errors.add("Plan contains a circular dependency cycle.")
         }
@@ -87,92 +74,97 @@ object PlanValidator {
 }
 
 /**
- * Default structured planner that decomposes development requests into verifiable steps
- * (Inspect -> Implement subtasks -> Verify/Review) and persists them cleanly to [OrqenTaskStore].
+ * Unified Autonomous AI Team Plan Compiler.
+ *
+ * Replaces the removed legacy `StructuredTaskPlanner` (fixed Inspect -> Implement -> Verify template
+ * and `.orqen/plan.md`). Compiles a verified dynamic [MultiPartExecutionPlan] (`.orqen/plan/overview.md`
+ * + `.orqen/plan/part_N_<slug>.md`) into a dependency-accurate SQLite execution DAG and persists it
+ * atomically to [OrqenTaskStore].
  */
-class StructuredTaskPlanner : TaskPlanner {
-    override fun planTask(
+class DynamicTeamPlanCompiler {
+
+    /**
+     * Compiles a verified [MultiPartExecutionPlan] into a dependency-accurate SQLite step DAG.
+     * - Dynamic part count: 1 Part for small tasks, N Parts for larger tasks.
+     * - Every implementation step receives the actual verified Part specification and workspace path.
+     * - Every Part includes an independent Review & QA gate requiring real test/build evidence.
+     * - Dependencies honor [MultiPartSpec.dependencies] (enabling safe parallel Parts when independent
+     *   and strict sequential gating when dependent).
+     */
+    fun planFromMultiPart(
         project: ProjectEntity,
-        objective: String,
-        requestedSubtasks: List<String>,
-        acceptanceCriteria: List<String>,
+        multiPartPlan: MultiPartExecutionPlan,
+        workspaceDir: File? = null,
     ): TaskPlan {
-        val cleanObjective = objective.trim()
         val steps = mutableListOf<PlannedStep>()
         var seq = 1
+        val verifyStepByPartId = linkedMapOf<String, String>()
+        val sortedParts = multiPartPlan.parts.sortedBy { it.partNumber }
 
-        val inspectStep = PlannedStep(
-            stepId = "step-plan-${UUID.randomUUID().toString().take(6)}",
-            sequenceNumber = seq++,
-            title = "SPV วิเคราะห์ความต้องการและวางแผน (.orqen/plan.md)",
-            description = buildString {
-                appendLine("Analyze the Owner's request for project '${project.projectName}' and refine it into a crystal-clear, actionable specification.")
-                appendLine("Owner's request: $cleanObjective")
-                appendLine("REQUIRED DELIVERABLE: Create or update `.orqen/plan.md` inside the workspace with:")
-                appendLine("1. Refined goal & user requirements")
-                appendLine("2. Numbered implementation phases with `[ ]` checklists and exact target files")
-                appendLine("3. Verification, test, and build plan (for Android projects, include `assembleDebug` APK build)")
-                appendLine("Then hand off clearly to the coding agent(s) to execute `.orqen/plan.md` step-by-step.")
-            },
-            expectedOutput = "Master plan saved to .orqen/plan.md and clear delegation brief for developers",
-            requiredCapabilities = setOf("lead", "architect"),
-            targetFiles = emptyList(),
-            verificationSpec = VerificationSpec(mode = VerificationMode.AUTOMATED_VERIFICATION),
-            assignedAgentId = "agent-leader",
-        )
-        steps.add(inspectStep)
+        for (part in sortedParts) {
+            val implStepId = "step-${part.partId}-impl-${UUID.randomUUID().toString().take(6)}"
+            val verifyStepId = "step-${part.partId}-verify-${UUID.randomUUID().toString().take(6)}"
+            val implDeps = part.dependencies.mapNotNull { depPartId -> verifyStepByPartId[depPartId] }
 
-        val workItems = if (requestedSubtasks.isNotEmpty()) requestedSubtasks else listOf(cleanObjective)
-        val implStepIds = mutableListOf<String>()
-        workItems.forEachIndexed { idx, work ->
-            val implStep = PlannedStep(
-                stepId = "step-impl-${idx + 1}-${UUID.randomUUID().toString().take(6)}",
+            val specContent = workspaceDir?.let { ws ->
+                val specFile = File(ws, part.specRelativePath)
+                if (specFile.isFile) runCatching { specFile.readText().take(4_000) }.getOrNull() else null
+            }
+
+            steps += PlannedStep(
+                stepId = implStepId,
                 sequenceNumber = seq++,
-                title = "Implement (พัฒนาโค้ดตามแผน): ${work.take(52)}",
+                title = "Part ${part.partNumber}: ${part.title}",
                 description = buildString {
-                    appendLine("Read `.orqen/plan.md` created by Supervisor and implement all planned steps cleanly for: $work")
-                    appendLine("- Follow the exact architecture and checklist in `.orqen/plan.md`, marking completed items `[x]`.")
-                    appendLine("- If this is an Android project (has `app/build.gradle` or `app/build.gradle.kts`), run the PocketDev Gradle `assembleDebug` build to verify it compiles into a real APK with zero errors.")
-                    appendLine("- Report completed files and test results back to Supervisor for verification.")
+                    appendLine("Execute Part ${part.partNumber} (${part.partId}) according to `${part.specRelativePath}`.")
+                    if (workspaceDir != null) {
+                        appendLine("Workspace path: `${workspaceDir.absolutePath}`")
+                    }
+                    appendLine("Scope: ${part.scope}")
+                    appendLine("Objective: ${part.objective}")
+                    if (!specContent.isNullOrBlank()) {
+                        appendLine()
+                        appendLine("--- PART SPECIFICATION (${part.specRelativePath}) ---")
+                        appendLine(specContent)
+                        appendLine("--- END SPECIFICATION ---")
+                    }
+                    appendLine("Report actual modified files and real command/test outputs back to SPV.")
                 },
-                expectedOutput = "Working code modifications implementing .orqen/plan.md for: ${work.take(80)}",
-                dependencies = listOf(inspectStep.stepId),
+                expectedOutput = part.deliverables.joinToString("; ").ifBlank { "Verified implementation for ${part.partId}" },
+                dependencies = implDeps,
                 requiredCapabilities = setOf("code"),
                 verificationSpec = VerificationSpec(mode = VerificationMode.AUTOMATED_VERIFICATION),
-                assignedAgentId = "agent-developer",
+                assignedAgentId = part.assignedAgentId,
+                targetFiles = part.relevantFiles,
+                requiresReview = false,
+                partId = part.partId,
             )
-            steps.add(implStep)
-            implStepIds.add(implStep.stepId)
-        }
 
-        val verifyStep = PlannedStep(
-            stepId = "step-verify-${UUID.randomUUID().toString().take(6)}",
-            sequenceNumber = seq,
-            title = "Verify & test deliverables (ตรวจสอบโค้ดและทดสอบงาน)",
-            description = buildString {
-                appendLine("Inspect `.orqen/plan.md` and all changed files for: $cleanObjective")
-                appendLine("- Verify every requirement in `.orqen/plan.md` is implemented cleanly without bugs.")
-                appendLine("- Run tests (and for Android projects, ensure Debug APK builds cleanly with `assembleDebug`).")
-                appendLine("- If everything passes cleanly, explicitly include BOTH `REVIEW_APPROVED` and `TESTS_PASSED` in your final response.")
-                appendLine("- If bugs or build failures remain, explicitly include `REVIEW_REJECTED: <exact issues>` so Developer can fix them.")
-            },
-            expectedOutput = "REVIEW_APPROVED and TESTS_PASSED after verifying all deliverables and builds",
-            dependencies = implStepIds,
-            requiredCapabilities = setOf("review", "qa"),
-            verificationSpec = VerificationSpec(mode = VerificationMode.TEST_VERIFICATION),
-            assignedAgentId = "agent-reviewer",
-            requiresReview = true,
-        )
-        steps.add(verifyStep)
-
-        val criteria = acceptanceCriteria.ifEmpty {
-            listOf("All planned implementation steps completed", "Deliverables verified without unresolved errors")
+            steps += PlannedStep(
+                stepId = verifyStepId,
+                sequenceNumber = seq++,
+                title = "Part ${part.partNumber} Review & QA: ${part.title}",
+                description = buildString {
+                    appendLine("Independently inspect changed files and run real verification tests for Part ${part.partNumber} (${part.partId}) against `${part.specRelativePath}`.")
+                    appendLine("Execute actual test commands via `run_command` (and build verification if required). Real exitCode=0 evidence is mandatory.")
+                    appendLine("Emit `REVIEW_APPROVED` only after inspecting real changes and confirming tests pass, or `REVIEW_REJECTED: <specific defects>`.")
+                },
+                expectedOutput = "Independent REVIEW_APPROVED + real passing test execution evidence for ${part.partId}",
+                dependencies = listOf(implStepId),
+                requiredCapabilities = setOf("review", "qa"),
+                verificationSpec = VerificationSpec(mode = VerificationMode.TEST_VERIFICATION),
+                assignedAgentId = "agent-reviewer",
+                targetFiles = part.relevantFiles,
+                requiresReview = true,
+                partId = part.partId,
+            )
+            verifyStepByPartId[part.partId] = verifyStepId
         }
 
         return TaskPlan(
-            title = cleanObjective.take(80),
-            objective = cleanObjective,
-            acceptanceCriteria = criteria,
+            title = multiPartPlan.title.ifBlank { project.projectName },
+            objective = multiPartPlan.objective,
+            acceptanceCriteria = multiPartPlan.parts.flatMap { it.acceptanceCriteria }.distinct().take(12),
             steps = steps,
         )
     }
@@ -182,6 +174,8 @@ class StructuredTaskPlanner : TaskPlanner {
         projectId: String,
         plan: TaskPlan,
         budget: BudgetConfiguration = BudgetConfiguration(),
+        planId: String? = null,
+        planVersion: Int = 1,
     ): TaskEntity {
         val validation = PlanValidator.validate(plan)
         require(validation.valid) { "Invalid task plan: ${validation.errors.joinToString("; ")}" }
@@ -193,6 +187,9 @@ class StructuredTaskPlanner : TaskPlanner {
             status = PersistentTaskStatus.READY,
             budgetConfiguration = budget,
             completionCriteria = TaskCompletionCriteria(acceptanceChecks = plan.acceptanceCriteria),
+            planId = planId,
+            planVersion = planVersion,
+            currentPartId = plan.steps.firstOrNull()?.partId,
         )
         store.runInTransaction {
             store.upsertTask(task)
@@ -211,14 +208,15 @@ class StructuredTaskPlanner : TaskPlanner {
                         targetFiles = p.targetFiles,
                         requiresReview = p.requiresReview,
                         idempotencyKey = p.idempotencyKey,
+                        partId = p.partId,
                     ),
                 )
             }
             store.insertTaskEvent(
                 TaskEventEntity(
                     taskId = task.taskId,
-                    eventType = "TASK_PLANNED",
-                    eventPayload = """{"stepCount":${plan.steps.size},"title":"${task.title.replace("\"", "'")}"}""",
+                    eventType = "UNIFIED_PLAN_CREATED",
+                    eventPayload = """{"stepCount":${plan.steps.size},"planId":"${planId.orEmpty()}","planVersion":$planVersion,"title":"${task.title.replace("\"", "'")}"}""",
                 ),
             )
         }

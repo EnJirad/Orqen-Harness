@@ -29,6 +29,10 @@ data class TeamAgentExecutionResult(
     val isRecoverable: Boolean = false,
     val classifiedError: ClassifiedError? = null,
     val exitCode: Int? = null,
+    val toolEvidence: List<ToolExecutionEvidence> = emptyList(),
+    val testEvidence: List<TestExecutionEvidence> = emptyList(),
+    val buildEvidence: List<BuildVerificationEvidence> = emptyList(),
+    val nativeConversationId: String? = null,
 )
 
 /**
@@ -55,8 +59,17 @@ class TeamAgentRunner(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedTurnEntry>?): Boolean = size > 40
     }
 
+    private val activeProcesses = java.util.concurrent.ConcurrentHashMap<String, Process>()
+
     fun clearResponseCache() {
         synchronized(localResponseCache) { localResponseCache.clear() }
+    }
+
+    fun cancelRequest(requestId: String): Boolean {
+        val proc = activeProcesses.remove(requestId) ?: return false
+        runCatching { proc.destroy() }
+        runCatching { if (proc.isAlive) proc.destroyForcibly() }
+        return true
     }
 
     /**
@@ -106,6 +119,15 @@ class TeamAgentRunner(
         allowSkipPermissions: Boolean = false,
         imageFiles: List<File> = emptyList(),
         knownAgyModels: List<String> = emptyList(),
+        taskId: String? = null,
+        stepId: String? = null,
+        enableWorkspaceTools: Boolean = true,
+        readOnlyTools: Boolean = false,
+        requestId: String? = null,
+        agentId: String? = null,
+        nativeConversationId: String? = null,
+        fileLockManager: com.jarves.mh.multiagent.locks.FileLockManager? = null,
+        mcpToolInvoker: (suspend (toolId: String, argsJson: String) -> Pair<Boolean, String>)? = null,
         onProgress: suspend (String) -> Unit,
     ): TeamAgentExecutionResult = withContext(Dispatchers.IO) {
         val (safeWorkspaceDir, safeSlug) = resolveSafeWorkspace(workspaceDir, projectSlug)
@@ -127,6 +149,7 @@ class TeamAgentRunner(
             providerConfig?.type == ProviderType.ANTIGRAVITY
 
         val result = if (isAntigravity) {
+            val effectiveAllowSkip = allowSkipPermissions && enableWorkspaceTools && !readOnlyTools
             val bodyWithImages = if (validImages.isNotEmpty()) {
                 val guestPaths = validImages.mapNotNull { img ->
                     runCatching { "/workspace/$safeSlug/${img.relativeTo(safeWorkspaceDir).path}" }.getOrNull()
@@ -138,7 +161,11 @@ class TeamAgentRunner(
                     append(prompt)
                 }
             } else prompt
-            val agyPrompt = antigravityWorkspacePrompt(safeSlug, bodyWithImages)
+            val agyPrompt = if (!enableWorkspaceTools) {
+                "CONSULTATION-ONLY CHAT MODE: Do NOT call any tools, do NOT execute commands, and do NOT create, edit, or delete any files. Reply conversationally only.\n\n$bodyWithImages"
+            } else {
+                antigravityWorkspacePrompt(safeSlug, bodyWithImages)
+            }
             val agyRes = runAntigravityCli(
                 agent = agent,
                 workspaceDir = safeWorkspaceDir,
@@ -146,7 +173,10 @@ class TeamAgentRunner(
                 prompt = agyPrompt,
                 useIsolatedHome = useIsolatedAgyHome,
                 knownAgyModels = knownAgyModels,
-                allowSkipPermissions = allowSkipPermissions,
+                allowSkipPermissions = effectiveAllowSkip,
+                requestId = requestId,
+                nativeConversationId = nativeConversationId,
+                disallowFileWrites = !enableWorkspaceTools || readOnlyTools,
                 onProgress = onProgress,
             )
             // Record real Antigravity usage (tokens & requests) into ProviderManager for accurate Quota & Cost tracking!
@@ -171,7 +201,10 @@ class TeamAgentRunner(
                     prompt = agyPrompt,
                     useIsolatedHome = useIsolatedAgyHome,
                     knownAgyModels = emptyList(),
-                    allowSkipPermissions = allowSkipPermissions,
+                    allowSkipPermissions = effectiveAllowSkip,
+                    requestId = requestId,
+                    nativeConversationId = nativeConversationId,
+                    disallowFileWrites = !enableWorkspaceTools || readOnlyTools,
                     onProgress = onProgress,
                 )
             } else {
@@ -182,8 +215,16 @@ class TeamAgentRunner(
                 agent = agent,
                 providerConfig = providerConfig,
                 workspaceDir = safeWorkspaceDir,
+                projectSlug = safeSlug,
                 prompt = prompt,
                 imageFiles = validImages,
+                taskId = taskId,
+                stepId = stepId,
+                enableWorkspaceTools = enableWorkspaceTools,
+                readOnlyTools = readOnlyTools,
+                agentId = agentId ?: agent.config.slot.id,
+                fileLockManager = fileLockManager,
+                mcpToolInvoker = mcpToolInvoker,
                 onProgress = onProgress,
             )
         }
@@ -204,6 +245,9 @@ class TeamAgentRunner(
         useIsolatedHome: Boolean,
         knownAgyModels: List<String> = emptyList(),
         allowSkipPermissions: Boolean = false,
+        requestId: String? = null,
+        nativeConversationId: String? = null,
+        disallowFileWrites: Boolean = false,
         onProgress: suspend (String) -> Unit,
     ): TeamAgentExecutionResult {
         if (!installer.isAgentInstalled(AgentKind.ANTIGRAVITY)) {
@@ -243,7 +287,11 @@ class TeamAgentRunner(
             if (!resolvedModel.isNullOrBlank()) {
                 addAll(listOf("--model", resolvedModel))
             }
-            add("--new-project")
+            if (!nativeConversationId.isNullOrBlank()) {
+                addAll(listOf("--conversation", nativeConversationId))
+            } else {
+                add("--new-project")
+            }
         }
 
         val beforeMtimes = snapshotWorkspaceFiles(workspaceDir)
@@ -258,6 +306,13 @@ class TeamAgentRunner(
             emulateHardLinks = false,
             outputFile = outputFile,
         )
+        if (!requestId.isNullOrBlank()) {
+            activeProcesses[requestId] = process
+        }
+
+        val capturedToolEvidence = mutableListOf<ToolExecutionEvidence>()
+        var capturedConversationId: String? = nativeConversationId
+        var activeToolDetail = ""
 
         return try {
             withTimeout(defaultPolicy.requestTimeoutMs) {
@@ -334,11 +389,26 @@ class TeamAgentRunner(
                             }
                             is AntigravityParsedEvent.ToolStarted -> {
                                 activeToolName = event.name
+                                activeToolDetail = event.detail
                                 toolStartedAtMs = System.currentTimeMillis()
                                 onProgress("TOOL_STARTED:${event.name}:${event.detail.take(80)}")
                             }
                             is AntigravityParsedEvent.ToolCompleted -> {
+                                val finishedAt = System.currentTimeMillis()
+                                capturedToolEvidence.add(
+                                    ToolExecutionEvidence(
+                                        toolName = event.name,
+                                        command = activeToolDetail.takeIf { it.isNotBlank() },
+                                        startedAtMs = if (toolStartedAtMs > 0L) toolStartedAtMs else finishedAt,
+                                        completedAtMs = finishedAt,
+                                        exitCode = 0,
+                                        success = true,
+                                        isTestCommand = WorkspaceToolExecutor.isTestCommand(activeToolDetail),
+                                        isBuildCommand = WorkspaceToolExecutor.isBuildCommand(activeToolDetail),
+                                    ),
+                                )
                                 activeToolName = null
+                                activeToolDetail = ""
                                 onProgress("TOOL_COMPLETED:${event.name}")
                             }
                             is AntigravityParsedEvent.Result -> {
@@ -349,7 +419,18 @@ class TeamAgentRunner(
                                 }
                                 done = true
                             }
-                            else -> Unit
+                            else -> {
+                                // Capture native conversationId if present in raw JSON line
+                                if (capturedConversationId.isNullOrBlank() && line.contains("conversation")) {
+                                    runCatching {
+                                        val obj = JSONObject(line)
+                                        val cid = obj.optString("conversation_id")
+                                            .ifBlank { obj.optString("conversationId") }
+                                            .ifBlank { obj.optJSONObject("session")?.optString("id").orEmpty() }
+                                        if (cid.isNotBlank()) capturedConversationId = cid
+                                    }
+                                }
+                            }
                         }
                         if (done) break
                         newline = pending.indexOf("\n")
@@ -387,10 +468,12 @@ class TeamAgentRunner(
                     val reply = (finalResponse ?: textAccumulator.toString()).trim()
                     TeamAgentExecutionResult(
                         responseText = reply.ifBlank { "Task step completed in /workspace/$projectSlug." },
-                        writtenFiles = changedFiles,
+                        writtenFiles = if (disallowFileWrites) emptyList() else changedFiles,
                         isError = false,
                         isRecoverable = false,
                         exitCode = exitCode ?: 0,
+                        toolEvidence = capturedToolEvidence.toList(),
+                        nativeConversationId = capturedConversationId,
                     )
                 }
             }
@@ -418,6 +501,9 @@ class TeamAgentRunner(
                 classifiedError = classified,
             )
         } finally {
+            if (!requestId.isNullOrBlank()) {
+                activeProcesses.remove(requestId)
+            }
             runCatching { process.destroy() }
             runCatching { if (process.isAlive) process.destroyForcibly() }
             runCatching { outputFile.delete() }
@@ -428,8 +514,16 @@ class TeamAgentRunner(
         agent: AgentState,
         providerConfig: ProviderConfig?,
         workspaceDir: File,
+        projectSlug: String,
         prompt: String,
         imageFiles: List<File> = emptyList(),
+        taskId: String? = null,
+        stepId: String? = null,
+        enableWorkspaceTools: Boolean = true,
+        readOnlyTools: Boolean = false,
+        agentId: String? = null,
+        fileLockManager: com.jarves.mh.multiagent.locks.FileLockManager? = null,
+        mcpToolInvoker: (suspend (toolId: String, argsJson: String) -> Pair<Boolean, String>)? = null,
         onProgress: suspend (String) -> Unit,
     ): TeamAgentExecutionResult {
         val cfg = providerConfig ?: return TeamAgentExecutionResult(
@@ -437,7 +531,7 @@ class TeamAgentRunner(
             isError = true,
         )
         val apiKey = providerManager.getApiKey(cfg.id)
-        if (apiKey.isBlank()) {
+        if (apiKey.isBlank() && cfg.type != ProviderType.CUSTOM_API) {
             return TeamAgentExecutionResult(
                 responseText = "API Key not set for ${cfg.name}. Please configure it in the Providers tab.",
                 isError = true,
@@ -445,13 +539,23 @@ class TeamAgentRunner(
         }
         onProgress("Calling ${cfg.name} (${agent.config.modelId})…")
         val adapter = providerManager.getAdapter(cfg.type)
+        val hasLinuxRuntime = runCatching { installer.installedRuntime(); true }.getOrDefault(false)
         val systemInstruction = buildString {
             appendLine(agent.config.customPrompt.ifBlank { agent.config.role.systemInstructions })
             appendLine()
-            appendLine("When you create or edit files, output each file inside a fenced code block with the relative file path header like:")
-            appendLine("```file:index.html")
-            appendLine("<!-- content -->")
-            appendLine("```")
+            if (enableWorkspaceTools) {
+                appendLine(
+                    WorkspaceToolExecutor.toolPromptInstructions(
+                        allowShell = hasLinuxRuntime && !readOnlyTools,
+                        readOnly = readOnlyTools,
+                    ),
+                )
+            } else {
+                appendLine("When you create or edit files, output each file inside a fenced code block with the relative file path header like:")
+                appendLine("```file:index.html")
+                appendLine("<!-- content -->")
+                appendLine("```")
+            }
         }
         val imageAttachments = imageFiles.mapNotNull { file ->
             runCatching {
@@ -468,32 +572,87 @@ class TeamAgentRunner(
                 )
             }.getOrNull()
         }
-        val fullText = StringBuilder()
         return try {
-            withTimeout(defaultPolicy.requestTimeoutMs) {
-                adapter.sendChatCompletion(
-                    config = cfg,
-                    apiKey = apiKey,
-                    messages = listOf(AiMessage(role = "user", content = prompt, images = imageAttachments)),
-                    systemInstruction = systemInstruction,
-                    modelId = agent.config.modelId.ifBlank { cfg.selectedModelId },
-                    temperature = agent.config.temperature.toDouble(),
-                    maxTokens = agent.config.maxTokens,
-                ).collect { chunk ->
-                    if (chunk.deltaText.isNotEmpty() && fullText.length < defaultPolicy.maxResponseBytes) {
-                        fullText.append(chunk.deltaText)
+            val resolvedModelId = agent.config.modelId.ifBlank { cfg.selectedModelId }
+            if (enableWorkspaceTools) {
+                val cmdRunner = if (hasLinuxRuntime) ProotWorkspaceCommandRunner(installer, context.cacheDir) else null
+                val executor = WorkspaceToolExecutor(
+                    workspaceDir = workspaceDir,
+                    projectSlug = projectSlug,
+                    commandRunner = cmdRunner,
+                    allowShellCommands = hasLinuxRuntime && !readOnlyTools,
+                    readOnly = readOnlyTools,
+                    agentId = agentId,
+                    fileLockManager = fileLockManager,
+                    mcpToolInvoker = mcpToolInvoker,
+                )
+                val loopRes = withTimeout(defaultPolicy.requestTimeoutMs) {
+                    AgenticToolLoop.run(
+                        adapter = adapter,
+                        config = cfg,
+                        apiKey = apiKey,
+                        modelId = resolvedModelId,
+                        systemInstruction = systemInstruction,
+                        initialPrompt = prompt,
+                        imageAttachments = imageAttachments,
+                        temperature = agent.config.temperature.toDouble(),
+                        maxTokens = agent.config.maxTokens,
+                        maxResponseBytes = defaultPolicy.maxResponseBytes,
+                        executor = executor,
+                        workspaceDir = workspaceDir,
+                        extractFencedFiles = ::extractAndWriteFiles,
+                        maxTurns = 10,
+                        taskId = taskId,
+                        stepId = stepId,
+                        onProgress = onProgress,
+                    )
+                }
+                providerManager.recordUsage(
+                    cfg.id,
+                    resolvedModelId,
+                    loopRes.estimatedPromptTokens,
+                    loopRes.estimatedCompletionTokens,
+                    isError = false,
+                )
+                TeamAgentExecutionResult(
+                    responseText = loopRes.finalText,
+                    writtenFiles = loopRes.modifiedFiles,
+                    isError = false,
+                    isRecoverable = false,
+                    exitCode = 0,
+                    toolEvidence = loopRes.toolEvidence,
+                    testEvidence = loopRes.testEvidence,
+                    buildEvidence = loopRes.buildEvidence,
+                )
+            } else {
+                val fullText = StringBuilder()
+                withTimeout(defaultPolicy.requestTimeoutMs) {
+                    adapter.sendChatCompletion(
+                        config = cfg,
+                        apiKey = apiKey,
+                        messages = listOf(AiMessage(role = "user", content = prompt, images = imageAttachments)),
+                        systemInstruction = systemInstruction,
+                        modelId = resolvedModelId,
+                        temperature = agent.config.temperature.toDouble(),
+                        maxTokens = agent.config.maxTokens,
+                    ).collect { chunk ->
+                        if (chunk.deltaText.isNotEmpty() && fullText.length < defaultPolicy.maxResponseBytes) {
+                            fullText.append(chunk.deltaText)
+                        }
                     }
                 }
+                val reply = fullText.toString().trim()
+                // When workspace tools are disabled (e.g. strict Chat Mode), NEVER write files!
+                val written = emptyList<String>()
+                providerManager.recordUsage(cfg.id, resolvedModelId, prompt.length / 4, reply.length / 4, isError = false)
+                TeamAgentExecutionResult(
+                    responseText = reply.ifBlank { "Completed." },
+                    writtenFiles = written,
+                    isError = false,
+                    isRecoverable = false,
+                    exitCode = 0,
+                )
             }
-            val reply = fullText.toString().trim()
-            val written = extractAndWriteFiles(workspaceDir, reply)
-            providerManager.recordUsage(cfg.id, agent.config.modelId, prompt.length / 4, reply.length / 4, isError = false)
-            TeamAgentExecutionResult(
-                responseText = reply.ifBlank { "Completed." },
-                writtenFiles = written,
-                isError = false,
-                isRecoverable = false,
-            )
         } catch (timeout: TimeoutCancellationException) {
             providerManager.recordUsage(cfg.id, agent.config.modelId, prompt.length / 4, 0, isError = true)
             val msg = "API step request timed out (${defaultPolicy.requestTimeoutMs / 1000}s limit)"

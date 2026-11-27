@@ -620,6 +620,101 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+    val chatDraftStore by lazy {
+        com.jarves.mh.data.ChatDraftStore(
+            storageFile = File(getApplication<Application>().filesDir, "orqen_chat_drafts.json"),
+            taskStore = orqenTaskStore,
+        )
+    }
+
+    fun loadSingleChatDraft(projectId: String?, chatId: String?): String {
+        if (projectId.isNullOrBlank()) return ""
+        return chatDraftStore.getDraftText(chatDraftStore.singleProjectKey(projectId, chatId.orEmpty()))
+    }
+
+    fun saveSingleChatDraft(projectId: String?, chatId: String?, text: String, cursor: Int = text.length) {
+        if (projectId.isNullOrBlank()) return
+        chatDraftStore.saveDraft(
+            conversationKey = chatDraftStore.singleProjectKey(projectId, chatId.orEmpty()),
+            text = text,
+            cursorPosition = cursor,
+            projectId = projectId,
+            conversationId = chatId.orEmpty().ifBlank { "default" },
+            mode = com.jarves.mh.data.DraftChatMode.SOLO,
+        )
+    }
+
+    fun clearSingleChatDraft(projectId: String?, chatId: String?) {
+        if (projectId.isNullOrBlank()) return
+        chatDraftStore.clearDraft(chatDraftStore.singleProjectKey(projectId, chatId.orEmpty()))
+    }
+
+    fun loadTeamChatDraft(projectId: String?, conversationId: String = "group"): String {
+        if (projectId.isNullOrBlank()) return ""
+        return chatDraftStore.getDraftText(chatDraftStore.teamProjectKey(projectId, conversationId))
+    }
+
+    fun saveTeamChatDraft(projectId: String?, text: String, cursor: Int = text.length, conversationId: String = "group") {
+        if (projectId.isNullOrBlank()) return
+        chatDraftStore.saveDraft(
+            conversationKey = chatDraftStore.teamProjectKey(projectId, conversationId),
+            text = text,
+            cursorPosition = cursor,
+            projectId = projectId,
+            conversationId = conversationId,
+            mode = com.jarves.mh.data.DraftChatMode.TEAM_CHAT,
+        )
+    }
+
+    fun clearTeamChatDraft(projectId: String?, conversationId: String = "group") {
+        if (projectId.isNullOrBlank()) return
+        chatDraftStore.clearDraft(chatDraftStore.teamProjectKey(projectId, conversationId))
+    }
+
+    fun updateTeamProjectIdentity(
+        projectId: String,
+        type: ProjectType,
+        iconKey: String,
+        customIconPath: String? = null,
+    ) {
+        val now = System.currentTimeMillis()
+        val updated = _state.value.teamProjects.map { p ->
+            if (p.id == projectId) p.copy(
+                type = type,
+                iconKey = iconKey,
+                customIconPath = customIconPath,
+                updatedAtMillis = now,
+            ) else p
+        }
+        val activeUpdated = _state.value.activeTeamProject?.let { cur ->
+            if (cur.id == projectId) cur.copy(type = type, iconKey = iconKey, customIconPath = customIconPath, updatedAtMillis = now) else cur
+        }
+        _state.update { it.copy(teamProjects = updated, activeTeamProject = activeUpdated, toastMessage = "Updated project type & icon") }
+        preferences.saveTeamProjects(updated)
+    }
+
+    fun updateSingleProjectIdentity(
+        projectId: String,
+        type: ProjectType,
+        iconKey: String,
+        customIconPath: String? = null,
+    ) {
+        val now = System.currentTimeMillis()
+        val updated = _state.value.projects.map { p ->
+            if (p.id == projectId) p.copy(
+                type = type,
+                iconKey = iconKey,
+                customIconPath = customIconPath,
+                updatedAtMillis = now,
+            ) else p
+        }
+        val activeUpdated = _state.value.activeProject?.let { cur ->
+            if (cur.id == projectId) cur.copy(type = type, iconKey = iconKey, customIconPath = customIconPath, updatedAtMillis = now) else cur
+        }
+        _state.update { it.copy(projects = updated, activeProject = activeUpdated, toastMessage = "Updated project type & icon") }
+        preferences.saveProjects(updated)
+    }
+
     private val teamAgentRunner by lazy {
         com.jarves.mh.runtime.TeamAgentRunner(getApplication(), installer, providerManager)
     }
@@ -649,6 +744,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         com.jarves.mh.multiagent.engine.TeamAgentRunnerRuntimeAdapter(
             runner = teamAgentRunner,
             allowSandboxedCliTools = true,
+            fileLockManager = fileLockManager,
+            mcpToolInvoker = { agentId, workspaceId, taskId, toolId, argsJson ->
+                val res = mcpConnectionManager.executeToolForAgent(
+                    agentId = agentId,
+                    agentRole = "agent",
+                    namespacedToolId = toolId,
+                    argumentsJson = argsJson,
+                    workspaceId = workspaceId,
+                    taskId = taskId,
+                    activeTaskAgentIds = setOf(agentId),
+                    autoRequestFromSpv = true,
+                )
+                res.success to res.contentText
+            },
         )
     }
     val mcpConnectionManager by lazy {
@@ -689,15 +798,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             livenessMonitor = persistentLivenessMonitor,
             mcpManager = mcpConnectionManager,
             modelPoolProvider = {
-                providerManager.configs.value.filter { it.isEnabled }.map { cfg ->
-                    com.jarves.mh.multiagent.supervisor.ModelCandidate(
-                        providerId = cfg.id,
-                        modelId = cfg.selectedModelId.ifBlank { cfg.availableModels.firstOrNull().orEmpty() },
-                        capabilities = setOf("lead", "architect", "plan", "code", "fix", "review", "qa", "test"),
-                        priority = 5,
-                        isEnabled = cfg.isEnabled,
-                    )
-                }
+                val isAgySignedIn = _state.value.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN ||
+                    _state.value.teamAgentAntigravityAuth.values.any { it.status == AntigravityAuthStatus.SIGNED_IN }
+                val pool = com.jarves.mh.multiagent.supervisor.TeamModelIntelligence.buildModelPool(
+                    providerConfigs = providerManager.configs.value,
+                    hasApiKey = { id -> getProviderApiKey(id).isNotBlank() },
+                    isAntigravitySignedIn = isAgySignedIn,
+                    knownAgyModels = _state.value.antigravityModels,
+                )
+                com.jarves.mh.multiagent.supervisor.TeamModelIntelligence.toModelCandidates(pool)
             },
             providerConfigResolver = { providerId ->
                 providerManager.configs.value.firstOrNull { it.id == providerId }
@@ -736,30 +845,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 else -> ActivityType.WRITING_CODE
                             }
                             clearAgentLiveLog(slot)
-                            // Acknowledge-first: show 3-dot wave typing while posting what the agent is about to do,
-                            // then clear typing wave and transition to working spinner!
-                            _state.update {
-                                it.copy(
-                                    teamTypingAgentName = displayName,
-                                    teamTypingAgentSlot = slot,
-                                )
-                            }
-                            delay(300L)
-                            val ackText = upd.detail.takeIf { it.isNotBlank() }
-                                ?: "รับทราบครับ กำลังจะเริ่มทำ '${upd.stepTitle}' ตามแผนทันที"
+                            val supName = agentNameFor(AgentSlot.AGENT_1)
+                            // P0: SPV is the sole Owner-facing supervisor! Internal worker steps are reported
+                            // to the Owner concisely by SPV while raw worker activity stays in internal logs.
+                            val spvUpdateText = com.jarves.mh.multiagent.collab.SpvConversationRouter.formatSpvStatusReport(
+                                phase = "STARTED",
+                                workerName = displayName,
+                                stepNumber = upd.stepNumber,
+                                totalSteps = upd.totalSteps,
+                                stepTitle = upd.stepTitle,
+                                detail = upd.detail,
+                            )
+                            appendAgentLiveLog(slot, upd.detail.ifBlank { "Started '${upd.stepTitle}'" })
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
-                                senderSlot = slot,
-                                senderName = displayName,
-                                text = ackText,
+                                senderSlot = AgentSlot.AGENT_1,
+                                senderName = supName,
+                                text = spvUpdateText,
                                 messageType = GroupMessageType.PROGRESS_UPDATE,
                                 workStatus = "Working",
                             )
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
-                            // Strict SPV-directed sequential handoff: once a specialist starts executing,
-                            // mark Supervisor back to WAITING so ONLY the active executing agent shows as working!
                             if (slot != AgentSlot.AGENT_1) {
-                                updateAgentActivity(AgentSlot.AGENT_1, ActivityType.WAITING, "", "กำลังติดตามงานของ $displayName")
+                                updateAgentActivity(AgentSlot.AGENT_1, ActivityType.WAITING, "", "Monitoring $displayName")
                             }
                             updateAgentActivity(slot, act, upd.stepTitle, upd.detail)
                             val actLabel = when (act) {
@@ -795,6 +903,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "COMPLETED" -> {
                             updateAgentActivity(slot, ActivityType.COMPLETED, upd.stepTitle, "เสร็จสิ้น")
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                            val supName = agentNameFor(AgentSlot.AGENT_1)
                             val stepPrefix = if (upd.stepNumber > 0 && upd.totalSteps > 0) {
                                 "เสร็จขั้น ${upd.stepNumber}/${upd.totalSteps} · "
                             } else "เสร็จสิ้น · "
@@ -802,11 +911,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 _state.value.activeTeamProject?.name ?: "ORQEN",
                                 "$stepPrefix$displayName: ${upd.stepTitle.take(55)}",
                             )
+                            // Keep raw worker output in internal live logs; SPV reports concise verified progress to Owner!
+                            appendAgentLiveLog(slot, upd.detail.take(400))
+                            val spvSummary = com.jarves.mh.multiagent.collab.SpvConversationRouter.formatSpvStatusReport(
+                                phase = "COMPLETED",
+                                workerName = displayName,
+                                stepNumber = upd.stepNumber,
+                                totalSteps = upd.totalSteps,
+                                stepTitle = upd.stepTitle,
+                                modifiedFiles = upd.modifiedFiles,
+                                detail = upd.detail,
+                            )
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
-                                senderSlot = slot,
-                                senderName = displayName,
-                                text = upd.detail.ifBlank { "ทำงาน '${upd.stepTitle}' เสร็จแล้ว" },
+                                senderSlot = AgentSlot.AGENT_1,
+                                senderName = supName,
+                                text = spvSummary,
                                 messageType = GroupMessageType.COMPLETION_REPORT,
                                 workStatus = "Done",
                                 workDetails = upd.modifiedFiles.map { "Modified: $it" },
@@ -815,11 +935,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "RECOVERING", "FAILED" -> {
                             updateAgentActivity(slot, ActivityType.ERROR, upd.stepTitle, upd.detail.take(80))
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                            val supName = agentNameFor(AgentSlot.AGENT_1)
+                            appendAgentLiveLog(slot, "[${upd.phase}] ${upd.detail.take(300)}")
+                            val spvRecoveryMsg = com.jarves.mh.multiagent.collab.SpvConversationRouter.formatSpvStatusReport(
+                                phase = upd.phase,
+                                workerName = displayName,
+                                stepNumber = upd.stepNumber,
+                                totalSteps = upd.totalSteps,
+                                stepTitle = upd.stepTitle,
+                                detail = upd.detail,
+                            )
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
-                                senderSlot = slot,
-                                senderName = displayName,
-                                text = "พบปัญหา (${upd.phase}): ${upd.detail} — Supervisor กำลังกู้คืน/สลับโมเดลอัตโนมัติ",
+                                senderSlot = AgentSlot.AGENT_1,
+                                senderName = supName,
+                                text = spvRecoveryMsg,
                                 messageType = GroupMessageType.BUG_REPORT,
                             )
                         }
@@ -7042,12 +7172,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 com.jarves.mh.multiagent.collab.AgentProfileMapper.fromAgentConfig(state.config),
             )
         }
+        val enabledCount = registered.count { it.isEnabled }
         return autonomousSupervisorEngine.teamManager.createTeam(
             projectId = project.id,
             teamName = project.name,
             memberAgentIds = registered.map { it.agentId },
             requireIndependentReview = true,
-            maxConcurrentAgents = 1, // Strict SPV-directed sequential execution: one specialist works at a time
+            maxConcurrentAgents = if (enabledCount >= 2) 2 else 1, // Safe parallel execution for non-conflicting steps with FileLockManager
         )
     }
 
@@ -7463,6 +7594,380 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ==================== PHASE F: TEAM WORKSPACE FILE MANAGEMENT ====================
+
+    private fun teamWorkspaceRoot(project: Project): File =
+        File(getApplication<Application>().filesDir, "team_workspaces/${project.id}")
+            .apply { mkdirs() }
+            .canonicalFile
+
+    private fun safeTeamWorkspaceFile(project: Project, relPath: String): File? {
+        val root = teamWorkspaceRoot(project)
+        val clean = relPath.trim().removePrefix("/")
+        if (clean.isBlank()) return root
+        if (!com.jarves.mh.multiagent.persistence.WorkspacePathValidator.isPathInsideRoot(root, clean)) return null
+        return File(root, clean).canonicalFile
+    }
+
+    fun uploadFilesToTeamWorkspace(parentRelPath: String, uris: List<Uri>, onDone: () -> Unit = {}) {
+        val project = _state.value.activeTeamProject ?: return
+        if (uris.isEmpty()) return
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val parent = safeTeamWorkspaceFile(project, parentRelPath)?.takeIf { it.isDirectory }
+                    ?: error("Invalid destination folder")
+                var uploaded = 0
+                val uploadedNames = mutableListOf<String>()
+                uris.forEach { uri ->
+                    var displayName = "upload_${System.currentTimeMillis()}"
+                    resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }
+                                ?.let { displayName = cursor.getString(it) ?: displayName }
+                        }
+                    }
+                    val safeName = sanitizeAttachmentName(displayName)
+                    val stem = safeName.substringBeforeLast('.', safeName)
+                    val ext = safeName.substringAfterLast('.', "").let { if (it.isBlank()) "" else ".$it" }
+                    var dest = File(parent, safeName)
+                    var suffix = 2
+                    while (dest.exists()) dest = File(parent, "$stem-${suffix++}$ext")
+                    val uploadLimit = (parent.usableSpace * 8L / 10L).coerceAtMost(MAX_UPLOAD_BYTES)
+                    var copied = 0L
+                    try {
+                        resolver.openInputStream(uri)?.buffered()?.use { input ->
+                            dest.outputStream().buffered().use { output ->
+                                val buf = ByteArray(DEFAULT_BUFFER_SIZE)
+                                while (true) {
+                                    val count = input.read(buf)
+                                    if (count < 0) break
+                                    copied += count
+                                    check(copied <= uploadLimit) { "File '$displayName' exceeds upload size limit" }
+                                    output.write(buf, 0, count)
+                                }
+                            }
+                        } ?: error("Cannot read '$displayName'")
+                    } catch (e: Throwable) {
+                        dest.delete()
+                        throw e
+                    }
+                    uploaded++
+                    uploadedNames += dest.name
+                }
+                uploaded to uploadedNames
+            }
+            withContext(Dispatchers.Main) {
+                _state.update {
+                    it.copy(
+                        toastMessage = result.fold(
+                            onSuccess = { (count, _) -> "Uploaded $count file(s) to ${project.name}" },
+                            onFailure = { err -> "Upload failed: ${err.message ?: "Unknown error"}" },
+                        ),
+                    )
+                }
+                onDone()
+            }
+        }
+    }
+
+    fun createTeamWorkspaceFolder(parentRelPath: String, folderName: String, onDone: () -> Unit = {}) {
+        val project = _state.value.activeTeamProject ?: return
+        val cleanName = folderName.trim().replace('/', '_').replace('\\', '_')
+        if (cleanName.isBlank() || cleanName == "." || cleanName == "..") return
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val parent = safeTeamWorkspaceFile(project, parentRelPath)?.takeIf { it.isDirectory }
+                    ?: error("Invalid parent directory")
+                val target = File(parent, cleanName)
+                check(com.jarves.mh.multiagent.persistence.WorkspacePathValidator.isPathInsideRoot(teamWorkspaceRoot(project), target.absolutePath)) {
+                    "Invalid folder path"
+                }
+                check(target.exists() || target.mkdirs()) { "Unable to create folder '$cleanName'" }
+                cleanName
+            }
+            withContext(Dispatchers.Main) {
+                _state.update {
+                    it.copy(
+                        toastMessage = res.fold(
+                            onSuccess = { "Created folder '$it'" },
+                            onFailure = { err -> "Create folder failed: ${err.message}" },
+                        ),
+                    )
+                }
+                onDone()
+            }
+        }
+    }
+
+    fun renameTeamWorkspaceEntry(relPath: String, newName: String, onDone: () -> Unit = {}) {
+        val project = _state.value.activeTeamProject ?: return
+        val cleanName = newName.trim().replace('/', '_').replace('\\', '_')
+        if (relPath.isBlank() || cleanName.isBlank() || cleanName == "." || cleanName == "..") return
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val root = teamWorkspaceRoot(project)
+                val source = safeTeamWorkspaceFile(project, relPath)?.takeIf { it.exists() }
+                    ?: error("Path not found or protected")
+                check(source != root) { "Cannot rename workspace root" }
+                val dest = File(source.parentFile, cleanName).canonicalFile
+                check(com.jarves.mh.multiagent.persistence.WorkspacePathValidator.isPathInsideRoot(root, dest.absolutePath)) {
+                    "Invalid destination path"
+                }
+                check(!dest.exists()) { "'$cleanName' already exists" }
+                check(source.renameTo(dest)) { "Unable to rename '${source.name}'" }
+                cleanName
+            }
+            withContext(Dispatchers.Main) {
+                _state.update {
+                    it.copy(
+                        toastMessage = res.fold(
+                            onSuccess = { "Renamed to '$it'" },
+                            onFailure = { err -> "Rename failed: ${err.message}" },
+                        ),
+                    )
+                }
+                onDone()
+            }
+        }
+    }
+
+    fun deleteTeamWorkspaceEntry(relPath: String, onDone: () -> Unit = {}) {
+        val project = _state.value.activeTeamProject ?: return
+        if (relPath.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val root = teamWorkspaceRoot(project)
+                val target = safeTeamWorkspaceFile(project, relPath)?.takeIf { it.exists() }
+                    ?: error("Path not found or protected")
+                check(target != root) { "Cannot delete workspace root" }
+                val name = target.name
+                check(target.deleteRecursively()) { "Failed to delete '$name'" }
+                name
+            }
+            withContext(Dispatchers.Main) {
+                _state.update {
+                    it.copy(
+                        toastMessage = res.fold(
+                            onSuccess = { "Deleted '$it'" },
+                            onFailure = { err -> "Delete failed: ${err.message}" },
+                        ),
+                    )
+                }
+                onDone()
+            }
+        }
+    }
+
+    fun saveTeamWorkspaceFileCopy(relPath: String, destination: Uri) {
+        val project = _state.value.activeTeamProject ?: return
+        val resolver = getApplication<Application>().contentResolver
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val file = safeTeamWorkspaceFile(project, relPath)?.takeIf { it.isFile }
+                    ?: error("File not found or protected")
+                resolver.openOutputStream(destination, "wt")?.use { out ->
+                    file.inputStream().buffered().use { it.copyTo(out) }
+                } ?: error("Cannot open destination")
+                file.name
+            }
+            withContext(Dispatchers.Main) {
+                _state.update {
+                    it.copy(
+                        toastMessage = res.fold(
+                            onSuccess = { "Downloaded '$it'" },
+                            onFailure = { err -> "Download failed: ${err.message}" },
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun shareTeamWorkspaceFile(relPath: String) {
+        val project = _state.value.activeTeamProject ?: return
+        runCatching {
+            val file = safeTeamWorkspaceFile(project, relPath)?.takeIf { it.isFile }
+                ?: error("File not found")
+            val app = getApplication<Application>()
+            val uri = FileProvider.getUriForFile(app, "${app.packageName}.files", file)
+            val mimeType = android.webkit.MimeTypeMap.getSingleton()
+                .getMimeTypeFromExtension(file.extension.lowercase())
+                ?: "application/octet-stream"
+            app.startActivity(
+                Intent.createChooser(
+                    Intent(Intent.ACTION_SEND).apply {
+                        type = mimeType
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                    "Share ${file.name}",
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure { err ->
+            _state.update { it.copy(toastMessage = "Share failed: ${err.message}") }
+        }
+    }
+
+    fun downloadTeamWorkspaceZip(relPaths: List<String>, destination: Uri) {
+        val project = _state.value.activeTeamProject ?: return
+        val resolver = getApplication<Application>().contentResolver
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                val root = teamWorkspaceRoot(project)
+                val pathsToExport = if (relPaths.isEmpty()) listOf("") else relPaths
+                val exportResult = resolver.openOutputStream(destination, "wt")?.buffered()?.use { rawOut ->
+                    com.jarves.mh.runtime.WorkspaceZipExporter.exportToStream(
+                        workspaceRoot = root,
+                        relativePaths = pathsToExport,
+                        outputStream = rawOut,
+                    )
+                } ?: error("Cannot write ZIP destination")
+                check(exportResult.success && exportResult.entryCount > 0) {
+                    exportResult.errorMessage ?: "No files selected to archive"
+                }
+                exportResult.entryCount
+            }
+            withContext(Dispatchers.Main) {
+                _state.update {
+                    it.copy(
+                        toastMessage = res.fold(
+                            onSuccess = { count -> "Exported ZIP archive ($count file(s))" },
+                            onFailure = { err -> "ZIP export failed: ${err.message}" },
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    // ==================== PHASE H: SPV MODEL INTELLIGENCE & MANAGEMENT COMMANDS ====================
+
+    fun applySpvModelOptimization(
+        goal: com.jarves.mh.multiagent.supervisor.TeamOptimizationGoal,
+    ): List<com.jarves.mh.multiagent.supervisor.AgentModelRecommendation> {
+        val isAgySignedIn = _state.value.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN ||
+            _state.value.teamAgentAntigravityAuth.values.any { it.status == AntigravityAuthStatus.SIGNED_IN }
+        val pool = com.jarves.mh.multiagent.supervisor.TeamModelIntelligence.buildModelPool(
+            providerConfigs = providerManager.configs.value,
+            hasApiKey = { id -> getProviderApiKey(id).isNotBlank() },
+            isAntigravitySignedIn = isAgySignedIn,
+            knownAgyModels = _state.value.antigravityModels,
+        )
+        val recs = com.jarves.mh.multiagent.supervisor.TeamModelIntelligence.recommendModelAssignments(
+            agents = _state.value.teamAgents,
+            pool = pool,
+            goal = goal,
+        )
+        recs.filter { it.changed }.forEach { rec ->
+            val current = _state.value.teamAgents.firstOrNull { it.config.slot == rec.slot }?.config ?: return@forEach
+            updateAgentConfig(
+                rec.slot,
+                current.copy(
+                    providerId = rec.recommendedProviderId,
+                    modelId = rec.recommendedModelId,
+                ),
+            )
+        }
+        return recs
+    }
+
+    private fun handleSpvManagementCommand(
+        projectId: String,
+        cmd: com.jarves.mh.multiagent.supervisor.SpvManagementCommand,
+    ) {
+        val supName = agentNameFor(AgentSlot.AGENT_1)
+        val report = when (cmd.kind) {
+            com.jarves.mh.multiagent.supervisor.SpvManagementCommandKind.CONFIGURE_ANDROID_TEAM -> {
+                val modelRecs = applySpvModelOptimization(com.jarves.mh.multiagent.supervisor.TeamOptimizationGoal.ANDROID_DEVELOPMENT)
+                val mcpChanges = mcpConnectionManager.applyRecommendedTeamPermissions(projectId, _state.value.teamAgents)
+                buildString {
+                    appendLine("Configured AI Team for Android Development:")
+                    if (modelRecs.isEmpty()) {
+                        appendLine("- Models: No available providers with valid credentials found. Configure a provider in Providers tab.")
+                    } else {
+                        modelRecs.forEach { r ->
+                            appendLine("- ${r.agentName} (${r.roleType.name}): ${r.recommendedModelId} (${r.rationale})")
+                        }
+                    }
+                    if (mcpChanges.isNotEmpty()) {
+                        appendLine("MCP Permissions Applied (least-privilege; high-risk tools still require Owner approval):")
+                        mcpChanges.take(8).forEach { appendLine("- $it") }
+                    }
+                }
+            }
+            com.jarves.mh.multiagent.supervisor.SpvManagementCommandKind.CHOOSE_BEST_MODELS,
+            com.jarves.mh.multiagent.supervisor.SpvManagementCommandKind.RECONFIGURE_TEAM,
+            -> {
+                val recs = applySpvModelOptimization(com.jarves.mh.multiagent.supervisor.TeamOptimizationGoal.BALANCED)
+                if (recs.isEmpty()) {
+                    "No eligible models found in configured providers. Please connect Antigravity or add an API key first."
+                } else {
+                    buildString {
+                        appendLine("SPV updated team model assignments (Balanced quality & cost):")
+                        recs.forEach { r ->
+                            val tag = if (r.changed) "UPDATED" else "KEPT"
+                            appendLine("- [$tag] ${r.agentName}: ${r.recommendedModelId} — ${r.rationale}")
+                        }
+                    }
+                }
+            }
+            com.jarves.mh.multiagent.supervisor.SpvManagementCommandKind.OPTIMIZE_LOW_COST -> {
+                val recs = applySpvModelOptimization(com.jarves.mh.multiagent.supervisor.TeamOptimizationGoal.LOW_COST)
+                if (recs.isEmpty()) {
+                    "No eligible low-cost models found in configured providers."
+                } else {
+                    buildString {
+                        appendLine("SPV optimized team for low API costs:")
+                        recs.forEach { r ->
+                            appendLine("- ${r.agentName}: ${r.recommendedModelId} — ${r.rationale}")
+                        }
+                    }
+                }
+            }
+            com.jarves.mh.multiagent.supervisor.SpvManagementCommandKind.CHECK_AGENT_TOOLS -> {
+                val hasRuntime = runCatching { installer.installedRuntime(); true }.getOrDefault(false)
+                val servers = mcpConnectionManager.servers.value
+                val states = mcpConnectionManager.runtimeStates.value
+                val connected = servers.count { states[it.serverId]?.status == com.jarves.mh.mcp.McpConnectionStatus.CONNECTED && mcpConnectionManager.isServerEnabledForTeam(projectId, it.serverId) }
+                buildString {
+                    appendLine("Agent Tool & Capability Audit:")
+                    appendLine("- Workspace File & Code Tools: ENABLED for all agents (read/write/edit/list/search)")
+                    appendLine("- Terminal / Gradle / Test Runner (PRoot): ${if (hasRuntime) "READY" else "NOT INSTALLED (install Linux runtime in Settings)"}")
+                    appendLine("- Connected Team MCP Servers: $connected / ${servers.size}")
+                    _state.value.teamAgents.filter { it.config.isEnabled }.forEach { a ->
+                        val perm = mcpConnectionManager.authEngine.getBasePermissions(a.config.slot.id).firstOrNull()?.maxLevel?.label ?: "READ (default)"
+                        appendLine("- ${a.config.name} (${a.config.role.title}): Model=${a.config.modelId.ifBlank { "default" }}, MCP=$perm")
+                    }
+                }
+            }
+            com.jarves.mh.multiagent.supervisor.SpvManagementCommandKind.FIND_FAILING_AGENT -> {
+                val health = autonomousSupervisorEngine.healthMonitor.snapshotAll()
+                val failing = health.values.filter { it.consecutiveFailures > 0 || it.recentProviderErrors.isNotEmpty() }
+                    .sortedByDescending { it.consecutiveFailures }
+                if (failing.isEmpty()) {
+                    "No agents have recorded repeated execution failures in the current session."
+                } else {
+                    buildString {
+                        appendLine("Failure Diagnostics Report:")
+                        failing.forEach { rec ->
+                            val lastErr = rec.recentProviderErrors.lastOrNull() ?: "none"
+                            appendLine("- ${rec.agentId} (${rec.healthState.name}): consecutiveFailures=${rec.consecutiveFailures}, recentErrors=${rec.recentProviderErrors.size}, lastError=$lastErr")
+                        }
+                    }
+                }
+            }
+        }
+        appendProjectTeamMessage(
+            projectId = projectId,
+            senderSlot = AgentSlot.AGENT_1,
+            senderName = supName,
+            text = report.trim(),
+            messageType = GroupMessageType.PROGRESS_UPDATE,
+        )
+    }
+
     /**
      * Checks if [project] is an Android project; if so, finds an already-built debug APK or builds
      * one automatically inside PRoot using PocketDev's Gradle command so Owner can install it directly from Chat!
@@ -7611,17 +8116,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }.getOrNull()
             }
             withContext(Dispatchers.Main) {
-                val effectiveType = if (type == GroupMessageType.NORMAL) GroupMessageType.TASK_ASSIGNMENT else type
+                val savedPaths = savedFiles.map { it.absolutePath }
+                // STRICT CHAT MODE ISOLATION: attaching images in Chat Mode (NORMAL) stays in Chat Mode!
+                if (type == GroupMessageType.NORMAL) {
+                    appendProjectTeamMessage(
+                        projectId = projectId,
+                        senderSlot = null,
+                        senderName = effectiveOwnerName(),
+                        text = text,
+                        messageType = GroupMessageType.NORMAL,
+                        imagePaths = savedPaths,
+                    )
+                    clearTeamChatDraft(projectId)
+                    handleIdleAgentChatReply(projectId, text, targetSlot)
+                    return@withContext
+                }
                 appendProjectTeamMessage(
                     projectId = projectId,
                     senderSlot = null,
                     senderName = effectiveOwnerName(),
                     text = text,
-                    messageType = effectiveType,
-                    imagePaths = savedFiles.map { it.absolutePath },
+                    messageType = type,
+                    imagePaths = savedPaths,
                 )
+                clearTeamChatDraft(projectId)
                 savedFiles.forEach { pendingTeamImageFiles.add(it) }
-                pendingTeamDirectives.add(text)
+                val finalizedObjective = com.jarves.mh.multiagent.collab.SpvModePolicy.buildObjectiveFromDiscussion(
+                    recentMessages = _state.value.teamGroupMessages,
+                    explicitInstruction = text,
+                    attachmentPaths = savedPaths,
+                ).ifBlank { text }
+                pendingTeamDirectives.add(finalizedObjective)
                 _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
                 recordCollaborationEvent(
                     type = TeamEventType.TASK_CREATED,
@@ -7629,16 +8154,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     message = "Owner directive (+${savedFiles.size} image): \"$text\"",
                     priority = EventPriority.CRITICAL,
                 )
-                val savedPaths = savedFiles.map { it.absolutePath }
                 val runningId = _state.value.runningTeamProjectId
                 val canAutoStart = !_state.value.teamIsRunning && (runningId == null || runningId == projectId)
                 if (canAutoStart) {
-                    submitAutonomousTeamObjective(text, attachmentPaths = savedPaths)
+                    submitAutonomousTeamObjective(finalizedObjective, attachmentPaths = savedPaths)
                 } else {
-                    // Safely persist queued directive + image attachments as a durable QUEUED task in SQLite
                     _state.value.activeTeamProject?.let { proj ->
                         val team = syncTeamProfilesForProject(proj)
-                        autonomousSupervisorEngine.preparePlan(proj.id, team, text, attachmentPaths = savedPaths)
+                        autonomousSupervisorEngine.preparePlan(proj.id, team, finalizedObjective, attachmentPaths = savedPaths)
                     }
                 }
             }
@@ -7659,18 +8182,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val enabledAgents = _state.value.teamAgents.filter { it.config.isEnabled }
         if (enabledAgents.isEmpty()) return
 
-        // Deterministic Owner Group Chat Priority Router:
-        // - Explicit @mention (via chip or @Name in text): exact agent replies; if busy, pause -> reply -> resume!
-        // - General message (no @mention): Supervisor (AGENT_1) if idle, else an idle agent so working agents stay uninterrupted.
-        val decision = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.selectResponder(
-            text = userMessage,
-            explicitTarget = targetSlot,
-            enabledAgents = enabledAgents,
-        ) ?: return
-        val responder = decision.responder
-        val shouldInterruptAndResume = decision.shouldInterruptAndResume && _state.value.teamIsRunning
+        // P0 — Strict SPV-Centered Role Separation:
+        // SPV (AGENT_1) is the sole Owner-facing supervisor for general conversation.
+        // Only explicit @mention targets a specific agent directly; otherwise SPV ALWAYS owns the reply
+        // (never routing general Owner questions to Developer!).
+        val explicitMention = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.resolveMentionedSlot(userMessage, targetSlot, enabledAgents)
+        val responder = if (explicitMention != null) {
+            enabledAgents.firstOrNull { it.config.slot == explicitMention }
+        } else {
+            com.jarves.mh.multiagent.collab.SpvConversationRouter.selectSoleOwnerFacingSupervisor(enabledAgents)
+        } ?: return
+        val shouldInterruptAndResume = explicitMention != null && responder.isWorking && _state.value.teamIsRunning
 
-        val looksLikeTask = isActionableTaskIntent(userMessage)
         val ownerName = effectiveOwnerName()
         viewModelScope.launch {
             var pausedForInterrupt = false
@@ -7691,13 +8214,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val teamStatusSummary = enabledAgents.joinToString("\n") { a ->
                     "- ${a.config.name} (${a.config.role.title}): ${if (a.isWorking) "กำลังทำงาน (${a.activityState.lastAction})" else "พักรออยู่"}"
                 }
+                val recentDiscussion = _state.value.teamGroupMessages
+                    .takeLast(8)
+                    .joinToString("\n") { m ->
+                        val who = if (m.senderSlot == null) ownerName else m.senderName
+                        "- $who: ${m.text.trim().take(280)}"
+                    }
                 val chatPrompt = buildString {
                     appendLine("You are ${responder.config.name} (${responder.config.role.title}) on this AI Team.")
+                    appendLine("INTERACTION MODE: CHAT_CONSULTATION (strictly read-only technical consultation & design partner).")
                     appendLine("Owner's name (address the user as): $ownerName")
                     appendLine("Your employee personality & tone: ${responder.config.effectivePersonality()}")
-                    appendLine("IMPORTANT: The Owner ($ownerName) is currently talking to you in Group Chat (conversational Q&A). DO NOT modify, create, or delete any files during this reply.")
+                    appendLine("STRICT RULES IN CHAT MODE:")
+                    appendLine("- DO NOT create tasks, DO NOT delegate work, DO NOT modify/create/delete any files, and DO NOT claim you started building.")
+                    appendLine("- Act as an intelligent technical partner: understand the Owner's idea, ask useful clarifying questions, analyze requirements, suggest architecture, compare options, and help refine a complete specification.")
+                    appendLine("- Remember and build upon the recent conversation context below.")
                     if (pausedForInterrupt) {
                         appendLine("NOTE: You temporarily paused your active task because $ownerName explicitly @mentioned you. Answer $ownerName clearly and concisely, and note that you will resume your work right after replying.")
+                    }
+                    if (recentDiscussion.isNotBlank()) {
+                        appendLine("Recent discussion context:")
+                        appendLine(recentDiscussion)
                     }
                     appendLine("Current team status:")
                     appendLine(teamStatusSummary)
@@ -7705,7 +8242,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLine(workspaceFileListingSummary(workspaceDir))
                     appendLine()
                     appendLine("$ownerName said: \"$userMessage\"")
-                    appendLine("Reply naturally in the same language as $ownerName, addressing them as $ownerName, clearly explaining the current project status or answering their question concisely.")
+                    appendLine("Reply naturally in the same language as $ownerName, addressing them as $ownerName, clearly helping refine their idea or answering their question concisely.")
                 }
                 val providerCfg = _state.value.providerConfigs.firstOrNull { it.id == responder.config.providerId }
                 val res = teamAgentRunner.executeTurn(
@@ -7717,6 +8254,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     useIsolatedAgyHome = useIsolatedAgyHomeFor(responder.config.slot),
                     enableCache = false,
                     knownAgyModels = _state.value.antigravityModels,
+                    enableWorkspaceTools = false,
+                    readOnlyTools = true,
                     onProgress = { chunk ->
                         // Keep internal background activity inside the agent's live log dropdown —
                         // do NOT clutter the main Group Chat with raw background progress!
@@ -7735,11 +8274,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     cleanChatSummary(res.responseText)
                 }
-                val finalReply = if (looksLikeTask && !pausedForInterrupt) {
-                    "$replyBody\n\n💡 หากต้องการให้ทีมเริ่มวางแผนและลงมือทำตามคำสั่งนี้ กดปุ่ม \"ส่งเป็นงาน Task\" ด้านล่างได้เลยครับ"
-                } else {
-                    replyBody
-                }
+                val finalReply = replyBody
                 // Smooth, lightweight line-by-line progressive reveal (throttled to <= 10 ticks so zero lag / low CPU!)
                 val lines = finalReply.lines()
                 if (lines.size > 1) {
@@ -7771,7 +8306,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     senderName = responder.config.name,
                     text = finalReply,
                     messageType = GroupMessageType.NORMAL,
-                    suggestedTaskPrompt = if (looksLikeTask && !pausedForInterrupt) userMessage else null,
+                    suggestedTaskPrompt = null,
                 )
             } finally {
                 _state.update {
@@ -7796,34 +8331,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val projectId = _state.value.activeTeamProject?.id
         val ownerName = effectiveOwnerName()
 
-        // If Supervisor is awaiting Owner's confirmation after pressing Start,
-        // accept affirmative replies ("โอเค", "ทำต่อ", "ok", "yes", etc.) in either Chat or Task mode!
-        if (projectId != null &&
-            pendingStartConfirmation?.projectId == projectId &&
-            com.jarves.mh.multiagent.collab.TeamGroupChatRouter.isContinueConfirmation(text)
-        ) {
-            appendProjectTeamMessage(
-                projectId = projectId,
-                senderSlot = null,
-                senderName = ownerName,
-                text = text,
-                messageType = GroupMessageType.APPROVAL,
-            )
-            confirmAndStartPendingTeamWork(projectId)
-            return
-        }
-
-        // Chat-driven Auto-Start: if Owner types an actionable task in default Chat mode (without @mentioning
-        // a specific agent for Q&A), immediately let SPV plan and launch the team — no manual Start button needed!
-        val enabledAgents = _state.value.teamAgents.filter { it.config.isEnabled }
-        val explicitMention = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.resolveMentionedSlot(text, targetSlot, enabledAgents)
-        val shouldAutoDispatchTask = type == GroupMessageType.NORMAL &&
-            explicitMention == null &&
-            isActionableTaskIntent(text) &&
-            projectId != null
-
-        // CHAT mode (GroupMessageType.NORMAL): converse with an IDLE agent (or @mentioned agent) without interrupting others!
-        if (type == GroupMessageType.NORMAL && !shouldAutoDispatchTask) {
+        // STRICT MODE SEPARATION (Phase 3):
+        // The selected mode (`type`) is authoritative.
+        // - GroupMessageType.NORMAL = CHAT MODE (consultation-only: NEVER creates tasks, NEVER runs
+        //   keyword-based task detection, NEVER invokes Developer/Reviewer/QA/tools/terminal/MCP).
+        // - Any explicit Task Mode type (`TASK_ASSIGNMENT`, `BUG_REPORT`, `REVIEW_REQUEST`, etc.) =
+        //   TASK MODE (synthesizes full conversation decisions and launches autonomous SPV execution).
+        val enabledAgentsForRoute = _state.value.teamAgents.filter { it.config.isEnabled }
+        val ownerRoute = com.jarves.mh.multiagent.collab.SpvConversationRouter.routeOwnerMessage(
+            text = text,
+            messageType = type,
+            enabledAgents = enabledAgentsForRoute,
+        )
+        if (type == GroupMessageType.NORMAL || ownerRoute == null || !ownerRoute.shouldCreateTask) {
             appendProjectTeamMessage(
                 projectId = projectId,
                 senderSlot = null,
@@ -7832,10 +8352,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 messageType = GroupMessageType.NORMAL,
             )
             if (projectId != null) {
+                clearTeamChatDraft(projectId)
                 handleIdleAgentChatReply(projectId, text, targetSlot)
             }
             return
         }
+
+        // Explicit TASK_EXECUTION transition: synthesize finalized requirements from prior Chat consultation
+        // so the Owner never has to repeat previously discussed specifications!
+        val finalizedObjective = com.jarves.mh.multiagent.collab.SpvModePolicy.buildObjectiveFromDiscussion(
+            recentMessages = _state.value.teamGroupMessages,
+            explicitInstruction = text,
+        ).ifBlank { text }
 
         // Explicit new task cancels any pending Start confirmation prompt
         pendingStartConfirmation = null
@@ -7847,25 +8375,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             senderSlot = null,
             senderName = ownerName,
             text = text,
-            messageType = type,
+            messageType = if (type == GroupMessageType.NORMAL) GroupMessageType.TASK_ASSIGNMENT else type,
         )
-        pendingTeamDirectives.add(text)
+        if (projectId != null) clearTeamChatDraft(projectId)
+        pendingTeamDirectives.add(finalizedObjective)
         _state.update { it.copy(teamPriorityDirectivesCount = pendingTeamDirectives.size) }
         recordCollaborationEvent(
             type = TeamEventType.TASK_CREATED,
             senderSlot = targetSlot,
-            message = "Owner directive: \"$text\"",
+            message = "Owner directive: \"${text.take(140)}\"",
             priority = EventPriority.CRITICAL,
         )
 
         val runningId = _state.value.runningTeamProjectId
         val canAutoStart = !_state.value.teamIsRunning && (runningId == null || runningId == projectId) && projectId != null
         if (canAutoStart) {
-            submitAutonomousTeamObjective(text)
+            submitAutonomousTeamObjective(finalizedObjective)
         } else if (_state.value.teamIsRunning && runningId == projectId) {
             _state.value.activeTeamProject?.let { proj ->
                 val team = syncTeamProfilesForProject(proj)
-                autonomousSupervisorEngine.preparePlan(proj.id, team, text)
+                autonomousSupervisorEngine.preparePlan(proj.id, team, finalizedObjective)
             }
             val ceoName = agentNameFor(AgentSlot.AGENT_1)
             val coderName = _state.value.teamAgents.filter { it.config.isEnabled }.getOrNull(1)?.config?.name ?: ceoName
@@ -7873,7 +8402,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 projectId = projectId,
                 senderSlot = AgentSlot.AGENT_1,
                 senderName = ceoName,
-                text = "รับทราบครับ $ownerName! ผมอ่านคำสั่งใหม่ \"$text\" แล้ว กำลังส่งต่อให้ $coderName เพิ่มส่วนนี้ควบคู่กับงานที่ทำอยู่ทันที",
+                text = "รับทราบครับ $ownerName! ผมรับคำสั่งใหม่แล้วและกำลังอัปเดตแผนงานส่งต่อให้ $coderName ดำเนินการต่อทันที",
                 messageType = GroupMessageType.TASK_ASSIGNMENT,
             )
         } else if (!_state.value.teamIsRunning) {

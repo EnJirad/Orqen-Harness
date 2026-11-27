@@ -37,6 +37,13 @@ data class RuntimeExecutionRequest(
     val allowSkipPermissions: Boolean = false,
     val imageFiles: List<File> = emptyList(),
     val knownAgyModels: List<String> = emptyList(),
+    val taskId: String? = null,
+    val stepId: String? = null,
+    val enableWorkspaceTools: Boolean = true,
+    val readOnlyTools: Boolean = false,
+    val sessionId: String? = null,
+    val nativeConversationId: String? = null,
+    val agentId: String? = null,
 )
 
 data class RuntimeExecutionResponse(
@@ -51,6 +58,11 @@ data class RuntimeExecutionResponse(
     val usage: TokenUsageReport = TokenUsageReport(),
     val error: ClassifiedError? = null,
     val cancelled: Boolean = false,
+    val toolEvidence: List<com.jarves.mh.runtime.ToolExecutionEvidence> = emptyList(),
+    val testEvidence: List<com.jarves.mh.runtime.TestExecutionEvidence> = emptyList(),
+    val buildEvidence: List<com.jarves.mh.runtime.BuildVerificationEvidence> = emptyList(),
+    val sessionId: String? = null,
+    val nativeConversationId: String? = null,
 )
 
 /**
@@ -74,6 +86,8 @@ interface AIExecutionRuntime {
 class TeamAgentRunnerRuntimeAdapter(
     private val runner: TeamAgentRunner,
     private val allowSandboxedCliTools: Boolean = false,
+    private val fileLockManager: com.jarves.mh.multiagent.locks.FileLockManager? = null,
+    private val mcpToolInvoker: (suspend (agentId: String, workspaceId: String, taskId: String?, toolId: String, argsJson: String) -> Pair<Boolean, String>)? = null,
 ) : AIExecutionRuntime {
     override suspend fun execute(
         request: RuntimeExecutionRequest,
@@ -83,7 +97,14 @@ class TeamAgentRunnerRuntimeAdapter(
         val isAntigravity = request.agent.config.providerId == "preset-antigravity" ||
             request.providerConfig?.type == com.jarves.mh.provider.core.ProviderType.ANTIGRAVITY
         val effectiveSkipPerms = request.allowSkipPermissions ||
-            (allowSandboxedCliTools && isAntigravity)
+            (allowSandboxedCliTools && isAntigravity && request.enableWorkspaceTools && !request.readOnlyTools)
+        val effectiveAgentId = request.agentId ?: request.agent.config.slot.id
+        val scopedMcpInvoker: (suspend (String, String) -> Pair<Boolean, String>)? =
+            if (mcpToolInvoker != null && request.enableWorkspaceTools) {
+                { toolId, argsJson ->
+                    mcpToolInvoker.invoke(effectiveAgentId, request.projectSlug, request.taskId, toolId, argsJson)
+                }
+            } else null
         val res = runner.executeTurn(
             agent = request.agent,
             providerConfig = request.providerConfig,
@@ -95,6 +116,15 @@ class TeamAgentRunnerRuntimeAdapter(
             allowSkipPermissions = effectiveSkipPerms,
             imageFiles = request.imageFiles,
             knownAgyModels = request.knownAgyModels,
+            taskId = request.taskId,
+            stepId = request.stepId,
+            enableWorkspaceTools = request.enableWorkspaceTools,
+            readOnlyTools = request.readOnlyTools,
+            requestId = request.requestId,
+            agentId = effectiveAgentId,
+            nativeConversationId = request.nativeConversationId,
+            fileLockManager = fileLockManager,
+            mcpToolInvoker = scopedMcpInvoker,
             onProgress = onProgress,
         )
         val completed = System.currentTimeMillis()
@@ -116,17 +146,22 @@ class TeamAgentRunnerRuntimeAdapter(
                 source = UsageSource.ESTIMATED_LOCAL,
             ),
             error = res.classifiedError,
+            toolEvidence = res.toolEvidence,
+            testEvidence = res.testEvidence,
+            buildEvidence = res.buildEvidence,
+            sessionId = request.sessionId,
+            nativeConversationId = res.nativeConversationId,
         )
     }
 
-    override fun cancel(requestId: String): Boolean = true
+    override fun cancel(requestId: String): Boolean = runner.cancelRequest(requestId)
 
     override fun getProviderCapabilities(providerId: String): RuntimeCapabilities {
         val isCli = providerId == "preset-antigravity"
         return RuntimeCapabilities(
             supportsStreaming = true,
             supportsVision = true,
-            supportsToolExecution = isCli,
+            supportsToolExecution = true, // Both CLI and API providers now run real WorkspaceToolExecutor!
             supportsPersistentSessions = isCli,
         )
     }

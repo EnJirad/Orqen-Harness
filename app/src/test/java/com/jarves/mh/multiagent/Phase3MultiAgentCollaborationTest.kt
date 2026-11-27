@@ -399,7 +399,7 @@ class Phase3MultiAgentCollaborationTest {
         store.insertExecution(AgentExecutionEntity(executionId = "exec-28", taskId = "T28", stepId = "s1", agentId = "a1", providerId = "p", modelId = "m"))
 
         val newVer = store.migrateToLatest()
-        assertEquals(4, newVer)
+        assertEquals(InMemoryOrqenTaskStore.CURRENT_SCHEMA_VERSION, newVer)
         assertTrue(store.validateIntegrity())
         assertEquals(PersistentTaskStatus.RUNNING, store.getTask("T28")?.status)
         assertEquals(1, store.listExecutionsForTask("T28").size)

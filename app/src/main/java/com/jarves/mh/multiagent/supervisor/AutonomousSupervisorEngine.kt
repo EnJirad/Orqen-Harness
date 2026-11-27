@@ -99,7 +99,7 @@ class AutonomousSupervisorEngine(
     private val checkpointManager: CheckpointManager = CheckpointManager(taskStore),
     private val fileLockManager: FileLockManager = FileLockManager(),
     private val livenessMonitor: ExecutionLivenessMonitor = ExecutionLivenessMonitor(taskStore),
-    private val planner: StructuredTaskPlanner = StructuredTaskPlanner(),
+    private val planner: DynamicTeamPlanCompiler = DynamicTeamPlanCompiler(),
     private val timeoutPolicy: GranularTimeoutPolicy = GranularTimeoutPolicy(),
     private val limits: RecoveryLimitsConfig = RecoveryLimitsConfig(),
     private val modelPoolProvider: () -> List<ModelCandidate> = { emptyList() },
@@ -125,6 +125,7 @@ class AutonomousSupervisorEngine(
     val failureManager = AgentFailureManager(collabStore, taskStore, capabilityResolver)
     val healthMonitor = AgentHealthMonitor(taskStore)
     val watchdog = TaskWatchdog(healthMonitor, timeoutPolicy)
+    val assignmentLedger = AssignmentResultLedger()
     val recoveryEngine = AutonomousRecoveryEngine(
         taskStore = taskStore,
         healthMonitor = healthMonitor,
@@ -190,35 +191,56 @@ class AutonomousSupervisorEngine(
             return existingActive
         }
 
-        val rawPlan = planner.planTask(project, normalizedObj, requestedSubtasks, acceptanceCriteria)
-        val workloads = mutableMapOf<String, Int>()
-        val baseSteps = rawPlan.steps.ifEmpty {
-            // Guarantee at least 2 concrete steps so a task NEVER enters supervision with "No steps planned"!
-            val dev = capabilityResolver.selectBestAgent(candidates, setOf("code")) ?: candidates.first()
-            val reviewer = capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"), excludeAgentIds = setOf(dev.agentId)) ?: dev
-            val impl = com.jarves.mh.multiagent.engine.PlannedStep(
-                sequenceNumber = 1,
-                title = "วิเคราะห์และพัฒนา: ${normalizedObj.take(56)}",
-                description = normalizedObj,
-                expectedOutput = "Implemented changes in project workspace",
-                requiredCapabilities = setOf("code"),
-                assignedAgentId = dev.agentId,
-                requiresReview = false,
-            )
-            val verify = com.jarves.mh.multiagent.engine.PlannedStep(
-                sequenceNumber = 2,
-                title = "ตรวจสอบโค้ดและยืนยันผลทดสอบ",
-                description = "Review implemented changes and verify tests pass for: $normalizedObj",
-                expectedOutput = "REVIEW_APPROVED and TESTS_PASSED",
-                dependencies = listOf(impl.stepId),
-                requiredCapabilities = setOf("review", "qa"),
-                assignedAgentId = reviewer.agentId,
-                requiresReview = true,
-            )
-            listOf(impl, verify)
+        // Phase 4: SPV inspects the real workspace, creates `.orqen/plan/overview.md` + `part_N_*.md`,
+        // and strictly verifies plan integrity BEFORE creating or delegating any SQLite steps!
+        val wsDir = File(project.workspacePath).apply { mkdirs() }
+        val isAndroid = File(wsDir, "app/build.gradle.kts").isFile ||
+            File(wsDir, "app/build.gradle").isFile ||
+            normalizedObj.contains("android", ignoreCase = true) ||
+            normalizedObj.contains("apk", ignoreCase = true)
+        val leaderAgentId = candidates.firstOrNull { "lead" in it.capabilities || "architect" in it.capabilities }?.agentId
+            ?: candidates.first().agentId
+        val devAgentId = capabilityResolver.selectBestAgent(candidates, setOf("code"))?.agentId
+            ?: candidates.first().agentId
+        val qaAgentId = capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"), excludeAgentIds = setOf(devAgentId))?.agentId
+            ?: candidates.last().agentId
+
+        val preTaskId = "T-${UUID.randomUUID().toString().take(8).uppercase()}"
+        val existingValidPlan = MultiPartPlanManager.loadPlan(wsDir)?.takeIf { existing ->
+            existing.objective.equals(normalizedObj, ignoreCase = true) &&
+                MultiPartPlanManager.verifyPlanIntegrity(wsDir, existing).valid
         }
-        val assignedSteps = baseSteps.map { step ->
-            val selected = capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities, activeWorkloads = workloads)
+        val mpPlan = existingValidPlan ?: MultiPartPlanManager.createPlan(
+            projectId = projectId,
+            taskId = preTaskId,
+            projectName = project.projectName,
+            objective = normalizedObj,
+            workspaceDir = wsDir,
+            explicitSubtasks = requestedSubtasks,
+            isAndroidProject = isAndroid,
+            leaderAgentId = leaderAgentId,
+            devAgentId = devAgentId,
+            qaAgentId = qaAgentId,
+        )
+        val planValidation = if (existingValidPlan != null) {
+            MultiPartPlanManager.verifyPlanIntegrity(wsDir, mpPlan)
+        } else {
+            MultiPartPlanManager.persistPlan(wsDir, mpPlan)
+        }
+        require(planValidation.valid) {
+            "SPV refused delegation because plan verification failed: ${planValidation.errors.joinToString("; ")}"
+        }
+
+        val rawPlan = planner.planFromMultiPart(project, mpPlan, wsDir)
+        val workloads = mutableMapOf<String, Int>()
+        val assignedSteps = rawPlan.steps.map { step ->
+            val exclude = if (step.requiresReview) setOf(devAgentId) else emptySet()
+            val selected = capabilityResolver.selectBestAgent(
+                candidates = candidates,
+                requiredCapabilities = step.requiredCapabilities,
+                excludeAgentIds = exclude,
+                activeWorkloads = workloads,
+            ) ?: capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities, activeWorkloads = workloads)
                 ?: candidates.first()
             workloads[selected.agentId] = (workloads[selected.agentId] ?: 0) + 1
             step.copy(assignedAgentId = selected.agentId)
@@ -228,6 +250,8 @@ class AutonomousSupervisorEngine(
             projectId = projectId,
             plan = rawPlan.copy(steps = assignedSteps),
             budget = budget,
+            planId = mpPlan.planId,
+            planVersion = mpPlan.version,
         ).let { t ->
             val updated = t.copy(
                 completionCriteria = completionCriteria,
@@ -437,8 +461,29 @@ class AutonomousSupervisorEngine(
                     return blockTask(task, "Exceeded maximum autonomous task duration (${limits.maxTotalTaskDurationMs}ms).")
                 }
 
-                // 4. Load steps & find next runnable step
-                val allSteps = taskStore.listStepsForTask(taskId)
+                // 4. Load steps & self-recover if an active task ever lost its steps ("No steps planned" guard!)
+                var allSteps = taskStore.listStepsForTask(taskId)
+                if (allSteps.isEmpty() && replanAttempts < limits.maxReplanAttempts) {
+                    replanAttempts++
+                    val recoveredMp = MultiPartPlanManager.loadPlan(workspaceDir)
+                        ?: MultiPartPlanManager.migrateLegacyPlanIfNeeded(workspaceDir, project.projectId, taskId, project.projectName)
+                        ?: MultiPartPlanManager.createPlan(
+                            projectId = project.projectId,
+                            taskId = taskId,
+                            projectName = project.projectName,
+                            objective = task.description.ifBlank { task.title },
+                            workspaceDir = workspaceDir,
+                            isAndroidProject = task.completionCriteria.requireBuildPass,
+                        ).also { MultiPartPlanManager.persistPlan(workspaceDir, it) }
+                    val repairedPlan = planner.planFromMultiPart(project, recoveredMp)
+                    appendFollowUpSteps(task, team, emptyList(), repairedPlan.steps, "Recovered missing planned steps from persistent Multi-Part plan")
+                    allSteps = taskStore.listStepsForTask(taskId)
+                }
+                // Guard against circular step dependencies before scheduling
+                if (DependencyResolver.hasCycle(allSteps.associate { it.stepId to it.dependencies })) {
+                    return blockTask(task, "Circular dependency detected in task step graph.")
+                }
+
                 val completedIds = allSteps.filter { it.status == StepStatus.COMPLETED || it.status == StepStatus.SKIPPED }
                     .map { it.stepId }
                     .toSet()
@@ -448,26 +493,29 @@ class AutonomousSupervisorEngine(
                         step.dependencies.all { it in completedIds }
                 }
 
-                // Phase 2 (Part A.5.1): Execute independent non-review subtasks concurrently up to team.maxConcurrentAgents
+                // Execute independent non-review subtasks concurrently up to team.maxConcurrentAgents
+                // ONLY when agents are distinct AND targetFiles are non-empty & disjoint!
                 val parallelBatch = if (runnableSteps.size > 1 && team.maxConcurrentAgents > 1) {
                     val seenAgents = mutableSetOf<String>()
                     val seenFiles = mutableSetOf<String>()
-                    runnableSteps.filter { s ->
-                        !s.requiresReview &&
-                            taskStore.findIdempotency(s.idempotencyKey) == null &&
-                            s.assignedAgentId !in seenAgents &&
-                            s.targetFiles.none { it in seenFiles }
-                    }.take(team.maxConcurrentAgents).also { batch ->
-                        batch.forEach {
-                            seenAgents.add(it.assignedAgentId)
-                            seenFiles.addAll(it.targetFiles)
-                        }
+                    val selected = mutableListOf<TaskStepEntity>()
+                    for (s in runnableSteps) {
+                        if (selected.size >= team.maxConcurrentAgents) break
+                        if (s.requiresReview) continue
+                        if (taskStore.findIdempotency(s.idempotencyKey) != null) continue
+                        if (s.assignedAgentId in seenAgents) continue
+                        if (s.targetFiles.any { it in seenFiles }) continue
+                        selected.add(s)
+                        seenAgents.add(s.assignedAgentId)
+                        seenFiles.addAll(s.targetFiles)
                     }
+                    selected
                 } else emptyList()
 
                 if (parallelBatch.size > 1) {
                     val teamProfiles = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
                     val accessibleImages = TaskAttachmentCodec.resolveAccessibleFiles(task.taskMemory, workspaceDir)
+                    var anyLaunched = false
                     coroutineScope {
                         parallelBatch.map { pStep ->
                             async {
@@ -476,18 +524,19 @@ class AutonomousSupervisorEngine(
                                 val execId = "exec-${UUID.randomUUID().toString().take(10)}"
                                 val lease = livenessMonitor.tryAcquireLease(taskId, pStep.stepId, prof.agentId, timeoutPolicy.agentExecutionTimeoutMs, nowProvider())
                                     ?: return@async
-                                val slot = AgentSlot.fromId(prof.agentId) ?: AgentSlot.AGENT_1
                                 val locked = mutableListOf<String>()
                                 for (path in pStep.targetFiles) {
-                                    if (fileLockManager.tryAcquire(path, slot, taskId, "Parallel ${pStep.title}") is LockAcquisitionResult.Success) {
+                                    if (fileLockManager.tryAcquireByAgentId(path, prof.agentId, taskId = taskId, reason = "Parallel ${pStep.title}") is LockAcquisitionResult.Success) {
                                         locked.add(path)
                                     } else {
-                                        locked.forEach { fileLockManager.release(it, slot) }
+                                        locked.forEach { fileLockManager.releaseByAgentId(it, prof.agentId) }
                                         livenessMonitor.releaseLease(taskId, pStep.stepId, prof.agentId)
                                         return@async
                                     }
                                 }
+                                anyLaunched = true
                                 try {
+                                    val beforeSnap = checkpointManager.snapshotWorkspace(workspaceDir)
                                     val runStep = pStep.copy(status = StepStatus.RUNNING, startedAt = nowProvider())
                                     val execRec = AgentExecutionEntity(execId, taskId, pStep.stepId, prof.agentId, prof.providerId, prof.modelId, "RUNNING")
                                     taskStore.runInTransaction {
@@ -509,6 +558,10 @@ class AutonomousSupervisorEngine(
                                         communicationManager = communicationManager,
                                         stepTimeoutMs = timeoutPolicy.forProvider(prof.providerId).agentExecutionTimeoutMs,
                                         mcpManager = mcpManager,
+                                        teamRosterProvider = {
+                                            teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
+                                                .map(AgentProfileMapper::toDynamicProfile)
+                                        },
                                     )
                                     val out = pAdapter.executeStep(
                                         StepExecutionInput(
@@ -521,8 +574,13 @@ class AutonomousSupervisorEngine(
                                             imageFiles = accessibleImages,
                                         ),
                                     )
-                                    if (out.success) {
-                                        val cp = checkpointManager.buildCheckpoint(taskId, runStep.stepId, workspaceDir, out.modifiedFiles, out.summary)
+                                    val afterSnap = checkpointManager.snapshotWorkspace(workspaceDir)
+                                    val changed = (out.modifiedFiles + checkpointManager.diffSnapshots(beforeSnap, afterSnap)).distinct()
+                                    val verOutcome = out.verificationSpec?.let { ResultVerifier.verify(workspaceDir, out.summary, it) }
+                                    val passed = out.success && (verOutcome == null || verOutcome.passed)
+                                    persistStepVerificationEvidence(taskId, runStep, out, changed)
+                                    if (passed) {
+                                        val cp = checkpointManager.buildCheckpoint(taskId, runStep.stepId, workspaceDir, changed, out.summary)
                                         val latestT = taskStore.getTask(taskId) ?: task
                                         taskStore.completeStepTransactionally(
                                             task = latestT.copy(
@@ -539,17 +597,17 @@ class AutonomousSupervisorEngine(
                                             idempotency = IdempotencyRecordEntity(runStep.idempotencyKey, taskId, runStep.stepId, "STEP_EXECUTION", out.summary.take(500)),
                                         )
                                     } else {
-                                        // Return failed step to READY so main sequential recovery path handles failover/reassignment cleanly
                                         taskStore.upsertStep(runStep.copy(status = StepStatus.READY))
-                                        taskStore.updateExecution(execRec.copy(executionStatus = "FAILED", completedAt = nowProvider(), errorMessage = out.error?.message ?: out.summary))
+                                        taskStore.updateExecution(execRec.copy(executionStatus = "FAILED", completedAt = nowProvider(), errorMessage = verOutcome?.details ?: out.error?.message ?: out.summary))
                                     }
                                 } finally {
-                                    locked.forEach { fileLockManager.release(it, slot) }
+                                    locked.forEach { fileLockManager.releaseByAgentId(it, prof.agentId) }
                                     livenessMonitor.releaseLease(taskId, pStep.stepId, prof.agentId)
                                 }
                             }
                         }.awaitAll()
                     }
+                    if (!anyLaunched) kotlinx.coroutines.delay(150)
                     continue
                 }
 
@@ -720,6 +778,10 @@ class AutonomousSupervisorEngine(
                     communicationManager = communicationManager,
                     stepTimeoutMs = timeoutPolicy.forProvider(agentProfile.providerId).agentExecutionTimeoutMs,
                     mcpManager = mcpManager,
+                    teamRosterProvider = {
+                        teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
+                            .map(AgentProfileMapper::toDynamicProfile)
+                    },
                     onProgress = { tid, sid, aid, prog ->
                         val (evType, toolName, cleanDetails) = when {
                             prog.startsWith("TOOL_STARTED:") -> {
@@ -799,6 +861,7 @@ class AutonomousSupervisorEngine(
                 val changedFiles = (output.modifiedFiles + checkpointManager.diffSnapshots(beforeSnap, afterSnap)).distinct().sorted()
                 val verificationOutcome = output.verificationSpec?.let { ResultVerifier.verify(workspaceDir, output.summary, it) }
                 val verificationFailed = output.success && verificationOutcome != null && !verificationOutcome.passed
+                persistStepVerificationEvidence(taskId, runningStep, output, changedFiles)
 
                 if (output.success && !verificationFailed) {
                     recoveryEngine.resetProviderFailures(agentProfile.providerId)
@@ -854,27 +917,38 @@ class AutonomousSupervisorEngine(
                             ),
                         )
                         val nextSeq = (allSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
+                        val feedbackBody = output.reviewFeedback ?: "Address reviewer findings"
+                        communicationManager.sendDirect(
+                            taskId = taskId,
+                            fromAgentId = agentProfile.agentId,
+                            toAgentId = devAgent.agentId,
+                            type = AgentMessageKind.CHANGE_REQUEST,
+                            content = "REVIEW_REJECTED on '${runningStep.title}': $feedbackBody",
+                            relatedStepId = runningStep.stepId,
+                        )
                         val fixStep = TaskStepEntity(
                             taskId = taskId,
                             sequenceNumber = nextSeq,
                             title = "Fix review feedback: ${runningStep.title}",
-                            description = output.reviewFeedback ?: "Address reviewer findings",
+                            description = feedbackBody,
                             assignedAgentId = devAgent.agentId,
                             status = StepStatus.READY,
                             dependencies = listOf(runningStep.stepId),
                             targetFiles = runningStep.targetFiles,
                             requiresReview = false,
+                            partId = runningStep.partId,
                         )
                         val reReviewStep = TaskStepEntity(
                             taskId = taskId,
                             sequenceNumber = nextSeq + 1,
                             title = "Re-verify: ${runningStep.title}",
-                            description = "Independently verify fixes and tests for ${runningStep.title}",
+                            description = "Independently verify fixes and run real tests for ${runningStep.title}",
                             assignedAgentId = runningStep.assignedAgentId,
                             status = StepStatus.PENDING,
                             dependencies = listOf(fixStep.stepId),
                             targetFiles = runningStep.targetFiles,
                             requiresReview = true,
+                            partId = runningStep.partId,
                         )
                         taskStore.runInTransaction {
                             taskStore.upsertStep(runningStep.copy(status = StepStatus.COMPLETED, outputSummary = "REJECTED: ${output.reviewFeedback}", completedAt = nowProvider()))
@@ -950,6 +1024,38 @@ class AutonomousSupervisorEngine(
                             resultSummary = output.summary.take(500),
                         ),
                     )
+                    // Synchronize real step progress & evidence to `.orqen/reports/{execution,review,verification,part_N}_report.md`!
+                    runCatching {
+                        val updatedTaskForPlan = taskStore.getTask(taskId) ?: latestTask
+                        MultiPartPlanManager.syncUnifiedReports(
+                            workspaceDir = workspaceDir,
+                            task = updatedTaskForPlan,
+                            steps = taskStore.listStepsForTask(taskId),
+                            evidence = taskStore.listVerificationEvidenceForTask(taskId),
+                        )
+                        val partId = runningStep.partId
+                        if (runningStep.requiresReview && !partId.isNullOrBlank()) {
+                            val mpPlan = MultiPartPlanManager.loadPlan(workspaceDir)
+                            if (mpPlan != null && mpPlan.parts.any { it.partId == partId }) {
+                                val lastTest = output.testEvidence.lastOrNull()
+                                val lastBuild = output.buildEvidence.lastOrNull()
+                                MultiPartPlanManager.recordPartVerificationAndReport(
+                                    workspaceDir = workspaceDir,
+                                    plan = mpPlan,
+                                    partId = partId,
+                                    verification = PartVerificationInput(
+                                        modifiedFiles = changedFiles,
+                                        reviewerApproved = output.reviewApproved,
+                                        reviewerNotes = output.summary.take(500),
+                                        testExitCode = lastTest?.exitCode,
+                                        testSummary = lastTest?.summary ?: "No test command recorded",
+                                        buildPassed = lastBuild?.success,
+                                        buildArtifactPath = lastBuild?.apkPath,
+                                    ),
+                                )
+                            }
+                        }
+                    }
                     val completedTotalSteps = allSteps.size.coerceAtLeast(runningStep.sequenceNumber)
                     val nextPendingStep = allSteps.firstOrNull {
                         it.sequenceNumber > runningStep.sequenceNumber && it.status != StepStatus.COMPLETED
@@ -1005,25 +1111,49 @@ class AutonomousSupervisorEngine(
                                 ),
                             )
                             val nextSeq = (allSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1
+                            val lastTestEv = output.testEvidence.lastOrNull()
+                            val detailedFailure = buildString {
+                                appendLine("Fix test failures reported by ${agentProfile.displayName} on '${runningStep.title}':")
+                                if (lastTestEv != null) {
+                                    appendLine("Command: ${lastTestEv.command}")
+                                    appendLine("Exit code: ${lastTestEv.exitCode}")
+                                    if (lastTestEv.stderr.isNotBlank()) appendLine("STDERR: ${lastTestEv.stderr.take(600)}")
+                                    if (lastTestEv.stdout.isNotBlank()) appendLine("STDOUT: ${lastTestEv.stdout.take(600)}")
+                                } else {
+                                    appendLine(verificationOutcome?.details ?: output.summary.take(500))
+                                }
+                            }.trim()
+                            communicationManager.sendDirect(
+                                taskId = taskId,
+                                fromAgentId = agentProfile.agentId,
+                                toAgentId = devAgent.agentId,
+                                type = AgentMessageKind.CHANGE_REQUEST,
+                                content = detailedFailure,
+                                relatedStepId = runningStep.stepId,
+                            )
                             val fixStep = TaskStepEntity(
                                 taskId = taskId,
                                 sequenceNumber = nextSeq,
                                 title = "Fix failing tests: ${runningStep.title}",
-                                description = "Fix test failures reported by ${agentProfile.displayName}: ${output.summary.take(300)}",
+                                description = detailedFailure,
                                 assignedAgentId = devAgent.agentId,
                                 status = StepStatus.READY,
                                 dependencies = listOf(runningStep.stepId),
+                                targetFiles = runningStep.targetFiles,
                                 requiresReview = false,
+                                partId = runningStep.partId,
                             )
                             val retestStep = TaskStepEntity(
                                 taskId = taskId,
                                 sequenceNumber = nextSeq + 1,
                                 title = "Re-run verification tests",
-                                description = "Verify failing tests now pass for ${task.title}",
+                                description = "Run REAL tests via run_command and verify exit code 0 for ${task.title}",
                                 assignedAgentId = agentProfile.agentId,
                                 status = StepStatus.PENDING,
                                 dependencies = listOf(fixStep.stepId),
+                                targetFiles = runningStep.targetFiles,
                                 requiresReview = runningStep.requiresReview,
+                                partId = runningStep.partId,
                             )
                             taskStore.runInTransaction {
                                 taskStore.upsertStep(runningStep.copy(status = StepStatus.COMPLETED, outputSummary = "TESTS_FAILED: ${output.summary}", completedAt = nowProvider()))
@@ -1445,17 +1575,87 @@ class AutonomousSupervisorEngine(
         }
 
         if (task.completionCriteria.requireTestsPass) {
-            val testsPassed = steps.any {
-                it.status == StepStatus.COMPLETED &&
-                    (it.requiresReview ||
-                        it.title.contains("test", ignoreCase = true) ||
-                        it.title.contains("verify", ignoreCase = true) ||
-                        it.title.contains("ทดสอบ")) &&
-                    it.outputSummary.contains("TESTS_PASSED", ignoreCase = true)
+            val persistedTests = taskStore.listVerificationEvidenceForTask(task.taskId)
+                .filter { it.evidenceType == "TEST" }
+            val realTestPassed = persistedTests.any { it.exitCode == 0 }
+            if (!realTestPassed) {
+                gaps.add("Required real test execution evidence (exitCode=0) is missing")
             }
-            if (!testsPassed) gaps.add("Required tests have not reported TESTS_PASSED")
+        }
+
+        if (task.completionCriteria.requireBuildPass) {
+            val buildVerify = ResultVerifier.verify(
+                workspaceDir = workspaceDir,
+                outputSummary = "Android APK build verification",
+                spec = VerificationSpec(
+                    mode = VerificationMode.BUILD_VERIFICATION,
+                    expectedApkVariant = "debug",
+                ),
+            )
+            if (!buildVerify.passed) gaps.add(buildVerify.details)
         }
         return gaps
+    }
+
+    private fun persistStepVerificationEvidence(
+        taskId: String,
+        step: TaskStepEntity,
+        output: StepExecutionOutput,
+        changedFiles: List<String>,
+    ) {
+        output.testEvidence.forEach { ev ->
+            taskStore.insertVerificationEvidence(
+                VerificationEvidenceEntity(
+                    taskId = taskId,
+                    partId = step.partId,
+                    stepId = step.stepId,
+                    evidenceType = "TEST",
+                    command = ev.command,
+                    workingDir = ev.workingDir,
+                    exitCode = ev.exitCode,
+                    stdout = ev.stdout,
+                    stderr = ev.stderr,
+                    passedCount = ev.passedCount,
+                    failedCount = ev.failedCount,
+                    skippedCount = ev.skippedCount,
+                    changedFiles = changedFiles,
+                    artifactPath = ev.artifactPath,
+                    artifactSizeBytes = ev.artifactSizeBytes,
+                    timestampMs = ev.completedAtMs,
+                ),
+            )
+        }
+        output.buildEvidence.forEach { bev ->
+            taskStore.insertVerificationEvidence(
+                VerificationEvidenceEntity(
+                    taskId = taskId,
+                    partId = step.partId,
+                    stepId = step.stepId,
+                    evidenceType = "BUILD",
+                    command = bev.command,
+                    exitCode = bev.exitCode,
+                    stderr = bev.errorSummary.orEmpty(),
+                    changedFiles = changedFiles,
+                    artifactPath = bev.apkPath,
+                    artifactSizeBytes = bev.apkSizeBytes,
+                    timestampMs = nowProvider(),
+                ),
+            )
+        }
+        if (step.requiresReview) {
+            taskStore.insertVerificationEvidence(
+                VerificationEvidenceEntity(
+                    taskId = taskId,
+                    partId = step.partId,
+                    stepId = step.stepId,
+                    evidenceType = "REVIEW",
+                    reviewVerdict = if (output.reviewApproved) "REVIEW_APPROVED" else "REVIEW_REJECTED",
+                    stdout = output.reviewFeedback ?: output.summary.take(500),
+                    changedFiles = changedFiles,
+                    timestampMs = nowProvider(),
+                ),
+            )
+        }
     }
 
     private fun buildRemediationSteps(
@@ -1482,9 +1682,9 @@ class AutonomousSupervisorEngine(
             return listOf(
                 PlannedStep(
                     sequenceNumber = nextSeq,
-                    title = "Verify & test deliverables (ตรวจสอบโค้ดและยืนยันผลทดสอบ รอบที่ $roundNum)",
-                    description = "Verify completed work and run tests for: ${task.title}. Remaining checks: ${missing.joinToString("; ")}. Explicitly output REVIEW_APPROVED and TESTS_PASSED when verified.",
-                    expectedOutput = "REVIEW_APPROVED and TESTS_PASSED",
+                    title = "Independent Review & Verification (round $roundNum)",
+                    description = "Inspect actual workspace changes and run real verification tests for: ${task.title}. Remaining checks: ${missing.joinToString("; ")}.",
+                    expectedOutput = "Independent REVIEW_APPROVED + real passing test execution evidence",
                     dependencies = lastStepIds,
                     requiredCapabilities = setOf("review", "qa"),
                     assignedAgentId = reviewer.agentId,
@@ -1494,9 +1694,9 @@ class AutonomousSupervisorEngine(
         }
 
         val implTitle = if (existingSteps.isEmpty()) {
-            "วิเคราะห์และพัฒนาตามคำสั่ง: ${task.title.take(48)}"
+            "Execute dynamic plan: ${task.title.take(48)}"
         } else {
-            "พัฒนาและแก้ไขส่วนที่ยังขาดให้ครบ (รอบที่ $roundNum)"
+            "Remediation for missing deliverables (round $roundNum)"
         }
         val implStep = PlannedStep(
             sequenceNumber = nextSeq,
@@ -1511,9 +1711,9 @@ class AutonomousSupervisorEngine(
         )
         val verifyStep = PlannedStep(
             sequenceNumber = nextSeq + 1,
-            title = "Verify & test deliverables (ตรวจสอบโค้ดและยืนยันผลทดสอบ รอบที่ $roundNum)",
-            description = "Verify deliverables are complete and run tests for: ${task.title}. Explicitly output REVIEW_APPROVED and TESTS_PASSED when verified.",
-            expectedOutput = "REVIEW_APPROVED and TESTS_PASSED",
+            title = "Independent Review & Verification (round $roundNum)",
+            description = "Inspect deliverables and run real verification tests for: ${task.title}.",
+            expectedOutput = "Independent REVIEW_APPROVED + real passing test execution evidence",
             dependencies = listOf(implStep.stepId),
             requiredCapabilities = setOf("review", "qa"),
             assignedAgentId = reviewer.agentId,
@@ -1566,7 +1766,7 @@ class AutonomousSupervisorEngine(
                     agentId = AgentSlot.AGENT_1.id,
                     agentDisplayName = "Supervisor",
                     phase = "PLANNED",
-                    detail = "📋 SPV วางแผนขั้นตอนเพิ่มเติม (${createdSummary.size} ขั้นตอน):\n" + createdSummary.joinToString("\n") { "• $it" },
+                    detail = "Updated active plan (${createdSummary.size} remediation step(s)):\n" + createdSummary.joinToString("\n") { "• $it" },
                     stepNumber = (existingSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1,
                     totalSteps = seq - 1,
                 ),

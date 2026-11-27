@@ -419,6 +419,8 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             state = state,
             onBack = viewModel::closeProject,
             onSend = viewModel::sendPrompt,
+            onLoadChatDraft = viewModel::loadSingleChatDraft,
+            onSaveChatDraft = { pid, cid, txt -> viewModel.saveSingleChatDraft(pid, cid, txt) },
             onStop = viewModel::stopTask,
             onSteerFollowUp = viewModel::steerQueuedFollowUp,
             onRemoveFollowUp = viewModel::removeQueuedFollowUp,
@@ -1116,7 +1118,7 @@ private data class DevStackVisuals(
 private fun getDevStackVisuals(stack: DevStack): DevStackVisuals = when (stack) {
     DevStack.WEB -> DevStackVisuals(
         icon = Icons.Default.Language,
-        accentColor = Color(0xFF38BDF8),
+        accentColor = Color(0xFF6B80A8),
         tag = "HTML · CSS · JS · TS",
     )
     DevStack.PYTHON -> DevStackVisuals(
@@ -2617,6 +2619,7 @@ private fun RootScreenHost(
                     onCloneGitHub = viewModel::cloneGitHubRepository,
                     onRenameProject = viewModel::renameProject,
                     onDeleteProject = viewModel::deleteProject,
+                    onUpdateProjectIdentity = viewModel::updateSingleProjectIdentity,
                     onSettings = { screen = RootScreen.SETTINGS },
                     onPing = viewModel::pingApi,
                     onToggleTheme = viewModel::toggleTheme,
@@ -2651,6 +2654,9 @@ private fun RootScreenHost(
                                 viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD)
                             },
                             onRenameTeamProject = viewModel::renameTeamProject,
+                            onUpdateTeamProjectIdentity = { id, type, icon ->
+                                viewModel.updateTeamProjectIdentity(id, type, icon)
+                            },
                             onCloneFromSolo = { solo ->
                                 viewModel.cloneSoloProjectToTeam(solo)
                             },
@@ -2762,6 +2768,30 @@ private fun RootScreenHost(
                                 onClearCollaborationEvents = viewModel::clearTeamCollaborationEvents,
                                 onReleaseFileLock = viewModel::releaseFileLock,
                                 onNextPart = viewModel::advanceTeamPart,
+                                mcpManager = viewModel.mcpConnectionManager,
+                                onOpenGlobalMcpSettings = {
+                                    screen = RootScreen.SETTINGS
+                                    showMcpManager = true
+                                },
+                                onAutoOptimizeModels = {
+                                    viewModel.applySpvModelOptimization(com.jarves.mh.multiagent.supervisor.TeamOptimizationGoal.BALANCED)
+                                },
+                                onUploadTeamFiles = viewModel::uploadFilesToTeamWorkspace,
+                                onCreateTeamFolder = viewModel::createTeamWorkspaceFolder,
+                                onRenameTeamEntry = viewModel::renameTeamWorkspaceEntry,
+                                onDeleteTeamEntry = viewModel::deleteTeamWorkspaceEntry,
+                                onSaveTeamFileCopy = viewModel::saveTeamWorkspaceFileCopy,
+                                onShareTeamFile = viewModel::shareTeamWorkspaceFile,
+                                onDownloadTeamZip = viewModel::downloadTeamWorkspaceZip,
+                                initialChatDraft = viewModel.loadTeamChatDraft(activeTeamProj.id),
+                                onChatDraftChanged = { draft -> viewModel.saveTeamChatDraft(activeTeamProj.id, draft) },
+                                onStartImplementation = {
+                                    viewModel.postTeamChatMessage(
+                                        text = "Start building this based on our finalized discussion.",
+                                        type = com.jarves.mh.multiagent.chat.GroupMessageType.TASK_ASSIGNMENT,
+                                        targetSlot = null,
+                                    )
+                                },
                             )
                         }
                         TeamScreenMode.AGENT_DETAIL -> {
@@ -4068,6 +4098,7 @@ private fun ProjectsScreen(
     onCloneGitHub: (GitHubRepository) -> Unit,
     onRenameProject: (String, String) -> Unit,
     onDeleteProject: (String) -> Unit,
+    onUpdateProjectIdentity: (String, ProjectType, String, String?) -> Unit = { _, _, _, _ -> },
     onSettings: () -> Unit,
     onPing: () -> Unit,
     onToggleTheme: () -> Unit,
@@ -4418,6 +4449,7 @@ private fun ProjectsScreen(
                         buildRunning = state.androidBuildRunning && state.activeProject?.id == project.id,
                         onOpen = { onOpen(project) },
                         onRename = { onRenameProject(project.id, it) },
+                        onChangeIdentity = { type, iconKey -> onUpdateProjectIdentity(project.id, type, iconKey, project.customIconPath) },
                         onDelete = { onDeleteProject(project.id) },
                     )
                 }
@@ -4781,20 +4813,26 @@ private fun ProjectCard(
     buildRunning: Boolean,
     onOpen: () -> Unit,
     onRename: (String) -> Unit,
+    onChangeIdentity: (ProjectType, String) -> Unit = { _, _ -> },
     onDelete: () -> Unit,
 ) {
     var menuOpen by rememberSaveable(project.id) { mutableStateOf(false) }
     var showRename by rememberSaveable(project.id) { mutableStateOf(false) }
+    var showChangeIcon by rememberSaveable(project.id) { mutableStateOf(false) }
     var showDelete by rememberSaveable(project.id) { mutableStateOf(false) }
     var renameText by rememberSaveable(project.id) { mutableStateOf(project.name) }
+    var selectedType by remember(project.id, project.type) { mutableStateOf(project.type) }
+    var selectedIconKey by remember(project.id, project.iconKey, project.type) {
+        mutableStateOf(project.iconKey.ifBlank { ProjectIconCatalog.defaultIconKeyFor(project.type) })
+    }
     Card(Modifier.fillMaxWidth().clickable(onClick = onOpen), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                 Icon(
-                    if (project.type == ProjectType.ANDROID) Icons.Default.Android else Icons.Default.Folder,
+                    ProjectIconCatalog.resolveIcon(project),
                     null,
                     Modifier.padding(13.dp),
-                    tint = if (project.type == ProjectType.ANDROID) PocketGreen else PocketOrange,
+                    tint = if (project.type == ProjectType.ANDROID) PocketGreen else MaterialTheme.colorScheme.primary,
                 )
             }
             Spacer(Modifier.width(13.dp))
@@ -4836,6 +4874,16 @@ private fun ProjectCard(
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, stringResource(R.string.ws_project_options)) }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
+                        text = { Text("Change Icon & Type") },
+                        leadingIcon = { Icon(Icons.Default.Build, null) },
+                        onClick = {
+                            menuOpen = false
+                            selectedType = project.type
+                            selectedIconKey = project.iconKey.ifBlank { ProjectIconCatalog.defaultIconKeyFor(project.type) }
+                            showChangeIcon = true
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text(stringResource(R.string.ws_rename_project)) },
                         leadingIcon = { Icon(Icons.Default.Edit, null) },
                         onClick = { menuOpen = false; renameText = project.name; showRename = true },
@@ -4848,6 +4896,47 @@ private fun ProjectCard(
                 }
             }
         }
+    }
+    if (showChangeIcon) {
+        AlertDialog(
+            onDismissRequest = { showChangeIcon = false },
+            title = { Text("Project Type & Icon") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Type", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ProjectType.entries.forEach { pt ->
+                            FilterChip(
+                                selected = selectedType == pt,
+                                onClick = {
+                                    selectedType = pt
+                                    selectedIconKey = ProjectIconCatalog.defaultIconKeyFor(pt)
+                                },
+                                label = { Text(pt.displayName, fontSize = 11.sp) },
+                            )
+                        }
+                    }
+                    Text("Icon", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ProjectIconCatalog.builtInIcons.forEach { opt ->
+                            FilterChip(
+                                selected = selectedIconKey == opt.key,
+                                onClick = { selectedIconKey = opt.key },
+                                label = { Icon(opt.icon, opt.label, modifier = Modifier.size(18.dp)) },
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { onChangeIdentity(selectedType, selectedIconKey); showChangeIcon = false }) {
+                    Text(stringResource(R.string.action_save))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showChangeIcon = false }) { Text(stringResource(R.string.action_cancel)) }
+            },
+        )
     }
     if (showRename) {
         AlertDialog(
@@ -4961,6 +5050,8 @@ private fun WorkspaceScreen(
     state: AppUiState,
     onBack: () -> Unit,
     onSend: (String) -> Unit,
+    onLoadChatDraft: (String?, String?) -> String = { _, _ -> "" },
+    onSaveChatDraft: (String?, String?, String) -> Unit = { _, _, _ -> },
     onStop: () -> Unit,
     onSteerFollowUp: (String) -> Unit,
     onRemoveFollowUp: (String) -> Unit,
@@ -5362,6 +5453,9 @@ private fun WorkspaceScreen(
                     },
                     onRemoveAttachment = onRemoveAttachment,
                     onOpenAttachment = onOpenAttachment,
+                    draftConversationKey = "single:${state.activeProject?.id.orEmpty()}:${state.activeChatId.orEmpty()}",
+                    initialDraftText = onLoadChatDraft(state.activeProject?.id, state.activeChatId),
+                    onDraftTextChanged = { draft -> onSaveChatDraft(state.activeProject?.id, state.activeChatId, draft) },
                     onRunInTerminal = { command ->
                         selectedTab = WorkspaceTab.TERMINAL
                         onTerminalOpened()
@@ -6690,13 +6784,35 @@ private fun FilesTab(
                             )
                         }
                         DropdownMenu(expanded = entryMenuOpen, onDismissRequest = { entryMenuOpen = false }) {
+                            val clipMgr = androidx.compose.ui.platform.LocalClipboardManager.current
                             if (entry.isDirectory) {
+                                DropdownMenuItem(
+                                    text = { Text("Open") },
+                                    leadingIcon = { Icon(Icons.Default.Folder, null) },
+                                    onClick = {
+                                        entryMenuOpen = false
+                                        if (entry.path !in expandedSet) onLoadDirectory(entry.path)
+                                        expandedDirectories = if (entry.path in expandedSet) {
+                                            expandedDirectories.filterNot { it == entry.path || it.startsWith("${entry.path}/") }
+                                        } else expandedDirectories + entry.path
+                                    },
+                                )
                                 FolderActionItems(
                                     onNewFile = { entryMenuOpen = false; nameDialog = FileNameDialog.Create(entry.path, isDirectory = false) },
                                     onNewFolder = { entryMenuOpen = false; nameDialog = FileNameDialog.Create(entry.path, isDirectory = true) },
                                     onUpload = { entryMenuOpen = false; onUploadInto(entry.path) },
                                 )
                             } else {
+                                DropdownMenuItem(
+                                    text = { Text("Open") },
+                                    leadingIcon = { Icon(Icons.Default.Description, null) },
+                                    onClick = { entryMenuOpen = false; onOpenFile(entry) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Preview") },
+                                    leadingIcon = { Icon(Icons.Default.Visibility, null) },
+                                    onClick = { entryMenuOpen = false; onOpenFile(entry) },
+                                )
                                 DropdownMenuItem(
                                     text = { Text(stringResource(R.string.fm_share)) },
                                     leadingIcon = { Icon(Icons.Default.Share, null) },
@@ -6708,6 +6824,14 @@ private fun FilesTab(
                                     onClick = { entryMenuOpen = false; onSaveFileCopy(entry.path) },
                                 )
                             }
+                            DropdownMenuItem(
+                                text = { Text("Copy path") },
+                                leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                                onClick = {
+                                    entryMenuOpen = false
+                                    clipMgr.setText(androidx.compose.ui.text.AnnotatedString(entry.path))
+                                },
+                            )
                             HorizontalDivider()
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.fm_rename)) },
@@ -6875,6 +6999,9 @@ private fun ChatTab(
     readOnly: Boolean = false,
     readOnlyBlocked: Boolean = false,
     onContinueHere: () -> Unit = {},
+    draftConversationKey: String = "",
+    initialDraftText: String = "",
+    onDraftTextChanged: (String) -> Unit = {},
 ) {
     val view = LocalView.current
     // Keep the screen on while the selected agent is working in this chat. Released automatically
@@ -6883,7 +7010,27 @@ private fun ChatTab(
         view.keepScreenOn = isRunning
         onDispose { view.keepScreenOn = false }
     }
-    var prompt by rememberSaveable { mutableStateOf("") }
+    var prompt by remember(draftConversationKey) { mutableStateOf(initialDraftText) }
+    val latestPrompt by androidx.compose.runtime.rememberUpdatedState(prompt)
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(draftConversationKey, prompt) {
+        kotlinx.coroutines.delay(220L)
+        onDraftTextChanged(prompt)
+    }
+    DisposableEffect(draftConversationKey, lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE ||
+                event == androidx.lifecycle.Lifecycle.Event.ON_STOP
+            ) {
+                onDraftTextChanged(latestPrompt)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            onDraftTextChanged(latestPrompt)
+        }
+    }
     val chatScope = rememberCoroutineScope()
     // True while the newest item (message, live panel, or approval card) is on screen.
     val readerAtBottom by remember {
@@ -7136,8 +7283,11 @@ private fun ChatTab(
                                         enabled = canSend,
                                         onClick = {
                                             if (canSend) {
-                                                onSend(prompt)
-                                                prompt = ""
+                                                val ok = runCatching { onSend(prompt); true }.getOrDefault(false)
+                                                if (ok) {
+                                                    prompt = ""
+                                                    onDraftTextChanged("")
+                                                }
                                             }
                                         },
                                     ),

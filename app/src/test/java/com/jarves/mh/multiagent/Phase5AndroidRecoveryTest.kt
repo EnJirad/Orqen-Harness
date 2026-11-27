@@ -227,7 +227,7 @@ class Phase5AndroidRecoveryTest {
         chatCtrl.postMessage(convA.conversationId, pA.projectId, "u", "Owner", true, "Original user message")
 
         // Migration preserves all records
-        assertEquals(4, store.migrateToLatest())
+        assertEquals(InMemoryOrqenTaskStore.CURRENT_SCHEMA_VERSION, store.migrateToLatest())
         assertTrue(store.validateIntegrity())
 
         // Project-scoped recovery only touches proj-A

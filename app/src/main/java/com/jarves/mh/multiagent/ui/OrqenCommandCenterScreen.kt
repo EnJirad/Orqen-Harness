@@ -204,7 +204,10 @@ private fun CommandCenterHomePane(
             Row(horizontalArrangement = Arrangement.spacedBy(OrqenSpacing.Sm)) {
                 Button(
                     onClick = { onSelectSection(CommandCenterSection.TASKS) },
-                    colors = ButtonDefaults.buttonColors(containerColor = OrqenMint, contentColor = Color(0xFF031F1B)),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
                 ) {
                     Text(stringResource(R.string.cc_nav_tasks), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
@@ -472,7 +475,10 @@ private fun CommandCenterActivityAndApprovalsPane(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = { onResolveApproval(appr.approvalId, true) },
-                                colors = ButtonDefaults.buttonColors(containerColor = OrqenMint, contentColor = Color(0xFF031F1B)),
+                                colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
                             ) {
                                 Text(stringResource(R.string.cc_approve_btn), fontSize = 11.sp)
                             }

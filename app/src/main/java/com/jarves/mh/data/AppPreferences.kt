@@ -351,11 +351,25 @@ class AppPreferences(private val context: Context) {
                     language = obj.optString("language", "General"),
                     slug = obj.optString("slug").ifBlank { projectSlug(obj.getString("name")) },
                     rootPath = obj.optString("rootPath"),
+                    createdAtMillis = obj.optLong("createdAtMillis", obj.optLong("updatedAtMillis", System.currentTimeMillis())),
                     updatedAtMillis = obj.optLong("updatedAtMillis", System.currentTimeMillis()),
                     kind = runCatching { ProjectKind.valueOf(obj.optString("kind", ProjectKind.PROJECT.name)) }
                         .getOrDefault(ProjectKind.PROJECT),
                     type = runCatching { ProjectType.valueOf(obj.optString("type", ProjectType.GENERAL.name)) }
                         .getOrDefault(ProjectType.GENERAL),
+                    workspaceKind = runCatching {
+                        val rawWk = obj.optString("workspaceKind", "")
+                        if (rawWk.isNotBlank()) com.jarves.mh.model.WorkspaceKind.valueOf(rawWk)
+                        else {
+                            val parsedType = runCatching { ProjectType.valueOf(obj.optString("type", ProjectType.GENERAL.name)) }.getOrDefault(ProjectType.GENERAL)
+                            if (parsedType == ProjectType.GENERAL) com.jarves.mh.model.WorkspaceKind.FOLDER_WORKSPACE else com.jarves.mh.model.WorkspaceKind.APP_PROJECT
+                        }
+                    }.getOrDefault(com.jarves.mh.model.WorkspaceKind.FOLDER_WORKSPACE),
+                    androidTemplate = obj.optString("androidTemplate").takeIf(String::isNotBlank)?.let {
+                        runCatching { AndroidTemplate.valueOf(it) }.getOrNull()
+                    },
+                    iconKey = obj.optString("iconKey", ""),
+                    customIconPath = obj.optString("customIconPath").takeIf(String::isNotBlank),
                 )
             }
         }.getOrDefault(emptyList())
@@ -371,10 +385,14 @@ class AppPreferences(private val context: Context) {
                 put("language", p.language)
                 put("slug", p.slug)
                 put("rootPath", p.rootPath)
+                put("createdAtMillis", p.createdAtMillis)
                 put("updatedAtMillis", p.updatedAtMillis)
                 put("kind", p.kind.name)
+                put("workspaceKind", p.workspaceKind.name)
                 put("type", p.type.name)
                 p.androidTemplate?.let { put("androidTemplate", it.name) }
+                if (p.iconKey.isNotBlank()) put("iconKey", p.iconKey)
+                p.customIconPath?.takeIf(String::isNotBlank)?.let { put("customIconPath", it) }
             })
         }
         preferences.edit().putString(key, arr.toString()).apply()
@@ -420,6 +438,7 @@ class AppPreferences(private val context: Context) {
                         root.isBlank() || (!root.startsWith('/') && !root.contains(".."))
                     } ?: "",
                     updatedAtMillis = millis,
+                    createdAtMillis = obj.optLong("createdAtMillis", millis),
                     kind = when (storedKind) {
                         "QUICK_CHAT" -> ProjectKind.QUICK_PROJECT
                         else -> runCatching { ProjectKind.valueOf(storedKind) }
@@ -431,6 +450,8 @@ class AppPreferences(private val context: Context) {
                     androidTemplate = obj.optString("androidTemplate").takeIf(String::isNotBlank)?.let {
                         runCatching { AndroidTemplate.valueOf(it) }.getOrNull()
                     },
+                    iconKey = obj.optString("iconKey", ""),
+                    customIconPath = obj.optString("customIconPath").takeIf(String::isNotBlank),
                 )
             }
         }.getOrDefault(emptyList())

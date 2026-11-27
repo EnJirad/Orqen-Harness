@@ -7,6 +7,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -187,8 +189,22 @@ fun TeamWorkspaceScreen(
     onClearCollaborationEvents: () -> Unit = {},
     onReleaseFileLock: (String, AgentSlot) -> Unit,
     onNextPart: () -> Unit,
+    mcpManager: com.jarves.mh.mcp.McpConnectionManager? = null,
+    onOpenGlobalMcpSettings: () -> Unit = {},
+    onAutoOptimizeModels: () -> Unit = {},
+    onUploadTeamFiles: (parentRelPath: String, uris: List<Uri>, onDone: () -> Unit) -> Unit = { _, _, _ -> },
+    onCreateTeamFolder: (parentRelPath: String, folderName: String, onDone: () -> Unit) -> Unit = { _, _, _ -> },
+    onRenameTeamEntry: (relPath: String, newName: String, onDone: () -> Unit) -> Unit = { _, _, _ -> },
+    onDeleteTeamEntry: (relPath: String, onDone: () -> Unit) -> Unit = { _, _ -> },
+    onSaveTeamFileCopy: (relPath: String, destUri: Uri) -> Unit = { _, _ -> },
+    onShareTeamFile: (relPath: String) -> Unit = {},
+    onDownloadTeamZip: (relPaths: List<String>, destUri: Uri) -> Unit = { _, _ -> },
+    initialChatDraft: String = "",
+    onChatDraftChanged: (String) -> Unit = {},
+    onStartImplementation: (() -> Unit)? = null,
 ) {
     var activeTab by rememberSaveable(project.id) { mutableStateOf(TeamWorkspaceTab.CHAT) }
+    var showTeamMcpSettings by remember { mutableStateOf(false) }
     val chatListState = rememberSaveable(project.id, saver = LazyListState.Saver) { LazyListState() }
     var chatInitialScrollDone by rememberSaveable(project.id) { mutableStateOf(false) }
     var pendingFileToOpen by remember { mutableStateOf<String?>(null) }
@@ -293,6 +309,10 @@ fun TeamWorkspaceScreen(
                             pendingFileToOpen = path
                             activeTab = TeamWorkspaceTab.FILES
                         },
+                        draftConversationKey = "team:${project.id}",
+                        initialDraftText = initialChatDraft,
+                        onDraftTextChanged = onChatDraftChanged,
+                        onStartImplementation = onStartImplementation,
                         onSendMessageWithImages = onSendGroupMessageWithImages,
                         onSendMessage = onSendGroupMessage,
                         onBack = onBackToFolders,
@@ -304,6 +324,14 @@ fun TeamWorkspaceScreen(
                     workspaceDir = workspaceDir,
                     initialFilePathToOpen = pendingFileToOpen,
                     onConsumedInitialFile = { pendingFileToOpen = null },
+                    onInstallApk = onInstallApk,
+                    onUploadFiles = onUploadTeamFiles,
+                    onCreateFolder = onCreateTeamFolder,
+                    onRenameEntry = onRenameTeamEntry,
+                    onDeleteEntry = onDeleteTeamEntry,
+                    onSaveFileCopy = onSaveTeamFileCopy,
+                    onShareFile = onShareTeamFile,
+                    onDownloadZip = onDownloadTeamZip,
                     onBack = onBackToFolders,
                 )
 
@@ -321,11 +349,16 @@ fun TeamWorkspaceScreen(
 
                 TeamWorkspaceTab.SUPERVISOR -> TeamSupervisorTab(
                     projectName = project.name,
+                    workspaceDir = workspaceDir,
                     agents = agents,
                     activeSupervisedTaskId = activeSupervisedTaskId,
                     supervisorSnapshots = supervisorSnapshots,
                     isTeamRunning = isTeamRunning || awaitingStartConfirmation,
                     awaitingStartConfirmation = awaitingStartConfirmation,
+                    onOpenPlanFile = { rel ->
+                        pendingFileToOpen = rel
+                        activeTab = TeamWorkspaceTab.FILES
+                    },
                     onOpenChat = { activeTab = TeamWorkspaceTab.CHAT },
                     onBack = onBackToFolders,
                 )
@@ -340,7 +373,19 @@ fun TeamWorkspaceScreen(
                     onBack = onBackToFolders,
                 )
 
-                TeamWorkspaceTab.SETTINGS -> TeamDashboardScreen(
+                TeamWorkspaceTab.SETTINGS -> if (showTeamMcpSettings && mcpManager != null) {
+                    TeamMcpSettingsScreen(
+                        workspaceId = project.id,
+                        teamName = project.name,
+                        manager = mcpManager,
+                        agents = agents,
+                        onOpenGlobalMcpSettings = {
+                            showTeamMcpSettings = false
+                            onOpenGlobalMcpSettings()
+                        },
+                        onBack = { showTeamMcpSettings = false },
+                    )
+                } else TeamDashboardScreen(
                     teamName = project.name,
                     workspacePath = "/team_workspaces/${project.slug}",
                     projects = projects,
@@ -401,6 +446,10 @@ fun TeamWorkspaceScreen(
                     onToggleAgentEnabled = onToggleAgentEnabled,
                     onOpenQuotaDashboard = onOpenQuotaDashboard,
                     onOpenActivityFeed = onOpenActivityFeed,
+                    onOpenTeamMcpSettings = {
+                        if (mcpManager != null) showTeamMcpSettings = true else onOpenGlobalMcpSettings()
+                    },
+                    onAutoOptimizeModels = onAutoOptimizeModels,
                     onReleaseFileLock = onReleaseFileLock,
                     onOpenGroupChat = { activeTab = TeamWorkspaceTab.CHAT },
                     onOpenProviderSettings = {},
@@ -416,21 +465,26 @@ fun TeamWorkspaceScreen(
 @Composable
 private fun TeamSupervisorTab(
     projectName: String,
+    workspaceDir: File,
     agents: List<AgentState>,
     activeSupervisedTaskId: String?,
     supervisorSnapshots: Map<String, com.jarves.mh.multiagent.supervisor.SupervisorUiSnapshot>,
     isTeamRunning: Boolean,
     awaitingStartConfirmation: Boolean,
+    onOpenPlanFile: (String) -> Unit = {},
     onOpenChat: () -> Unit,
     onBack: () -> Unit,
 ) {
     val activeSnapshot = activeSupervisedTaskId?.let { supervisorSnapshots[it] }
         ?: supervisorSnapshots.values.lastOrNull()
+    val multiPartPlan = remember(workspaceDir, activeSnapshot?.completedSteps, isTeamRunning) {
+        com.jarves.mh.multiagent.engine.MultiPartPlanManager.loadPlan(workspaceDir)
+    }
 
     fun humanStatus(status: com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus): Pair<String, Color> = when (status) {
         com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.PLANNING -> "กำลังวิเคราะห์และวางแผนงาน" to Color(0xFF3B82F6)
         com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.SUPERVISING -> "กำลังควบคุมและสั่งงานทีม" to Color(0xFF16A34A)
-        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.VERIFYING -> "กำลังตรวจสอบคุณภาพและผลทดสอบ" to Color(0xFF06B6D4)
+        com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.VERIFYING -> "กำลังตรวจสอบคุณภาพและผลทดสอบ" to OrqenSemanticColors.Info
         com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.RECOVERING -> "กำลังกู้คืนขั้นตอนอัตโนมัติ" to Color(0xFFF59E0B)
         com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.REASSIGNING -> "กำลังสลับมอบหมายงานให้เอเจนต์สำรอง" to Color(0xFFF59E0B)
         com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.COMPLETED -> "ทำงานเสร็จสมบูรณ์แล้ว" to Color(0xFF10B981)
@@ -457,7 +511,7 @@ private fun TeamSupervisorTab(
         com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.RETRY_INITIATED ->
             "ลองทำขั้นตอนเดิมซ้ำอัตโนมัติ" to "ระบบพบปัญหาชั่วคราว จึงสั่งรันขั้นตอนเดิมต่อโดยไม่เสียงานที่ทำไปแล้ว (${dec.reason})"
         com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.TASK_REPLANNED ->
-            "วางแผนขั้นตอนเพิ่มเติม" to "SPV ตรวจพบส่วนที่ยังไม่ครบ (เช่น งานค้าง/การรีวิว/ผลทดสอบ) จึงเพิ่มขั้นตอนให้ทีมทำต่อจนสมบูรณ์"
+            "ปรับปรุงแผนเพื่อแก้ไขส่วนที่ขาด" to "SPV ตรวจพบส่วนที่ยังไม่ครบตามเกณฑ์ตรวจสอบ จึงเพิ่มรายการแก้ไขและตรวจสอบต่ออัตโนมัติ"
         com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.MODEL_CHANGED,
         com.jarves.mh.multiagent.supervisor.SupervisorDecisionType.PROVIDER_CHANGED ->
             "สลับโมเดลอัตโนมัติ" to "สลับไปใช้โมเดลสำรองเพื่อให้งานเดินต่อได้ไม่สะดุด (${dec.reason})"
@@ -494,6 +548,90 @@ private fun TeamSupervisorTab(
             contentPadding = PaddingValues(vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (multiPartPlan != null) {
+                item {
+                    val completedParts = multiPartPlan.parts.count { it.status == com.jarves.mh.multiagent.engine.ExecutionPartStatus.COMPLETED }
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = "Multi-Part Plan (v${multiPartPlan.version}) · $completedParts/${multiPartPlan.parts.size} Parts",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.5.sp,
+                                )
+                                TextButton(
+                                    onClick = { onOpenPlanFile(com.jarves.mh.multiagent.engine.MultiPartPlanManager.OVERVIEW_REL_PATH) },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                ) {
+                                    Text("overview.md", fontSize = 11.sp)
+                                }
+                            }
+                            multiPartPlan.parts.sortedBy { it.partNumber }.forEach { part ->
+                                val partColor = when (part.status) {
+                                    com.jarves.mh.multiagent.engine.ExecutionPartStatus.COMPLETED -> OrqenSemanticColors.Success
+                                    com.jarves.mh.multiagent.engine.ExecutionPartStatus.EXECUTING,
+                                    com.jarves.mh.multiagent.engine.ExecutionPartStatus.VERIFYING,
+                                    -> OrqenSemanticColors.Running
+                                    com.jarves.mh.multiagent.engine.ExecutionPartStatus.FAILED,
+                                    com.jarves.mh.multiagent.engine.ExecutionPartStatus.BLOCKED,
+                                    -> OrqenSemanticColors.Error
+                                    else -> OrqenSemanticColors.Neutral
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = "Part ${part.partNumber}: ${part.title}",
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 12.sp,
+                                                modifier = Modifier.weight(1f),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            OrqenStatusBadge(part.status.name, partColor)
+                                        }
+                                        Text(
+                                            text = "Agent: ${part.assignedAgentId} · Review: ${part.reviewerVerdict ?: "PENDING"} · Tests: ${part.testExitCode?.let { if (it == 0) "PASS" else "FAIL($it)" } ?: "PENDING"}",
+                                            fontSize = 10.5.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            TextButton(
+                                                onClick = { onOpenPlanFile(part.specRelativePath) },
+                                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                            ) {
+                                                Text("View Spec", fontSize = 10.5.sp)
+                                            }
+                                            if (File(workspaceDir, part.reportRelativePath).isFile) {
+                                                TextButton(
+                                                    onClick = { onOpenPlanFile(part.reportRelativePath) },
+                                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                                ) {
+                                                    Text("View Report", fontSize = 10.5.sp)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if (activeSnapshot == null) {
                 item {
                     Card(
@@ -695,6 +833,14 @@ private fun TeamFilesTab(
     workspaceDir: File,
     initialFilePathToOpen: String? = null,
     onConsumedInitialFile: () -> Unit = {},
+    onInstallApk: (String) -> Unit = {},
+    onUploadFiles: (parentRelPath: String, uris: List<Uri>, onDone: () -> Unit) -> Unit = { _, _, _ -> },
+    onCreateFolder: (parentRelPath: String, folderName: String, onDone: () -> Unit) -> Unit = { _, _, _ -> },
+    onRenameEntry: (relPath: String, newName: String, onDone: () -> Unit) -> Unit = { _, _, _ -> },
+    onDeleteEntry: (relPath: String, onDone: () -> Unit) -> Unit = { _, _ -> },
+    onSaveFileCopy: (relPath: String, destUri: Uri) -> Unit = { _, _ -> },
+    onShareFile: (relPath: String) -> Unit = {},
+    onDownloadZip: (relPaths: List<String>, destUri: Uri) -> Unit = { _, _ -> },
     onBack: () -> Unit,
 ) {
     var refreshTick by remember { mutableIntStateOf(0) }
@@ -710,7 +856,118 @@ private fun TeamFilesTab(
     var savedBanner by remember { mutableStateOf(false) }
     var expandedDirs by rememberSaveable(workspaceDir.absolutePath) { mutableStateOf(emptyList<String>()) }
     var highlightedFilePath by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedRelPaths by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showNewFolderDialog by remember { mutableStateOf(false) }
+    var newFolderName by remember { mutableStateOf("") }
+    var pendingRenameRelPath by remember { mutableStateOf<String?>(null) }
+    var renameEntryInput by remember { mutableStateOf("") }
+    var pendingDeleteRelPath by remember { mutableStateOf<String?>(null) }
+    var pendingDownloadSingleRelPath by remember { mutableStateOf<String?>(null) }
+    var pendingZipPaths by remember { mutableStateOf<List<String>>(emptyList()) }
     val filesListState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+
+    val uploadLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            onUploadFiles("", uris) { refreshTick++ }
+        }
+    }
+    val saveSingleFileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        val rel = pendingDownloadSingleRelPath
+        pendingDownloadSingleRelPath = null
+        if (uri != null && !rel.isNullOrBlank()) {
+            onSaveFileCopy(rel, uri)
+        }
+    }
+    val saveZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val paths = pendingZipPaths
+        pendingZipPaths = emptyList()
+        if (uri != null) {
+            onDownloadZip(paths, uri)
+            selectionMode = false
+            selectedRelPaths = emptySet()
+        }
+    }
+
+    if (showNewFolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showNewFolderDialog = false },
+            title = { Text("New Folder") },
+            text = {
+                OutlinedTextField(
+                    value = newFolderName,
+                    onValueChange = { newFolderName = it },
+                    label = { Text("Folder name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val clean = newFolderName.trim()
+                    if (clean.isNotBlank()) {
+                        onCreateFolder("", clean) { refreshTick++ }
+                        newFolderName = ""
+                        showNewFolderDialog = false
+                    }
+                }) { Text("Create") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewFolderDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    pendingRenameRelPath?.let { relToRename ->
+        AlertDialog(
+            onDismissRequest = { pendingRenameRelPath = null },
+            title = { Text("Rename") },
+            text = {
+                OutlinedTextField(
+                    value = renameEntryInput,
+                    onValueChange = { renameEntryInput = it },
+                    label = { Text("New name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                Button(
+                    enabled = renameEntryInput.isNotBlank(),
+                    onClick = {
+                        onRenameEntry(relToRename, renameEntryInput.trim()) { refreshTick++ }
+                        pendingRenameRelPath = null
+                    },
+                ) { Text("Rename") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRenameRelPath = null }) { Text("Cancel") }
+            },
+        )
+    }
+
+    pendingDeleteRelPath?.let { relToDelete ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteRelPath = null },
+            title = { Text("Delete '$relToDelete'?") },
+            text = { Text("This removes the file or folder from the team workspace permanently.") },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                    onClick = {
+                        onDeleteEntry(relToDelete) { refreshTick++ }
+                        if (selectedFile?.relativeTo(workspaceDir)?.path == relToDelete) selectedFile = null
+                        pendingDeleteRelPath = null
+                    },
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteRelPath = null }) { Text("Cancel") }
+            },
+        )
+    }
 
     // When clicking a file chip in Chat: expand ONLY that file's parent folders & highlight it in the tree!
     LaunchedEffect(initialFilePathToOpen, workspaceDir) {
@@ -833,6 +1090,16 @@ private fun TeamFilesTab(
                         Text(currentFile.relativeTo(workspaceDir).path, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     },
                     actions = {
+                        val rel = remember(currentFile) { currentFile.relativeTo(workspaceDir).path }
+                        IconButton(onClick = {
+                            pendingDownloadSingleRelPath = rel
+                            saveSingleFileLauncher.launch(currentFile.name)
+                        }) {
+                            Icon(Icons.Default.Download, contentDescription = "Download")
+                        }
+                        IconButton(onClick = { onShareFile(rel) }) {
+                            Icon(Icons.Default.Share, contentDescription = "Share")
+                        }
                         if (!isImageFile) {
                             TextButton(onClick = {
                                 runCatching { currentFile.writeText(fileContent) }
@@ -893,135 +1160,352 @@ private fun TeamFilesTab(
                     }
                 },
                 actions = {
-                    if (expandedDirs.isNotEmpty()) {
-                        IconButton(onClick = { expandedDirs = emptyList() }) {
-                            Icon(Icons.Default.UnfoldLess, contentDescription = "Collapse All")
+                    if (selectionMode) {
+                        TextButton(
+                            enabled = selectedRelPaths.isNotEmpty(),
+                            onClick = {
+                                pendingZipPaths = selectedRelPaths.toList()
+                                saveZipLauncher.launch("${projectName.lowercase().replace(Regex("[^a-z0-9]+"), "-")}-selected.zip")
+                            },
+                        ) {
+                            Text("ZIP (${selectedRelPaths.size})", fontWeight = FontWeight.Bold, fontSize = 11.sp)
                         }
-                    }
-                    IconButton(onClick = { refreshTick++ }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        IconButton(onClick = { selectionMode = false; selectedRelPaths = emptySet() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel Selection")
+                        }
+                    } else {
+                        IconButton(onClick = { uploadLauncher.launch(arrayOf("*/*")) }) {
+                            Icon(Icons.Default.UploadFile, contentDescription = "Upload Files")
+                        }
+                        IconButton(onClick = { showNewFolderDialog = true }) {
+                            Icon(Icons.Default.CreateNewFolder, contentDescription = "New Folder")
+                        }
+                        IconButton(onClick = { selectionMode = true; selectedRelPaths = emptySet() }) {
+                            Icon(Icons.Default.Checklist, contentDescription = "Multi-select Download")
+                        }
+                        IconButton(onClick = {
+                            pendingZipPaths = emptyList()
+                            saveZipLauncher.launch("${projectName.lowercase().replace(Regex("[^a-z0-9]+"), "-")}-project.zip")
+                        }) {
+                            Icon(Icons.Default.Archive, contentDescription = "Download Project ZIP")
+                        }
+                        IconButton(onClick = { refreshTick++ }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        }
                     }
                 },
             )
         },
     ) { pad ->
-        if (visibleNodes.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(stringResource(R.string.team_files_empty), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
-                }
+        val filteredNodes = remember(visibleNodes, searchQuery) {
+            val q = searchQuery.trim()
+            if (q.isBlank()) visibleNodes
+            else visibleNodes.filter { it.name.contains(q, ignoreCase = true) || it.relPath.contains(q, ignoreCase = true) }
+        }
+        val deliverables = remember(workspaceDir, refreshTick) {
+            val found = mutableListOf<File>()
+            val overviewPlan = File(workspaceDir, ".orqen/plan/overview.md")
+            if (overviewPlan.isFile) found += overviewPlan
+            val verifReport = File(workspaceDir, ".orqen/reports/verification_report.md")
+            if (verifReport.isFile) found += verifReport
+            val apkRoot = File(workspaceDir, "app/build/outputs/apk")
+            if (apkRoot.isDirectory) {
+                apkRoot.walkTopDown()
+                    .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) && it.length() > 0L }
+                    .take(3)
+                    .forEach { found += it }
             }
-        } else {
-            LaunchedEffect(highlightedFilePath, visibleNodes) {
-                val target = highlightedFilePath ?: return@LaunchedEffect
-                val idx = visibleNodes.indexOfFirst { it.relPath == target }
-                if (idx >= 0) {
-                    filesListState.animateScrollToItem(idx)
-                }
-            }
-            LazyColumn(
-                state = filesListState,
-                modifier = Modifier.fillMaxSize().padding(pad),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                items(visibleNodes, key = { it.relPath }) { node ->
-                    val isExpanded = node.isDirectory && node.relPath in expandedSet
-                    val isHighlighted = !node.isDirectory && node.relPath == highlightedFilePath
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = when {
-                            isHighlighted -> PocketOrange.copy(alpha = 0.22f)
-                            isExpanded -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                            else -> Color.Transparent
-                        },
-                        border = if (isHighlighted) BorderStroke(1.5.dp, PocketOrange) else null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                if (node.isDirectory) {
-                                    expandedDirs = if (isExpanded) {
-                                        expandedDirs.filterNot { it == node.relPath || it.startsWith("${node.relPath}/") }
-                                    } else {
-                                        expandedDirs + node.relPath
-                                    }
+            workspaceDir.listFiles()
+                ?.filter { it.isFile && it.extension.lowercase() in setOf("apk", "zip") && it.length() > 0L }
+                ?.take(3)
+                ?.forEach { found += it }
+            found.distinctBy { it.canonicalPath }
+        }
+        Column(Modifier.fillMaxSize().padding(pad)) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search workspace files…", fontSize = 12.sp) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                trailingIcon = if (searchQuery.isNotBlank()) {
+                    {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                        }
+                    }
+                } else null,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+            if (deliverables.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    deliverables.forEach { del ->
+                        val rel = del.relativeTo(workspaceDir).path
+                        val isApk = del.extension.equals("apk", ignoreCase = true)
+                        AssistChip(
+                            onClick = {
+                                if (isApk) {
+                                    onInstallApk(del.absolutePath)
                                 } else {
-                                    highlightedFilePath = node.relPath
-                                    val isImg = node.file.extension.lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
-                                    fileContent = if (isImg) "" else runCatching { node.file.readText().take(200_000) }.getOrDefault("")
-                                    selectedFile = node.file
-                                    savedBanner = false
+                                    pendingDownloadSingleRelPath = rel
+                                    saveSingleFileLauncher.launch(del.name)
                                 }
                             },
-                    ) {
-                        Row(
+                            leadingIcon = {
+                                Icon(
+                                    if (isApk) Icons.Default.Android else Icons.Default.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (isApk) Color(0xFF10B981) else PocketOrange,
+                                )
+                            },
+                            label = { Text(if (isApk) "Install ${del.name}" else del.name, fontSize = 11.sp) },
+                        )
+                    }
+                }
+            }
+            if (filteredNodes.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = if (searchQuery.isNotBlank()) "No files match '$searchQuery'" else stringResource(R.string.team_files_empty),
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 32.dp),
+                        )
+                    }
+                }
+            } else {
+                LaunchedEffect(highlightedFilePath, filteredNodes) {
+                    val target = highlightedFilePath ?: return@LaunchedEffect
+                    val idx = filteredNodes.indexOfFirst { it.relPath == target }
+                    if (idx >= 0) {
+                        filesListState.animateScrollToItem(idx)
+                    }
+                }
+                LazyColumn(
+                    state = filesListState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    items(filteredNodes, key = { it.relPath }) { node ->
+                        val isExpanded = node.isDirectory && node.relPath in expandedSet
+                        val isHighlighted = !node.isDirectory && node.relPath == highlightedFilePath
+                        val isChecked = node.relPath in selectedRelPaths
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = when {
+                                isChecked -> MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                isHighlighted -> PocketOrange.copy(alpha = 0.22f)
+                                isExpanded -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+                                else -> Color.Transparent
+                            },
+                            border = if (isHighlighted) BorderStroke(1.5.dp, PocketOrange) else null,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = (node.depth * 18 + 6).dp, end = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                                .clickable {
+                                    if (selectionMode) {
+                                        selectedRelPaths = if (isChecked) selectedRelPaths - node.relPath else selectedRelPaths + node.relPath
+                                    } else if (node.isDirectory) {
+                                        expandedDirs = if (isExpanded) {
+                                            expandedDirs.filterNot { it == node.relPath || it.startsWith("${node.relPath}/") }
+                                        } else {
+                                            expandedDirs + node.relPath
+                                        }
+                                    } else {
+                                        highlightedFilePath = node.relPath
+                                        val isImg = node.file.extension.lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
+                                        fileContent = if (isImg) "" else runCatching { node.file.readText().take(200_000) }.getOrDefault("")
+                                        selectedFile = node.file
+                                        savedBanner = false
+                                    }
+                                },
                         ) {
-                            if (node.isDirectory) {
-                                Icon(
-                                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
-                                    contentDescription = null,
-                                    tint = if (isExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                Spacer(Modifier.width(2.dp))
-                            } else {
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            FileTypeIcon(
-                                fileName = node.name,
-                                isDirectory = node.isDirectory,
-                                isExpanded = isExpanded,
-                                size = 17.dp,
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
-                                Text(
-                                    text = node.name,
-                                    fontSize = 13.sp,
-                                    fontWeight = if (node.isDirectory) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (node.isDirectory) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                val relTime = formatRelativeUpdatedTime(node.lastModifiedMs, nowMs)
-                                val freshnessColor = fileFreshnessColor(node.lastModifiedMs, nowMs)
-                                val isFresh = (nowMs - node.lastModifiedMs) in 0L..(15 * 60_000L)
-                                val sizePrefix = if (node.isDirectory) "${node.childCount} items" else "${node.file.length()} bytes"
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                ) {
-                                    Text(
-                                        text = "$sizePrefix ·",
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = (node.depth * 18 + 6).dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (selectionMode) {
+                                    Checkbox(
+                                        checked = isChecked,
+                                        onCheckedChange = { checked ->
+                                            selectedRelPaths = if (checked) selectedRelPaths + node.relPath else selectedRelPaths - node.relPath
+                                        },
+                                        modifier = Modifier.size(32.dp),
                                     )
-                                    if (relTime.isNotBlank()) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(5.dp)
-                                                .clip(CircleShape)
-                                                .background(freshnessColor),
-                                        )
+                                } else if (node.isDirectory) {
+                                    Icon(
+                                        imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = if (isExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(Modifier.width(2.dp))
+                                } else {
+                                    Spacer(Modifier.width(6.dp))
+                                }
+                                FileTypeIcon(
+                                    fileName = node.name,
+                                    isDirectory = node.isDirectory,
+                                    isExpanded = isExpanded,
+                                    size = 17.dp,
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+                                    Text(
+                                        text = node.name,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (node.isDirectory) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (node.isDirectory) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    val relTime = formatRelativeUpdatedTime(node.lastModifiedMs, nowMs)
+                                    val freshnessColor = fileFreshnessColor(node.lastModifiedMs, nowMs)
+                                    val isFresh = (nowMs - node.lastModifiedMs) in 0L..(15 * 60_000L)
+                                    val sizePrefix = if (node.isDirectory) "${node.childCount} items" else "${node.file.length()} bytes"
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
                                         Text(
-                                            text = relTime,
+                                            text = "$sizePrefix ·",
                                             fontSize = 10.sp,
-                                            fontWeight = if (isFresh) FontWeight.SemiBold else FontWeight.Medium,
-                                            color = freshnessColor,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
                                         )
+                                        if (relTime.isNotBlank()) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(5.dp)
+                                                    .clip(CircleShape)
+                                                    .background(freshnessColor),
+                                            )
+                                            Text(
+                                                text = relTime,
+                                                fontSize = 10.sp,
+                                                fontWeight = if (isFresh) FontWeight.SemiBold else FontWeight.Medium,
+                                                color = freshnessColor,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
                                     }
                                 }
-                            }
-                            if (!node.isDirectory) {
-                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+                                if (!selectionMode) {
+                                    var rowMenuExpanded by remember(node.relPath) { mutableStateOf(false) }
+                                    Box {
+                                        IconButton(
+                                            onClick = { rowMenuExpanded = true },
+                                            modifier = Modifier.size(32.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Default.MoreVert,
+                                                contentDescription = "File options",
+                                                modifier = Modifier.size(18.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = rowMenuExpanded,
+                                            onDismissRequest = { rowMenuExpanded = false },
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("Open") },
+                                                leadingIcon = { Icon(if (node.isDirectory) Icons.Default.FolderOpen else Icons.Default.OpenInNew, null, modifier = Modifier.size(18.dp)) },
+                                                onClick = {
+                                                    rowMenuExpanded = false
+                                                    if (node.isDirectory) {
+                                                        if (!isExpanded) expandedDirs = expandedDirs + node.relPath
+                                                    } else {
+                                                        highlightedFilePath = node.relPath
+                                                        val isImg = node.file.extension.lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
+                                                        fileContent = if (isImg) "" else runCatching { node.file.readText().take(200_000) }.getOrDefault("")
+                                                        selectedFile = node.file
+                                                        savedBanner = false
+                                                    }
+                                                },
+                                            )
+                                            if (node.isDirectory) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Download folder as ZIP") },
+                                                    leadingIcon = { Icon(Icons.Default.Archive, null, modifier = Modifier.size(18.dp)) },
+                                                    onClick = {
+                                                        rowMenuExpanded = false
+                                                        pendingZipPaths = listOf(node.relPath)
+                                                        saveZipLauncher.launch("${node.name}.zip")
+                                                    },
+                                                )
+                                            } else {
+                                                DropdownMenuItem(
+                                                    text = { Text("Preview") },
+                                                    leadingIcon = { Icon(Icons.Default.Visibility, null, modifier = Modifier.size(18.dp)) },
+                                                    onClick = {
+                                                        rowMenuExpanded = false
+                                                        highlightedFilePath = node.relPath
+                                                        val isImg = node.file.extension.lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
+                                                        fileContent = if (isImg) "" else runCatching { node.file.readText().take(200_000) }.getOrDefault("")
+                                                        selectedFile = node.file
+                                                        savedBanner = false
+                                                    },
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Download") },
+                                                    leadingIcon = { Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp)) },
+                                                    onClick = {
+                                                        rowMenuExpanded = false
+                                                        pendingDownloadSingleRelPath = node.relPath
+                                                        saveSingleFileLauncher.launch(node.name)
+                                                    },
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("Share") },
+                                                    leadingIcon = { Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp)) },
+                                                    onClick = {
+                                                        rowMenuExpanded = false
+                                                        onShareFile(node.relPath)
+                                                    },
+                                                )
+                                            }
+                                            DropdownMenuItem(
+                                                text = { Text("Copy path") },
+                                                leadingIcon = { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp)) },
+                                                onClick = {
+                                                    rowMenuExpanded = false
+                                                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(node.relPath))
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Rename") },
+                                                leadingIcon = { Icon(Icons.Default.Edit, null, modifier = Modifier.size(18.dp)) },
+                                                onClick = {
+                                                    rowMenuExpanded = false
+                                                    renameEntryInput = node.name
+                                                    pendingRenameRelPath = node.relPath
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                                leadingIcon = { Icon(Icons.Default.DeleteOutline, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp)) },
+                                                onClick = {
+                                                    rowMenuExpanded = false
+                                                    pendingDeleteRelPath = node.relPath
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

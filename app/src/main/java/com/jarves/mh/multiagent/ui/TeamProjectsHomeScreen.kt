@@ -60,6 +60,7 @@ fun TeamProjectsHomeScreen(
     onCreateTeamProject: (String) -> Unit,
     onCreateAndroidTeamProject: (String, com.jarves.mh.model.AndroidTemplate) -> Unit = { name, _ -> onCreateTeamProject(name) },
     onRenameTeamProject: (String, String) -> Unit = { _, _ -> },
+    onUpdateTeamProjectIdentity: (projectId: String, type: com.jarves.mh.model.ProjectType, iconKey: String) -> Unit = { _, _, _ -> },
     onCloneFromSolo: (Project) -> Unit,
     onDeleteTeamProject: (Project) -> Unit,
     onImportZip: (Uri) -> Unit,
@@ -536,8 +537,11 @@ fun TeamProjectsHomeScreen(
                     val isRunningThis = runningTeamProjectId == project.id
                     var menuOpen by remember(project.id) { mutableStateOf(false) }
                     var showRename by remember(project.id) { mutableStateOf(false) }
+                    var showIdentityDialog by remember(project.id) { mutableStateOf(false) }
                     var showDelete by remember(project.id) { mutableStateOf(false) }
                     var renameText by remember(project.id) { mutableStateOf(project.name) }
+                    var editType by remember(project.id) { mutableStateOf(project.type) }
+                    var editIconKey by remember(project.id) { mutableStateOf(project.iconKey) }
 
                     Card(
                         shape = RoundedCornerShape(16.dp),
@@ -546,7 +550,7 @@ fun TeamProjectsHomeScreen(
                             .fillMaxWidth()
                             .border(
                                 width = if (isRunningThis) 1.5.dp else 1.dp,
-                                color = if (isRunningThis) Color(0xFF22C55E) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                color = if (isRunningThis) OrqenSemanticColors.Success else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
                                 shape = RoundedCornerShape(16.dp),
                             )
                             .clickable { onOpenTeamProject(project) },
@@ -559,13 +563,13 @@ fun TeamProjectsHomeScreen(
                                 modifier = Modifier
                                     .size(44.dp)
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isRunningThis) Color(0xFF22C55E).copy(alpha = 0.16f) else PocketOrange.copy(alpha = 0.14f)),
+                                    .background(if (isRunningThis) OrqenSemanticColors.Success.copy(alpha = 0.14f) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Icon(
-                                    imageVector = if (isRunningThis) Icons.Default.Groups else Icons.Default.FolderShared,
-                                    contentDescription = null,
-                                    tint = if (isRunningThis) Color(0xFF16A34A) else PocketOrange,
+                                    imageVector = com.jarves.mh.ui.ProjectIconCatalog.resolveIcon(project),
+                                    contentDescription = project.type.displayName,
+                                    tint = if (isRunningThis) OrqenSemanticColors.Success else MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(22.dp),
                                 )
                             }
@@ -579,16 +583,27 @@ fun TeamProjectsHomeScreen(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                    ) {
+                                        Text(
+                                            text = project.type.displayName,
+                                            fontSize = 9.5.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
                                     if (isRunningThis) {
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
-                                            color = Color(0xFF22C55E).copy(alpha = 0.18f),
+                                            color = OrqenSemanticColors.Success.copy(alpha = 0.16f),
                                         ) {
                                             Text(
                                                 text = stringResource(R.string.team_folder_running_badge),
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF16A34A),
+                                                color = OrqenSemanticColors.Success,
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                             )
                                         }
@@ -611,6 +626,16 @@ fun TeamProjectsHomeScreen(
                                     )
                                 }
                                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text("Change Type & Icon") },
+                                        leadingIcon = { Icon(Icons.Default.Palette, contentDescription = null) },
+                                        onClick = {
+                                            menuOpen = false
+                                            editType = project.type
+                                            editIconKey = project.iconKey
+                                            showIdentityDialog = true
+                                        },
+                                    )
                                     DropdownMenuItem(
                                         text = { Text(stringResource(R.string.ws_rename_project)) },
                                         leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
@@ -643,6 +668,54 @@ fun TeamProjectsHomeScreen(
                                 }
                             }
                         }
+                    }
+
+                    if (showIdentityDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showIdentityDialog = false },
+                            title = { Text("Project Type & Icon") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text("Project Type", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        items(com.jarves.mh.model.ProjectType.entries) { pType ->
+                                            FilterChip(
+                                                selected = editType == pType,
+                                                onClick = { editType = pType },
+                                                label = { Text(pType.displayName, fontSize = 11.sp) },
+                                            )
+                                        }
+                                    }
+                                    Text("Project Icon", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        items(com.jarves.mh.ui.ProjectIconCatalog.builtInIcons, key = { it.key }) { opt ->
+                                            val activeKey = editIconKey.ifBlank { com.jarves.mh.ui.ProjectIconCatalog.defaultIconKeyFor(editType) }
+                                            FilterChip(
+                                                selected = activeKey == opt.key,
+                                                onClick = { editIconKey = opt.key },
+                                                leadingIcon = { Icon(opt.icon, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                                label = { Text(opt.label, fontSize = 10.5.sp) },
+                                            )
+                                        }
+                                    }
+                                    TextButton(
+                                        onClick = { editIconKey = "" },
+                                        contentPadding = PaddingValues(horizontal = 4.dp),
+                                    ) {
+                                        Text("Reset to default icon for ${editType.displayName}", fontSize = 11.sp)
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                Button(onClick = {
+                                    onUpdateTeamProjectIdentity(project.id, editType, editIconKey)
+                                    showIdentityDialog = false
+                                }) { Text(stringResource(R.string.action_save)) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showIdentityDialog = false }) { Text(stringResource(R.string.action_cancel)) }
+                            },
+                        )
                     }
 
                     if (showRename) {

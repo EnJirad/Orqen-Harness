@@ -36,6 +36,8 @@ class RuntimeStepExecutionAdapter(
     private val communicationManager: AgentCommunicationManager? = null,
     private val stepTimeoutMs: Long = 1_800_000L,
     private val mcpManager: com.jarves.mh.mcp.McpConnectionManager? = null,
+    private val teamRosterProvider: () -> List<DynamicAgentProfile> = { emptyList() },
+    private val sessionManager: com.jarves.mh.runtime.AgentSessionManager? = null,
     private val onProgress: suspend (taskId: String, stepId: String, agentId: String, progress: String) -> Unit = { _, _, _, _ -> },
 ) : StepExecutionAdapter {
 
@@ -61,6 +63,18 @@ class RuntimeStepExecutionAdapter(
             input.compactContext
         }
 
+        val isReviewerOnly = input.step.requiresReview &&
+            ("review" in input.agent.capabilities || input.agent.roleTitle.contains("review", ignoreCase = true)) &&
+            !input.step.title.contains("fix", ignoreCase = true)
+        val agentSession = sessionManager?.getOrCreateSession(
+            agentId = input.agent.agentId,
+            projectId = input.task.projectId,
+            taskId = input.task.taskId,
+            assignmentId = input.step.stepId,
+            providerId = input.agent.providerId,
+            modelId = input.agent.modelId,
+        )
+
         val request = RuntimeExecutionRequest(
             agent = agentState,
             providerConfig = providerConfig,
@@ -68,6 +82,13 @@ class RuntimeStepExecutionAdapter(
             projectSlug = projectSlug,
             prompt = effectivePrompt,
             imageFiles = input.imageFiles,
+            taskId = input.task.taskId,
+            stepId = input.step.stepId,
+            enableWorkspaceTools = true,
+            readOnlyTools = isReviewerOnly,
+            sessionId = agentSession?.sessionId,
+            nativeConversationId = agentSession?.nativeConversationId,
+            agentId = input.agent.agentId,
         )
 
         val lastActivityAtMs = AtomicLong(System.currentTimeMillis())
@@ -132,6 +153,10 @@ class RuntimeStepExecutionAdapter(
             throw CancellationException("Runtime cancelled request ${response.requestId}")
         }
 
+        if (agentSession != null && !response.nativeConversationId.isNullOrBlank()) {
+            sessionManager?.updateNativeConversationId(agentSession.sessionId, response.nativeConversationId)
+        }
+
         if (!response.success) {
             val classified = response.error ?: StructuredErrorClassifier.classify(
                 response.outputText.ifBlank { "Provider execution failed (${response.providerId})" },
@@ -159,10 +184,82 @@ class RuntimeStepExecutionAdapter(
 
         // Execute any authorized [MCP_CALL tool="mcp__..." args={...}] requests and return real results (Parts 8, 9, 16)
         var finalOutputText = response.outputText
+        var combinedModifiedFiles = response.modifiedFiles
+        var combinedToolEvidence = response.toolEvidence
+        var combinedTestEvidence = response.testEvidence
+        var combinedBuildEvidence = response.buildEvidence
+
+        // Phase D (6.3): Handle inter-agent assistance requests [HELP to=<agentId>] <question>
+        val helpRegex = Regex("""\[HELP\s+to=([A-Za-z0-9_.-]+)\]\s*(.+)""")
+        val helpMatch = helpRegex.find(finalOutputText)
+        if (helpMatch != null) {
+            val helperTarget = helpMatch.groupValues[1].trim()
+            val question = helpMatch.groupValues[2].trim()
+            val roster = teamRosterProvider().filter { it.isEnabled && it.agentId != input.agent.agentId }
+            val helperProfile = roster.firstOrNull {
+                it.agentId.equals(helperTarget, ignoreCase = true) ||
+                    it.name.equals(helperTarget, ignoreCase = true) ||
+                    it.roleTitle.contains(helperTarget, ignoreCase = true) ||
+                    helperTarget.lowercase() in it.capabilities
+            } ?: roster.firstOrNull { "architect" in it.capabilities || "lead" in it.capabilities }
+            if (helperProfile != null && question.isNotBlank()) {
+                communicationManager?.sendDirect(
+                    taskId = input.task.taskId,
+                    fromAgentId = input.agent.agentId,
+                    toAgentId = helperProfile.agentId,
+                    type = AgentMessageKind.AGENT_TO_AGENT,
+                    content = "HELP REQUEST: $question",
+                    relatedStepId = input.step.stepId,
+                )
+                onProgress(input.task.taskId, input.step.stepId, input.agent.agentId, "Requesting assistance from ${helperProfile.name}…")
+                val helperReq = RuntimeExecutionRequest(
+                    agent = toAgentState(helperProfile),
+                    providerConfig = providerConfigResolver(helperProfile.providerId),
+                    workspaceDir = input.workspaceDir,
+                    projectSlug = projectSlug,
+                    prompt = "Assistance requested by ${input.agent.name} (${input.agent.roleTitle}) on step '${input.step.title}':\n$question\n\nInspect the workspace if needed and provide a concise, actionable solution.",
+                    taskId = input.task.taskId,
+                    stepId = input.step.stepId,
+                    enableWorkspaceTools = true,
+                    readOnlyTools = true,
+                )
+                val helperRes = runCatching {
+                    runtime.execute(helperReq) { prog ->
+                        onProgress(input.task.taskId, input.step.stepId, helperProfile.agentId, prog)
+                    }
+                }.getOrNull()
+                if (helperRes != null && helperRes.success && helperRes.outputText.isNotBlank()) {
+                    communicationManager?.sendDirect(
+                        taskId = input.task.taskId,
+                        fromAgentId = helperProfile.agentId,
+                        toAgentId = input.agent.agentId,
+                        type = AgentMessageKind.AGENT_TO_AGENT,
+                        content = "HELP RESPONSE: ${helperRes.outputText.take(1500)}",
+                        relatedStepId = input.step.stepId,
+                    )
+                    val resumeReq = request.copy(
+                        prompt = "$effectivePrompt\n\nPrevious attempt:\n${finalOutputText.take(1800)}\n\nAssistance from ${helperProfile.name} (${helperProfile.roleTitle}):\n${helperRes.outputText.take(2000)}\n\nApply this solution and complete your step now.",
+                    )
+                    val resumed = runCatching {
+                        runtime.execute(resumeReq) { prog ->
+                            onProgress(input.task.taskId, input.step.stepId, input.agent.agentId, prog)
+                        }
+                    }.getOrNull()
+                    if (resumed != null && resumed.success && resumed.outputText.isNotBlank()) {
+                        finalOutputText = resumed.outputText
+                        combinedModifiedFiles = (combinedModifiedFiles + resumed.modifiedFiles).distinct()
+                        combinedToolEvidence = combinedToolEvidence + resumed.toolEvidence
+                        combinedTestEvidence = combinedTestEvidence + resumed.testEvidence
+                        combinedBuildEvidence = combinedBuildEvidence + resumed.buildEvidence
+                    }
+                }
+            }
+        }
+
         if (mcpManager != null) {
             val mcpResults = executeEmbeddedMcpCalls(
                 input = input,
-                outputText = response.outputText,
+                outputText = finalOutputText,
             )
             if (mcpResults.isNotEmpty()) {
                 val resultsBlock = mcpResults.joinToString("\n") { res ->
@@ -170,7 +267,7 @@ class RuntimeStepExecutionAdapter(
                 }
                 // Continue the model execution loop with the real MCP tool results!
                 val followUpReq = request.copy(
-                    prompt = "$effectivePrompt\n\nPrevious response:\n${response.outputText.take(2000)}\n\nReal MCP tool results:\n$resultsBlock\n\nContinue and complete the step using these real MCP tool results.",
+                    prompt = "$effectivePrompt\n\nPrevious response:\n${finalOutputText.take(2000)}\n\nReal MCP tool results:\n$resultsBlock\n\nContinue and complete the step using these real MCP tool results.",
                 )
                 val followUp = runCatching {
                     runtime.execute(followUpReq) { progress ->
@@ -178,9 +275,13 @@ class RuntimeStepExecutionAdapter(
                     }
                 }.getOrNull()
                 finalOutputText = if (followUp != null && followUp.success && followUp.outputText.isNotBlank()) {
+                    combinedModifiedFiles = (combinedModifiedFiles + followUp.modifiedFiles).distinct()
+                    combinedToolEvidence = combinedToolEvidence + followUp.toolEvidence
+                    combinedTestEvidence = combinedTestEvidence + followUp.testEvidence
+                    combinedBuildEvidence = combinedBuildEvidence + followUp.buildEvidence
                     "${followUp.outputText.trim()}\n\n$resultsBlock"
                 } else {
-                    "${response.outputText.trim()}\n\n$resultsBlock"
+                    "${finalOutputText.trim()}\n\n$resultsBlock"
                 }
             }
         }
@@ -189,18 +290,26 @@ class RuntimeStepExecutionAdapter(
             requiresReview = input.step.requiresReview,
             outputText = finalOutputText,
         )
-        val verificationSpec = buildVerificationSpec(input, finalOutputText)
+        val verificationSpec = buildVerificationSpec(
+            input = input,
+            outputText = finalOutputText,
+            testEvidence = combinedTestEvidence,
+            buildEvidence = combinedBuildEvidence,
+        )
 
         return StepExecutionOutput(
             success = true,
             summary = finalOutputText.trim(),
-            modifiedFiles = response.modifiedFiles,
+            modifiedFiles = combinedModifiedFiles,
             inputTokens = response.usage.inputTokens,
             outputTokens = response.usage.outputTokens,
             actualCostUsd = response.usage.costUsd ?: 0.0,
             reviewApproved = reviewApproved,
             reviewFeedback = reviewFeedback,
             verificationSpec = verificationSpec,
+            toolEvidence = combinedToolEvidence,
+            testEvidence = combinedTestEvidence,
+            buildEvidence = combinedBuildEvidence,
         )
     }
 
@@ -297,11 +406,11 @@ class RuntimeStepExecutionAdapter(
             val feedback = rejectMatch.groupValues[1].trim().ifBlank { outputText.take(400) }
             return false to feedback
         }
-        val approved = Regex("""\bREVIEW_APPROVED\b|\bAPPROVED\b""", RegexOption.IGNORE_CASE).containsMatchIn(outputText)
+        val approved = Regex("""\bREVIEW_APPROVED\b""", RegexOption.IGNORE_CASE).containsMatchIn(outputText)
         return if (approved) {
             true to null
         } else {
-            // Never auto-approve a review step that did not explicitly approve!
+            // Never auto-approve a review step that did not explicitly emit REVIEW_APPROVED!
             false to "Reviewer output did not include explicit approval (REVIEW_APPROVED)."
         }
     }
@@ -309,20 +418,43 @@ class RuntimeStepExecutionAdapter(
     private fun buildVerificationSpec(
         input: StepExecutionInput,
         outputText: String,
+        testEvidence: List<com.jarves.mh.runtime.TestExecutionEvidence> = emptyList(),
+        buildEvidence: List<com.jarves.mh.runtime.BuildVerificationEvidence> = emptyList(),
     ): VerificationSpec? {
-        val isTestStep = input.step.requiresReview ||
-            "test" in input.agent.capabilities ||
-            input.step.title.contains("test", ignoreCase = true) ||
-            input.step.title.contains("verify", ignoreCase = true) ||
-            input.step.title.contains("ทดสอบ")
-        if (!isTestStep) return null
+        if (testEvidence.isNotEmpty()) {
+            val lastTest = testEvidence.last()
+            return VerificationSpec(
+                mode = VerificationMode.TEST_VERIFICATION,
+                testsPassed = lastTest.outcome == com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED && lastTest.exitCode == 0,
+                testEvidence = testEvidence,
+            )
+        }
+        if (buildEvidence.isNotEmpty()) {
+            val lastBuild = buildEvidence.last()
+            return VerificationSpec(
+                mode = VerificationMode.BUILD_VERIFICATION,
+                commandExitCode = lastBuild.exitCode,
+                buildEvidence = buildEvidence,
+                expectedApkVariant = if (lastBuild.apkPath != null) lastBuild.buildVariant else null,
+            )
+        }
+        val isDevOrFixStep = !input.step.requiresReview && (
+            input.step.title.contains("implement", ignoreCase = true) ||
+                input.step.title.contains("fix", ignoreCase = true)
+            )
+        val isQaOrTestStep = !isDevOrFixStep && (
+            input.step.requiresReview ||
+                "qa" in input.agent.capabilities ||
+                "test" in input.agent.capabilities
+            )
+        if (!isQaOrTestStep) return null
 
-        val explicitPass = Regex("""\bTESTS_PASSED\b""", RegexOption.IGNORE_CASE).containsMatchIn(outputText)
-        val explicitFail = Regex("""\bTESTS_FAILED\b""", RegexOption.IGNORE_CASE).containsMatchIn(outputText)
-        if (!explicitPass && !explicitFail) return null
+        // NEVER treat the prose text "TESTS_PASSED" as proof of test execution!
+        // Require real TestExecutionEvidence with exitCode == 0.
         return VerificationSpec(
             mode = VerificationMode.TEST_VERIFICATION,
-            testsPassed = explicitPass && !explicitFail,
+            testsPassed = false,
+            testEvidence = emptyList(),
         )
     }
 }

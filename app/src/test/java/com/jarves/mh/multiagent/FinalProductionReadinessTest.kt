@@ -69,7 +69,21 @@ class FinalProductionReadinessTest {
                     return RuntimeExecutionResponse(request.requestId, primaryCfg.id, "gpt-5", 0L, 1L, false, err429.message, error = err429)
                 }
                 val text = if (aid == "agent-03") "REVIEW_APPROVED\nTESTS_PASSED" else "Done"
-                return RuntimeExecutionResponse(request.requestId, request.providerConfig?.id.orEmpty(), request.agent.config.modelId, 0L, 1L, true, text)
+                val testEv = if (aid == "agent-03") {
+                    listOf(
+                        com.jarves.mh.runtime.TestExecutionEvidence(
+                            command = "./gradlew test",
+                            startedAtMs = 0L,
+                            completedAtMs = 1L,
+                            exitCode = 0,
+                            stdout = "1 tests passed",
+                            stderr = "",
+                            outcome = com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED,
+                            summary = "Passed",
+                        ),
+                    )
+                } else emptyList()
+                return RuntimeExecutionResponse(request.requestId, request.providerConfig?.id.orEmpty(), request.agent.config.modelId, 0L, 1L, true, text, testEvidence = testEv)
             }
             override fun cancel(requestId: String) = true
             override fun getProviderCapabilities(providerId: String) = RuntimeCapabilities(true, false, true, false)

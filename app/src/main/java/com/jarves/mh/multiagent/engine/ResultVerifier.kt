@@ -1,6 +1,10 @@
 package com.jarves.mh.multiagent.engine
 
 import com.jarves.mh.multiagent.persistence.WorkspacePathValidator
+import com.jarves.mh.runtime.BuildVerificationEvidence
+import com.jarves.mh.runtime.TestExecutionEvidence
+import com.jarves.mh.runtime.TestExecutionOutcome
+import com.jarves.mh.runtime.WorkspaceToolExecutor
 import java.io.File
 
 enum class VerificationMode {
@@ -8,6 +12,7 @@ enum class VerificationMode {
     COMMAND_VERIFICATION,
     FILE_VERIFICATION,
     TEST_VERIFICATION,
+    BUILD_VERIFICATION,
     MANUAL_APPROVAL,
 }
 
@@ -16,6 +21,9 @@ data class VerificationSpec(
     val expectedFiles: List<String> = emptyList(),
     val commandExitCode: Int? = null,
     val testsPassed: Boolean? = null,
+    val testEvidence: List<TestExecutionEvidence> = emptyList(),
+    val buildEvidence: List<BuildVerificationEvidence> = emptyList(),
+    val expectedApkVariant: String? = null,
     val manualApproved: Boolean = false,
     val requireNonEmptySummary: Boolean = true,
 )
@@ -77,10 +85,37 @@ object ResultVerifier {
                 }
             }
             VerificationMode.TEST_VERIFICATION -> {
-                if (spec.testsPassed == true) {
-                    VerificationOutcome(true, spec.mode, "Automated tests verified passing.")
+                if (spec.testEvidence.isNotEmpty()) {
+                    val lastTest = spec.testEvidence.last()
+                    val passed = lastTest.outcome == TestExecutionOutcome.TESTS_PASSED && lastTest.exitCode == 0
+                    if (passed) {
+                        VerificationOutcome(true, spec.mode, "Verified real test execution passed (exit 0): ${lastTest.command}")
+                    } else {
+                        VerificationOutcome(false, spec.mode, "Real test execution failed (${lastTest.outcome}, exit=${lastTest.exitCode}): ${lastTest.summary}")
+                    }
                 } else {
-                    VerificationOutcome(false, spec.mode, "Test verification failed or tests did not pass.")
+                    VerificationOutcome(
+                        false,
+                        spec.mode,
+                        "Test verification rejected: no real TestExecutionEvidence (exitCode=0) was recorded. Prose 'TESTS_PASSED' is never accepted as proof.",
+                    )
+                }
+            }
+            VerificationMode.BUILD_VERIFICATION -> {
+                val variant = spec.expectedApkVariant ?: "debug"
+                val lastBuild = spec.buildEvidence.lastOrNull()
+                if (lastBuild != null && lastBuild.exitCode != 0) {
+                    VerificationOutcome(false, spec.mode, "Build command failed (exit=${lastBuild.exitCode}): ${lastBuild.errorSummary.orEmpty()}")
+                } else {
+                    val apk = WorkspaceToolExecutor.locateVerifiedApk(workspaceDir, variant)
+                    if (apk != null && apk.isFile && apk.length() > 0L) {
+                        val rel = apk.relativeTo(workspaceDir).path
+                        VerificationOutcome(true, spec.mode, "Verified $variant APK on disk: $rel (${apk.length()} bytes).", listOf(rel))
+                    } else if (lastBuild != null && lastBuild.success && spec.expectedApkVariant == null) {
+                        VerificationOutcome(true, spec.mode, "Build command succeeded (exit 0): ${lastBuild.command}")
+                    } else {
+                        VerificationOutcome(false, spec.mode, "Expected non-empty $variant APK not found on disk.")
+                    }
                 }
             }
             VerificationMode.MANUAL_APPROVAL -> {

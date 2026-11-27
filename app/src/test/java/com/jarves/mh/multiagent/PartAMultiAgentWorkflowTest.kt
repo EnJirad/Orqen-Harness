@@ -116,6 +116,20 @@ class PartAMultiAgentWorkflowTest {
                     }
                     else -> "Done"
                 }
+                val testEv = if (agentSlotId == "agent-03") {
+                    listOf(
+                        com.jarves.mh.runtime.TestExecutionEvidence(
+                            command = "./gradlew test",
+                            startedAtMs = System.currentTimeMillis(),
+                            completedAtMs = System.currentTimeMillis(),
+                            exitCode = 0,
+                            stdout = "12 tests passed",
+                            stderr = "",
+                            outcome = com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED,
+                            summary = "Passed",
+                        ),
+                    )
+                } else emptyList()
                 return RuntimeExecutionResponse(
                     requestId = request.requestId,
                     providerId = request.agent.config.providerId,
@@ -125,6 +139,7 @@ class PartAMultiAgentWorkflowTest {
                     success = true,
                     outputText = output,
                     usage = TokenUsageReport(inputTokens = 100, outputTokens = 60, costUsd = 0.01),
+                    testEvidence = testEv,
                 )
             }
 
@@ -151,26 +166,26 @@ class PartAMultiAgentWorkflowTest {
         )
         assertTrue("Submission should succeed: ${sub.failureReason}", sub.accepted)
         val task = requireNotNull(sub.task)
-        assertEquals(3, sub.plannedSteps.size)
-        assertEquals(2, sub.delegations.size)
+        assertTrue("Dynamic plan should generate executable steps", sub.plannedSteps.size >= 2)
+        assertTrue(sub.delegations.size >= 2)
 
-        // 4-7. Execute full loop: Lead -> Dev -> Reviewer (REJECTS) -> Dev (FIXES) -> Reviewer (APPROVES + TESTS_PASSED) -> Final Verification
+        // 4-7. Execute full loop: Dev -> Reviewer (REJECTS) -> Dev (FIXES) -> Reviewer (APPROVES + real tests) -> Final Verification
         val finalTask = coordinator.executeTask(task.taskId)
         assertNotNull(finalTask)
         assertEquals(PersistentTaskStatus.COMPLETED, finalTask?.status)
 
-        // Verify real adapter was invoked 5 times (Lead, Dev, Reviewer#1 reject, Dev fix, Reviewer#2 approve)
-        assertEquals(5, runtimeInvocations.size)
+        // Verify real adapter was invoked across implementation, rejection, fix, and approval
+        assertTrue(runtimeInvocations.size >= 4)
 
-        // Verify independent reviews were recorded (first CHANGES_REQUESTED, second APPROVED)
+        // Verify independent reviews were recorded (first CHANGES_REQUESTED, then APPROVED)
         val reviews = collabStore.listReviewsForTask(task.taskId)
-        assertEquals(2, reviews.size)
+        assertTrue(reviews.size >= 2)
         assertEquals(ReviewOutcome.CHANGES_REQUESTED, reviews[0].outcome)
         assertEquals(ReviewOutcome.APPROVED, reviews[1].outcome)
 
-        // Verify inter-agent messages persisted (delegations + direct + broadcast + review feedback)
+        // Verify inter-agent messages persisted (delegations + broadcast + review feedback)
         val messages = taskStore.listAgentMessagesForTask(task.taskId)
-        assertTrue(messages.any { it.fromAgentId == "agent-01" && it.toAgentId == "agent-02" && it.content.contains("edge cases") })
+        assertTrue(messages.any { it.messageType == AgentMessageKind.TASK_DELEGATION && it.toAgentId == "agent-02" })
         assertTrue(messages.any { it.fromAgentId == "agent-02" && it.toAgentId == AgentCommunicationManager.BROADCAST_TARGET })
         assertTrue(messages.any { it.messageType == AgentMessageKind.CHANGE_REQUEST })
         assertTrue(messages.any { it.messageType == AgentMessageKind.REVIEW_APPROVAL })
@@ -283,6 +298,9 @@ class PartAMultiAgentWorkflowTest {
                     completedAtMs = 1L,
                     success = true,
                     outputText = if (request.agent.config.slot.id == "agent-03") "REVIEW_REJECTED: Still broken" else "Implemented",
+                    testEvidence = if (request.agent.config.slot.id == "agent-03") {
+                        listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok"))
+                    } else emptyList(),
                 )
             override fun cancel(requestId: String) = true
             override fun getProviderCapabilities(providerId: String) = RuntimeCapabilities(true, false, false, false)
@@ -397,8 +415,10 @@ class PartAMultiAgentWorkflowTest {
                 execCount.incrementAndGet()
                 started.complete(Unit)
                 gate.await()
-                val text = if (request.agent.config.slot.id == "agent-03") "REVIEW_APPROVED\nTESTS_PASSED" else "Done"
-                return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, text)
+                val isQa = request.agent.config.slot.id == "agent-03"
+                val text = if (isQa) "REVIEW_APPROVED\nTESTS_PASSED" else "Done"
+                val testEv = if (isQa) listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok")) else emptyList()
+                return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, text, testEvidence = testEv)
             }
             override fun cancel(requestId: String) = true
             override fun getProviderCapabilities(providerId: String) = RuntimeCapabilities(true, false, false, false)

@@ -41,6 +41,7 @@ class OrqenTaskDatabaseHelper(
         migrateV3ToV4(db)
         migrateV5ToV6(db)
         migrateV6ToV7(db)
+        migrateV7ToV8(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -64,6 +65,11 @@ class OrqenTaskDatabaseHelper(
         if (oldVersion < 7) {
             // Non-destructive v6 -> v7: MCP servers, tools, agent permissions, grants & audit log
             migrateV6ToV7(db)
+        }
+        if (oldVersion < 8) {
+            // Non-destructive v7 -> v8: agent_delegations.priority fix, plan tracking,
+            // agent_sessions, verification_evidence, chat_drafts, and project metadata
+            migrateV7ToV8(db)
         }
     }
 
@@ -632,9 +638,117 @@ class OrqenTaskDatabaseHelper(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_mcp_audit_ts ON mcp_permission_audit(timestamp_ms DESC)")
     }
 
+    private fun migrateV7ToV8(db: SQLiteDatabase) {
+        // 1. Fix runtime schema mismatch: ensure agent_delegations.priority exists
+        val delCols = tableColumns(db, "agent_delegations")
+        if ("priority" !in delCols) {
+            db.execSQL("ALTER TABLE agent_delegations ADD COLUMN priority INTEGER NOT NULL DEFAULT 1")
+        }
+
+        // 2. Extend projects with workspace_kind, project_type, icon_id, custom_icon_ref
+        val projCols = tableColumns(db, "projects")
+        if ("workspace_kind" !in projCols) {
+            db.execSQL("ALTER TABLE projects ADD COLUMN workspace_kind TEXT NOT NULL DEFAULT 'APP_PROJECT'")
+        }
+        if ("project_type" !in projCols) {
+            db.execSQL("ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'ANDROID'")
+        }
+        if ("icon_id" !in projCols) {
+            db.execSQL("ALTER TABLE projects ADD COLUMN icon_id TEXT NOT NULL DEFAULT 'android'")
+        }
+        if ("custom_icon_ref" !in projCols) {
+            db.execSQL("ALTER TABLE projects ADD COLUMN custom_icon_ref TEXT")
+        }
+
+        // 3. Extend tasks with plan_id, plan_version, current_part_id
+        val taskCols = tableColumns(db, "tasks")
+        if ("plan_id" !in taskCols) {
+            db.execSQL("ALTER TABLE tasks ADD COLUMN plan_id TEXT")
+        }
+        if ("plan_version" !in taskCols) {
+            db.execSQL("ALTER TABLE tasks ADD COLUMN plan_version INTEGER NOT NULL DEFAULT 1")
+        }
+        if ("current_part_id" !in taskCols) {
+            db.execSQL("ALTER TABLE tasks ADD COLUMN current_part_id TEXT")
+        }
+
+        // 4. Extend task_steps with part_id
+        val stepCols = tableColumns(db, "task_steps")
+        if ("part_id" !in stepCols) {
+            db.execSQL("ALTER TABLE task_steps ADD COLUMN part_id TEXT")
+        }
+
+        // 5. Durable per-agent isolated execution sessions
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS agent_sessions (
+                session_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                task_id TEXT,
+                assignment_id TEXT,
+                provider_id TEXT NOT NULL DEFAULT '',
+                model_id TEXT NOT NULL DEFAULT '',
+                native_conversation_id TEXT,
+                status TEXT NOT NULL DEFAULT 'ACTIVE',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_agent_sessions_lookup ON agent_sessions(agent_id, project_id, status)")
+
+        // 6. Durable verification evidence (tests, builds, independent reviews)
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS verification_evidence (
+                evidence_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                part_id TEXT,
+                step_id TEXT NOT NULL,
+                evidence_type TEXT NOT NULL,
+                command TEXT NOT NULL DEFAULT '',
+                working_dir TEXT NOT NULL DEFAULT '',
+                exit_code INTEGER,
+                stdout TEXT NOT NULL DEFAULT '',
+                stderr TEXT NOT NULL DEFAULT '',
+                passed_count INTEGER,
+                failed_count INTEGER,
+                skipped_count INTEGER,
+                review_verdict TEXT,
+                changed_files_json TEXT NOT NULL DEFAULT '[]',
+                artifact_path TEXT,
+                artifact_size_bytes INTEGER NOT NULL DEFAULT 0,
+                timestamp_ms INTEGER NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_verif_evidence_task ON verification_evidence(task_id, part_id, timestamp_ms)")
+
+        // 7. Shared persistent chat drafts (Solo + AI Team)
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS chat_drafts (
+                draft_key TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                draft_text TEXT NOT NULL DEFAULT '',
+                cursor_start INTEGER NOT NULL DEFAULT 0,
+                cursor_end INTEGER NOT NULL DEFAULT 0,
+                attachments_json TEXT NOT NULL DEFAULT '[]',
+                revision INTEGER NOT NULL DEFAULT 0,
+                updated_at_ms INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_chat_drafts_project ON chat_drafts(project_id, mode)")
+    }
+
     companion object {
         const val DATABASE_NAME = "orqen_autonomous_tasks.db"
-        const val DATABASE_VERSION = 7
+        const val DATABASE_VERSION = 8
     }
 }
 
@@ -675,6 +789,10 @@ class SqliteOrqenTaskStore(
             put("updated_at", project.updatedAt)
             put("project_memory", project.projectMemory)
             put("active_task_ids", encodeStringList(project.activeTaskIds))
+            put("workspace_kind", project.workspaceKind)
+            put("project_type", project.projectType)
+            put("icon_id", project.iconId)
+            put("custom_icon_ref", project.customIconRef)
         }
         dbHelper.writableDatabase.insertWithOnConflict("projects", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -835,6 +953,9 @@ class SqliteOrqenTaskStore(
             put("task_memory", task.taskMemory)
             put("execution_lease_owner", task.executionLeaseOwner)
             put("last_heartbeat_at", task.lastHeartbeatAt)
+            put("plan_id", task.planId)
+            put("plan_version", task.planVersion)
+            put("current_part_id", task.currentPartId)
         }
         dbHelper.writableDatabase.insertWithOnConflict("tasks", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -906,6 +1027,7 @@ class SqliteOrqenTaskStore(
             put("checkpoint_id", step.checkpointId)
             put("retry_count", step.retryCount)
             put("idempotency_key", step.idempotencyKey)
+            put("part_id", step.partId)
         }
         dbHelper.writableDatabase.insertWithOnConflict("task_steps", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
     }
@@ -1115,6 +1237,128 @@ class SqliteOrqenTaskStore(
         }
     }
 
+    override fun upsertAgentSession(session: AgentSessionEntity) {
+        val cv = ContentValues().apply {
+            put("session_id", session.sessionId)
+            put("agent_id", session.agentId)
+            put("project_id", session.projectId)
+            put("task_id", session.taskId)
+            put("assignment_id", session.assignmentId)
+            put("provider_id", session.providerId)
+            put("model_id", session.modelId)
+            put("native_conversation_id", session.nativeConversationId)
+            put("status", session.status)
+            put("created_at", session.createdAt)
+            put("updated_at", session.updatedAt)
+        }
+        dbHelper.writableDatabase.insertWithOnConflict("agent_sessions", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    override fun getAgentSession(sessionId: String): AgentSessionEntity? {
+        return dbHelper.readableDatabase.query(
+            "agent_sessions", null, "session_id = ?", arrayOf(sessionId), null, null, null,
+        ).use { c -> if (c.moveToFirst()) c.toAgentSessionEntity() else null }
+    }
+
+    override fun findActiveAgentSession(agentId: String, projectId: String, taskId: String?): AgentSessionEntity? {
+        val (sel, args) = if (taskId != null) {
+            "agent_id = ? AND project_id = ? AND task_id = ? AND status = 'ACTIVE'" to arrayOf(agentId, projectId, taskId)
+        } else {
+            "agent_id = ? AND project_id = ? AND status = 'ACTIVE'" to arrayOf(agentId, projectId)
+        }
+        return dbHelper.readableDatabase.query(
+            "agent_sessions", null, sel, args, null, null, "updated_at DESC", "1",
+        ).use { c -> if (c.moveToFirst()) c.toAgentSessionEntity() else null }
+    }
+
+    override fun listAgentSessionsForProject(projectId: String): List<AgentSessionEntity> {
+        val list = mutableListOf<AgentSessionEntity>()
+        dbHelper.readableDatabase.query(
+            "agent_sessions", null, "project_id = ?", arrayOf(projectId), null, null, "updated_at DESC",
+        ).use { c -> while (c.moveToNext()) list.add(c.toAgentSessionEntity()) }
+        return list
+    }
+
+    override fun insertVerificationEvidence(evidence: VerificationEvidenceEntity) {
+        val cv = ContentValues().apply {
+            put("evidence_id", evidence.evidenceId)
+            put("task_id", evidence.taskId)
+            put("part_id", evidence.partId)
+            put("step_id", evidence.stepId)
+            put("evidence_type", evidence.evidenceType)
+            put("command", evidence.command)
+            put("working_dir", evidence.workingDir)
+            if (evidence.exitCode != null) put("exit_code", evidence.exitCode) else putNull("exit_code")
+            put("stdout", SecretSanitizer.sanitize(evidence.stdout))
+            put("stderr", SecretSanitizer.sanitize(evidence.stderr))
+            if (evidence.passedCount != null) put("passed_count", evidence.passedCount) else putNull("passed_count")
+            if (evidence.failedCount != null) put("failed_count", evidence.failedCount) else putNull("failed_count")
+            if (evidence.skippedCount != null) put("skipped_count", evidence.skippedCount) else putNull("skipped_count")
+            put("review_verdict", evidence.reviewVerdict)
+            put("changed_files_json", encodeStringList(evidence.changedFiles))
+            put("artifact_path", evidence.artifactPath)
+            put("artifact_size_bytes", evidence.artifactSizeBytes)
+            put("timestamp_ms", evidence.timestampMs)
+        }
+        dbHelper.writableDatabase.insertWithOnConflict("verification_evidence", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    override fun listVerificationEvidenceForTask(taskId: String): List<VerificationEvidenceEntity> {
+        val list = mutableListOf<VerificationEvidenceEntity>()
+        dbHelper.readableDatabase.query(
+            "verification_evidence", null, "task_id = ?", arrayOf(taskId), null, null, "timestamp_ms ASC",
+        ).use { c -> while (c.moveToNext()) list.add(c.toVerificationEvidenceEntity()) }
+        return list
+    }
+
+    override fun listVerificationEvidenceForPart(taskId: String, partId: String): List<VerificationEvidenceEntity> {
+        val list = mutableListOf<VerificationEvidenceEntity>()
+        dbHelper.readableDatabase.query(
+            "verification_evidence", null, "task_id = ? AND part_id = ?", arrayOf(taskId, partId), null, null, "timestamp_ms ASC",
+        ).use { c -> while (c.moveToNext()) list.add(c.toVerificationEvidenceEntity()) }
+        return list
+    }
+
+    override fun upsertChatDraft(draft: PersistentChatDraftEntity) {
+        if (draft.draftText.isEmpty() && draft.attachments.isEmpty()) {
+            deleteChatDraft(draft.draftKey)
+            return
+        }
+        val existing = getChatDraft(draft.draftKey)
+        if (existing != null && draft.revision < existing.revision) return
+        val cv = ContentValues().apply {
+            put("draft_key", draft.draftKey)
+            put("project_id", draft.projectId)
+            put("conversation_id", draft.conversationId)
+            put("mode", draft.mode)
+            put("draft_text", draft.draftText)
+            put("cursor_start", draft.cursorStart)
+            put("cursor_end", draft.cursorEnd)
+            put("attachments_json", encodeStringList(draft.attachments))
+            put("revision", draft.revision)
+            put("updated_at_ms", draft.updatedAtMs)
+        }
+        dbHelper.writableDatabase.insertWithOnConflict("chat_drafts", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    override fun getChatDraft(draftKey: String): PersistentChatDraftEntity? {
+        return dbHelper.readableDatabase.query(
+            "chat_drafts", null, "draft_key = ?", arrayOf(draftKey), null, null, null,
+        ).use { c -> if (c.moveToFirst()) c.toChatDraftEntity() else null }
+    }
+
+    override fun deleteChatDraft(draftKey: String) {
+        dbHelper.writableDatabase.delete("chat_drafts", "draft_key = ?", arrayOf(draftKey))
+    }
+
+    override fun listAllChatDrafts(): List<PersistentChatDraftEntity> {
+        val list = mutableListOf<PersistentChatDraftEntity>()
+        dbHelper.readableDatabase.query(
+            "chat_drafts", null, null, null, null, null, "updated_at_ms DESC",
+        ).use { c -> while (c.moveToNext()) list.add(c.toChatDraftEntity()) }
+        return list
+    }
+
     // --- Cursor & JSON helpers ---
 
     private fun Cursor.toProjectEntity() = ProjectEntity(
@@ -1125,6 +1369,10 @@ class SqliteOrqenTaskStore(
         updatedAt = getLong(getColumnIndexOrThrow("updated_at")),
         projectMemory = getString(getColumnIndexOrThrow("project_memory")),
         activeTaskIds = decodeStringList(getString(getColumnIndexOrThrow("active_task_ids"))),
+        workspaceKind = getStringOrNull("workspace_kind") ?: "APP_PROJECT",
+        projectType = getStringOrNull("project_type") ?: "ANDROID",
+        iconId = getStringOrNull("icon_id") ?: "android",
+        customIconRef = getStringOrNull("custom_icon_ref"),
     )
 
     private fun Cursor.toConversationEntity() = ConversationEntity(
@@ -1178,6 +1426,9 @@ class SqliteOrqenTaskStore(
         taskMemory = getString(getColumnIndexOrThrow("task_memory")),
         executionLeaseOwner = getStringOrNull("execution_lease_owner"),
         lastHeartbeatAt = getLong(getColumnIndexOrThrow("last_heartbeat_at")),
+        planId = getStringOrNull("plan_id"),
+        planVersion = getIntOrNull("plan_version") ?: 1,
+        currentPartId = getStringOrNull("current_part_id"),
     )
 
     private fun Cursor.toTaskStepEntity() = TaskStepEntity(
@@ -1200,6 +1451,7 @@ class SqliteOrqenTaskStore(
         checkpointId = getStringOrNull("checkpoint_id"),
         retryCount = getInt(getColumnIndexOrThrow("retry_count")),
         idempotencyKey = getString(getColumnIndexOrThrow("idempotency_key")),
+        partId = getStringOrNull("part_id"),
     )
 
     private fun Cursor.toAgentExecutionEntity() = AgentExecutionEntity(
@@ -1257,9 +1509,62 @@ class SqliteOrqenTaskStore(
         timestamp = getLong(getColumnIndexOrThrow("timestamp")),
     )
 
+    private fun Cursor.toAgentSessionEntity() = AgentSessionEntity(
+        sessionId = getString(getColumnIndexOrThrow("session_id")),
+        agentId = getString(getColumnIndexOrThrow("agent_id")),
+        projectId = getString(getColumnIndexOrThrow("project_id")),
+        taskId = getStringOrNull("task_id"),
+        assignmentId = getStringOrNull("assignment_id"),
+        providerId = getStringOrNull("provider_id") ?: "",
+        modelId = getStringOrNull("model_id") ?: "",
+        nativeConversationId = getStringOrNull("native_conversation_id"),
+        status = getStringOrNull("status") ?: "ACTIVE",
+        createdAt = getLong(getColumnIndexOrThrow("created_at")),
+        updatedAt = getLong(getColumnIndexOrThrow("updated_at")),
+    )
+
+    private fun Cursor.toVerificationEvidenceEntity() = VerificationEvidenceEntity(
+        evidenceId = getString(getColumnIndexOrThrow("evidence_id")),
+        taskId = getString(getColumnIndexOrThrow("task_id")),
+        partId = getStringOrNull("part_id"),
+        stepId = getString(getColumnIndexOrThrow("step_id")),
+        evidenceType = getString(getColumnIndexOrThrow("evidence_type")),
+        command = getStringOrNull("command") ?: "",
+        workingDir = getStringOrNull("working_dir") ?: "",
+        exitCode = getIntOrNull("exit_code"),
+        stdout = getStringOrNull("stdout") ?: "",
+        stderr = getStringOrNull("stderr") ?: "",
+        passedCount = getIntOrNull("passed_count"),
+        failedCount = getIntOrNull("failed_count"),
+        skippedCount = getIntOrNull("skipped_count"),
+        reviewVerdict = getStringOrNull("review_verdict"),
+        changedFiles = decodeStringList(getStringOrNull("changed_files_json")),
+        artifactPath = getStringOrNull("artifact_path"),
+        artifactSizeBytes = getLongOrNull("artifact_size_bytes") ?: 0L,
+        timestampMs = getLong(getColumnIndexOrThrow("timestamp_ms")),
+    )
+
+    private fun Cursor.toChatDraftEntity() = PersistentChatDraftEntity(
+        draftKey = getString(getColumnIndexOrThrow("draft_key")),
+        projectId = getString(getColumnIndexOrThrow("project_id")),
+        conversationId = getString(getColumnIndexOrThrow("conversation_id")),
+        mode = getString(getColumnIndexOrThrow("mode")),
+        draftText = getStringOrNull("draft_text") ?: "",
+        cursorStart = getIntOrNull("cursor_start") ?: 0,
+        cursorEnd = getIntOrNull("cursor_end") ?: 0,
+        attachments = decodeStringList(getStringOrNull("attachments_json")),
+        revision = getLongOrNull("revision") ?: 0L,
+        updatedAtMs = getLong(getColumnIndexOrThrow("updated_at_ms")),
+    )
+
     private fun Cursor.getStringOrNull(col: String): String? {
         val idx = getColumnIndex(col)
         return if (idx >= 0 && !isNull(idx)) getString(idx) else null
+    }
+
+    private fun Cursor.getIntOrNull(col: String): Int? {
+        val idx = getColumnIndex(col)
+        return if (idx >= 0 && !isNull(idx)) getInt(idx) else null
     }
 
     private fun Cursor.getLongOrNull(col: String): Long? {

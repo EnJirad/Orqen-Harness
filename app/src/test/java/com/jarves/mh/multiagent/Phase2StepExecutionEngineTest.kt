@@ -52,17 +52,27 @@ class Phase2StepExecutionEngineTest {
 
     private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
-    // TEST 01 — Task planning creates a structured, valid plan
+    // TEST 01 — Dynamic team planning creates a structured, valid multi-part plan
     @Test
     fun test01_taskPlanningCreatesStructuredPlan() {
-        val (_, project, _, _) = setup("p2-01")
-        val planner = StructuredTaskPlanner()
-        val plan = planner.planTask(project, "Build Auth Module", listOf("Create User model", "Add JWT login"))
+        val (_, project, dir, _) = setup("p2-01")
+        val compiler = DynamicTeamPlanCompiler()
+        val mp = MultiPartPlanManager.createPlan(
+            projectId = project.projectId,
+            taskId = "T-p2-01",
+            projectName = project.projectName,
+            objective = "Build Auth Module",
+            workspaceDir = dir,
+            explicitSubtasks = listOf("Create User model", "Add JWT login"),
+        )
+        assertTrue(MultiPartPlanManager.persistPlan(dir, mp).valid)
+        val plan = compiler.planFromMultiPart(project, mp, dir)
         val validation = PlanValidator.validate(plan)
 
         assertTrue(validation.valid)
-        assertEquals(4, plan.steps.size) // inspect + 2 impl + verify
+        assertEquals(4, plan.steps.size) // 2 parts x (impl + review/QA)
         assertTrue(plan.steps.last().requiresReview)
+        assertFalse("Legacy .orqen/plan.md must NOT be auto-created", File(dir, ".orqen/plan.md").exists())
     }
 
     // TEST 02 — Plan persistence survives database reopening
@@ -70,10 +80,13 @@ class Phase2StepExecutionEngineTest {
     fun test02_planPersistenceSurvivesReopen() {
         val dbFile = File(tempFolder.root, "p2-02.db")
         val store1 = FileBackedOrqenTaskStore(dbFile)
-        val proj = ProjectEntity("p02", "Proj02", tempFolder.newFolder("p02").absolutePath)
+        val wsDir = tempFolder.newFolder("p02")
+        val proj = ProjectEntity("p02", "Proj02", wsDir.absolutePath)
         store1.upsertProject(proj)
-        val planner = StructuredTaskPlanner()
-        val task = planner.persistPlan(store1, proj.projectId, planner.planTask(proj, "Add Dark Mode"))
+        val compiler = DynamicTeamPlanCompiler()
+        val mp = MultiPartPlanManager.createPlan(proj.projectId, "T-p02", proj.projectName, "Add Dark Mode", wsDir)
+        assertTrue(MultiPartPlanManager.persistPlan(wsDir, mp).valid)
+        val task = compiler.persistPlan(store1, proj.projectId, compiler.planFromMultiPart(proj, mp, wsDir), planId = mp.planId, planVersion = mp.version)
 
         val store2 = FileBackedOrqenTaskStore(dbFile)
         val reloaded = store2.getTask(task.taskId)

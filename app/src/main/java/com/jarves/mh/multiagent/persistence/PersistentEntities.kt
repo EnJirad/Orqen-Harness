@@ -217,6 +217,10 @@ data class ProjectEntity(
     val updatedAt: Long = System.currentTimeMillis(),
     val projectMemory: String = "",
     val activeTaskIds: List<String> = emptyList(),
+    val workspaceKind: String = "APP_PROJECT",
+    val projectType: String = "ANDROID",
+    val iconId: String = "android",
+    val customIconRef: String? = null,
 )
 
 data class ConversationEntity(
@@ -268,6 +272,9 @@ data class TaskEntity(
     val taskMemory: String = "",
     val executionLeaseOwner: String? = null,
     val lastHeartbeatAt: Long = 0L,
+    val planId: String? = null,
+    val planVersion: Int = 1,
+    val currentPartId: String? = null,
 )
 
 data class TaskStepEntity(
@@ -289,6 +296,7 @@ data class TaskStepEntity(
     val checkpointId: String? = null,
     val retryCount: Int = 0,
     val idempotencyKey: String = "idem-${UUID.randomUUID().toString().take(12)}",
+    val partId: String? = null,
 )
 
 data class AgentExecutionEntity(
@@ -352,4 +360,63 @@ data class IdempotencyRecordEntity(
     val operationType: String,
     val resultSummary: String,
     val completedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * Durable per-agent isolated execution session.
+ * Guarantees each agent maintains its own provider session and conversation state
+ * without leaking private context across agents.
+ */
+data class AgentSessionEntity(
+    val sessionId: String = "sess-${UUID.randomUUID().toString().take(10)}",
+    val agentId: String,
+    val projectId: String,
+    val taskId: String? = null,
+    val assignmentId: String? = null,
+    val providerId: String = "",
+    val modelId: String = "",
+    val nativeConversationId: String? = null,
+    val status: String = "ACTIVE",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * Durable, auditable verification evidence for tests, builds, and independent reviews.
+ */
+data class VerificationEvidenceEntity(
+    val evidenceId: String = "ev-${UUID.randomUUID().toString().take(10)}",
+    val taskId: String,
+    val partId: String? = null,
+    val stepId: String,
+    val evidenceType: String, // TEST, BUILD, REVIEW, TOOL
+    val command: String = "",
+    val workingDir: String = "",
+    val exitCode: Int? = null,
+    val stdout: String = "",
+    val stderr: String = "",
+    val passedCount: Int? = null,
+    val failedCount: Int? = null,
+    val skippedCount: Int? = null,
+    val reviewVerdict: String? = null,
+    val changedFiles: List<String> = emptyList(),
+    val artifactPath: String? = null,
+    val artifactSizeBytes: Long = 0L,
+    val timestampMs: Long = System.currentTimeMillis(),
+)
+
+/**
+ * Durable SQLite-backed chat draft shared across Solo and AI Team conversations.
+ */
+data class PersistentChatDraftEntity(
+    val draftKey: String,
+    val projectId: String,
+    val conversationId: String,
+    val mode: String, // SOLO, TEAM_CHAT, TEAM_TASK, PRIVATE_AGENT
+    val draftText: String,
+    val cursorStart: Int = draftText.length,
+    val cursorEnd: Int = draftText.length,
+    val attachments: List<String> = emptyList(),
+    val revision: Long = 0L,
+    val updatedAtMs: Long = System.currentTimeMillis(),
 )

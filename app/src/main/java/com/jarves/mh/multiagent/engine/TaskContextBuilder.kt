@@ -50,31 +50,53 @@ object TaskContextBuilder {
                 (rev.reviewedStepId == step.stepId || rev.implementingAgentId == step.assignedAgentId || rev.reviewedStepId in relevantIds)
         }.takeLast(4)
 
+        val workspaceDir = project.workspacePath.takeIf { it.isNotBlank() }?.let { java.io.File(it) }
+        val multiPartPlan = workspaceDir?.let { MultiPartPlanManager.loadPlan(it) }
+        val matchedPart = multiPartPlan?.parts?.firstOrNull { p ->
+            step.stepId.contains(p.partId, ignoreCase = true) ||
+                step.title.contains("Part ${p.partNumber}", ignoreCase = true) ||
+                step.description.contains(p.specRelativePath, ignoreCase = true)
+        } ?: multiPartPlan?.let { MultiPartPlanManager.selectNextEligiblePart(it) }
+        val partSpecContent = if (workspaceDir != null && matchedPart != null) {
+            MultiPartPlanManager.readPartSpecification(workspaceDir, matchedPart)
+        } else ""
+        val overviewContent = if (workspaceDir != null) {
+            val f = java.io.File(workspaceDir, MultiPartPlanManager.OVERVIEW_REL_PATH)
+            if (f.isFile) runCatching { f.readText().take(900) }.getOrDefault("") else ""
+        } else ""
+
+        val envelope = TaskAssignmentEnvelope(
+            taskId = task.taskId,
+            planId = multiPartPlan?.planId ?: "plan-${task.taskId}",
+            planVersion = multiPartPlan?.version ?: 1,
+            partId = matchedPart?.partId ?: "part-1",
+            stepId = step.stepId,
+            assignedAgentId = step.assignedAgentId,
+            specificationPath = matchedPart?.specRelativePath ?: MultiPartPlanManager.OVERVIEW_REL_PATH,
+            specificationContent = partSpecContent,
+            immutableUserGoal = "${task.title}: ${task.description.take(500)}",
+            overallPlanOverview = overviewContent,
+            currentScope = "${step.title} — ${step.description}",
+            expectedDeliverables = matchedPart?.deliverables?.ifEmpty { listOf(step.inputContext).filter(String::isNotBlank) }
+                ?: listOf(step.inputContext).filter(String::isNotBlank),
+            acceptanceCriteria = matchedPart?.acceptanceCriteria?.ifEmpty { task.completionCriteria.acceptanceChecks }
+                ?: task.completionCriteria.acceptanceChecks,
+            dependencies = step.dependencies,
+            relevantPreviousResults = relevantCompleted.map { "#${it.sequenceNumber} ${it.title}: ${it.outputSummary.take(200)}" },
+        )
+
         return buildString {
+            appendLine(envelope.renderEnvelopeText())
             if (project.projectMemory.isNotBlank()) {
                 appendLine("## Project Memory (${project.projectName})")
-                appendLine(project.projectMemory.take(1_200))
+                appendLine(project.projectMemory.take(800))
                 appendLine()
             }
-            appendLine("## Task Objective (${task.taskId})")
-            appendLine("${task.title}: ${task.description.take(800)}")
-            if (task.completionCriteria.acceptanceChecks.isNotEmpty()) {
-                appendLine("Acceptance Criteria:")
-                task.completionCriteria.acceptanceChecks.take(8).forEach { appendLine("- $it") }
-            }
-            appendLine()
             if (allSteps.size > 1) {
                 appendLine("## Task Plan Overview (${allSteps.count { it.status == StepStatus.COMPLETED }}/${allSteps.size} completed)")
                 allSteps.take(12).forEach { s ->
                     val deps = if (s.dependencies.isEmpty()) "" else " [deps: ${s.dependencies.joinToString(",")}]"
                     appendLine("- #${s.sequenceNumber} [${s.status}] ${s.title} (${s.assignedAgentId})$deps")
-                }
-                appendLine()
-            }
-            if (relevantCompleted.isNotEmpty()) {
-                appendLine("## Relevant Completed Steps")
-                relevantCompleted.forEach { s ->
-                    appendLine("- #${s.sequenceNumber} ${s.title}: ${s.outputSummary.take(220)}")
                 }
                 appendLine()
             }
@@ -84,7 +106,7 @@ object TaskContextBuilder {
                     appendLine("Modified files: ${latestCheckpoint.modifiedFiles.take(15).joinToString(", ")}")
                 }
                 if (latestCheckpoint.contextSummary.isNotBlank()) {
-                    appendLine("Summary: ${latestCheckpoint.contextSummary.take(300)}")
+                    appendLine("Summary: ${latestCheckpoint.contextSummary.take(250)}")
                 }
                 appendLine()
             }
@@ -92,14 +114,14 @@ object TaskContextBuilder {
                 appendLine("## Review Feedback")
                 relevantReviews.forEach { r ->
                     val details = (r.findings + r.requiredChanges).joinToString("; ").ifBlank { r.outcome.name }
-                    appendLine("- [${r.outcome}] by ${r.reviewerAgentId}: ${details.take(240)}")
+                    appendLine("- [${r.outcome}] by ${r.reviewerAgentId}: ${details.take(220)}")
                 }
                 appendLine()
             }
             if (relevantMsgs.isNotEmpty()) {
-                appendLine("## Relevant Agent Messages")
+                appendLine("## Relevant Internal Agent Messages")
                 relevantMsgs.forEach { m ->
-                    appendLine("- [${m.messageType}] ${m.fromAgentId} -> ${m.toAgentId}: ${m.content.take(220)}")
+                    appendLine("- [${m.messageType}] ${m.fromAgentId} -> ${m.toAgentId}: ${m.content.take(200)}")
                 }
                 appendLine()
             }

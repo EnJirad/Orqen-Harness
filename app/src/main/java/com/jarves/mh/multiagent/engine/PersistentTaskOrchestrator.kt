@@ -88,6 +88,9 @@ data class StepExecutionOutput(
     val reviewFeedback: String? = null,
     val verificationSpec: VerificationSpec? = null,
     val spawnedFollowUpSteps: List<TaskStepEntity> = emptyList(),
+    val toolEvidence: List<com.jarves.mh.runtime.ToolExecutionEvidence> = emptyList(),
+    val testEvidence: List<com.jarves.mh.runtime.TestExecutionEvidence> = emptyList(),
+    val buildEvidence: List<com.jarves.mh.runtime.BuildVerificationEvidence> = emptyList(),
 )
 
 /**

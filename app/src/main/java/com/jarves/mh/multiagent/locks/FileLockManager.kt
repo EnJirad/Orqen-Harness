@@ -12,6 +12,7 @@ data class FileLock(
     val acquiredAtMillis: Long = System.currentTimeMillis(),
     val expiresAtMillis: Long = System.currentTimeMillis() + DEFAULT_LOCK_TTL_MS,
     val reason: String = "Editing file",
+    val ownerAgentId: String = agentSlot.id,
 ) {
     val isExpired: Boolean get() = System.currentTimeMillis() > expiresAtMillis
 
@@ -30,15 +31,37 @@ class FileLockManager : IFileLockCoordinator {
         taskId: String,
         reason: String,
         ttlMs: Long,
+    ): LockAcquisitionResult = tryAcquireByAgentId(
+        filePath = filePath,
+        agentId = slot.id,
+        fallbackSlot = slot,
+        taskId = taskId,
+        reason = reason,
+        ttlMs = ttlMs,
+    )
+
+    /**
+     * Dynamic agentId-scoped file lock acquisition so teams with >4 or custom agent IDs
+     * never collide on a shared fallback [AgentSlot].
+     */
+    @Synchronized
+    fun tryAcquireByAgentId(
+        filePath: String,
+        agentId: String,
+        fallbackSlot: AgentSlot = AgentSlot.fromId(agentId) ?: AgentSlot.AGENT_1,
+        taskId: String,
+        reason: String = "Editing file",
+        ttlMs: Long = FileLock.DEFAULT_LOCK_TTL_MS,
     ): LockAcquisitionResult {
         cleanExpiredLocks()
         val normalized = normalizePath(filePath)
+        val cleanAgentId = agentId.trim().ifBlank { fallbackSlot.id }
         if (normalized.isBlank() || normalized.split('/').any { it == ".." }) {
             return LockAcquisitionResult.Error("Invalid path traversal or blank path: $filePath")
         }
         val existing = locks[normalized]
 
-        if (existing != null && !existing.isExpired && existing.agentSlot != slot) {
+        if (existing != null && !existing.isExpired && existing.ownerAgentId != cleanAgentId) {
             val remaining = (existing.expiresAtMillis - System.currentTimeMillis()).coerceAtLeast(0L)
             return LockAcquisitionResult.Conflict(
                 lockedBy = existing.agentSlot,
@@ -49,14 +72,48 @@ class FileLockManager : IFileLockCoordinator {
 
         val newLock = FileLock(
             filePath = normalized,
-            agentSlot = slot,
+            agentSlot = fallbackSlot,
             taskId = taskId,
             acquiredAtMillis = System.currentTimeMillis(),
             expiresAtMillis = System.currentTimeMillis() + ttlMs,
             reason = reason,
+            ownerAgentId = cleanAgentId,
         )
         locks[normalized] = newLock
         return LockAcquisitionResult.Success(newLock)
+    }
+
+    @Synchronized
+    fun releaseByAgentId(filePath: String, agentId: String): Boolean {
+        val normalized = normalizePath(filePath)
+        val existing = locks[normalized] ?: return true
+        if (existing.ownerAgentId == agentId || existing.isExpired) {
+            locks.remove(normalized)
+            return true
+        }
+        return false
+    }
+
+    @Synchronized
+    fun releaseAllForAgentId(agentId: String): Int {
+        val toRemove = locks.filter { it.value.ownerAgentId == agentId }.keys
+        toRemove.forEach { locks.remove(it) }
+        return toRemove.size
+    }
+
+    fun isLockedByOtherAgent(filePath: String, agentId: String): Boolean {
+        cleanExpiredLocks()
+        val normalized = normalizePath(filePath)
+        if (normalized.isBlank() || normalized.split('/').any { it == ".." }) return false
+        val existing = locks[normalized] ?: return false
+        return !existing.isExpired && existing.ownerAgentId != agentId
+    }
+
+    fun getLockOwnerAgentId(filePath: String): String? {
+        cleanExpiredLocks()
+        val normalized = normalizePath(filePath)
+        val lock = locks[normalized] ?: return null
+        return if (!lock.isExpired) lock.ownerAgentId else null
     }
 
     @Synchronized

@@ -119,7 +119,7 @@ class MultiAgentTeamCoordinator(
     private val checkpointManager: CheckpointManager = CheckpointManager(taskStore),
     private val fileLockManager: FileLockManager = FileLockManager(),
     private val supervisor: ExecutionRecoverySupervisor = ExecutionRecoverySupervisor(taskStore, checkpointManager, fileLockManager),
-    private val planner: StructuredTaskPlanner = StructuredTaskPlanner(),
+    private val planner: DynamicTeamPlanCompiler = DynamicTeamPlanCompiler(),
     private val policy: RequestExecutionPolicy = RequestExecutionPolicy(),
     private val unavailableProviders: () -> Set<String> = { emptySet() },
     private val providerConfigResolver: (providerId: String) -> com.jarves.mh.provider.core.ProviderConfig? = { null },
@@ -209,16 +209,40 @@ class MultiAgentTeamCoordinator(
             )
         }
 
-        val rawPlan = planner.planTask(
-            project = project,
-            objective = objective,
-            requestedSubtasks = requestedSubtasks,
-            acceptanceCriteria = acceptanceCriteria,
-        )
-
+        val wsDir = java.io.File(project.workspacePath).apply { mkdirs() }
         val leaderId = coordinatorAgentId
             ?: capabilityResolver.selectBestAgent(candidates, setOf("lead"))?.agentId
             ?: candidates.first().agentId
+        val devId = capabilityResolver.selectBestAgent(candidates, setOf("code"))?.agentId
+            ?: candidates.first().agentId
+        val qaId = capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"), excludeAgentIds = setOf(devId))?.agentId
+            ?: candidates.last().agentId
+
+        val mpPlan = MultiPartPlanManager.createPlan(
+            projectId = projectId,
+            taskId = "T-${java.util.UUID.randomUUID().toString().take(8).uppercase()}",
+            projectName = project.projectName,
+            objective = objective,
+            workspaceDir = wsDir,
+            explicitSubtasks = requestedSubtasks,
+            isAndroidProject = completionCriteria.requireBuildPass,
+            leaderAgentId = leaderId,
+            devAgentId = devId,
+            qaAgentId = qaId,
+        )
+        val validation = MultiPartPlanManager.persistPlan(wsDir, mpPlan)
+        if (!validation.valid) {
+            return CoordinationSubmissionResult(
+                accepted = false,
+                task = null,
+                failureReason = "Dynamic plan verification failed: ${validation.errors.joinToString("; ")}",
+            )
+        }
+        val rawPlan = planner.planFromMultiPart(
+            project = project,
+            multiPartPlan = mpPlan,
+            workspaceDir = wsDir,
+        )
 
         // Dynamically assign each planned step based on actual capabilities & provider availability
         val workloads = mutableMapOf<String, Int>()

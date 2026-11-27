@@ -64,12 +64,14 @@ class PartA51TeamContinuityTest {
 
         val runtime = object : AIExecutionRuntime {
             override suspend fun execute(request: RuntimeExecutionRequest, onProgress: suspend (String) -> Unit): RuntimeExecutionResponse {
-                if (request.prompt.contains("Task A") && request.agent.config.slot.id == "agent-01") {
+                if (request.prompt.contains("Task A") && !taskAStarted.isCompleted) {
                     taskAStarted.complete(Unit)
                     releaseTaskA.await()
                 }
-                val out = if (request.agent.config.slot.id == "agent-03") "REVIEW_APPROVED\nTESTS_PASSED" else "Done"
-                return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, out)
+                val isQa = request.agent.config.slot.id == "agent-03"
+                val out = if (isQa) "REVIEW_APPROVED\nTESTS_PASSED" else "Done"
+                val testEv = if (isQa) listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok")) else emptyList()
+                return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, out, testEvidence = testEv)
             }
             override fun cancel(requestId: String) = true
             override fun getProviderCapabilities(providerId: String) = RuntimeCapabilities(true, false, true, false)
@@ -137,7 +139,15 @@ class PartA51TeamContinuityTest {
                 }
                 if (aid == "agent-03") {
                     executionLog.add("START:agent-03")
-                    return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED")
+                    return RuntimeExecutionResponse(
+                        request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED",
+                        testEvidence = listOf(
+                            com.jarves.mh.runtime.TestExecutionEvidence(
+                                command = "./gradlew test", startedAtMs = 0L, completedAtMs = 1L, exitCode = 0,
+                                stdout = "2 tests passed", stderr = "", outcome = com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, summary = "Passed",
+                            ),
+                        ),
+                    )
                 }
                 return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, "Inspected")
             }
@@ -175,7 +185,15 @@ class PartA51TeamContinuityTest {
                 val aid = request.agent.config.slot.id
                 seenImagesByAgent.add(aid to request.imageFiles.map { it.name })
                 val out = if (aid == "agent-03") "REVIEW_APPROVED\nTESTS_PASSED" else "Built UI matching reference image"
-                return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, out)
+                val testEv = if (aid == "agent-03") {
+                    listOf(
+                        com.jarves.mh.runtime.TestExecutionEvidence(
+                            command = "./gradlew test", startedAtMs = 0L, completedAtMs = 1L, exitCode = 0,
+                            stdout = "1 tests passed", stderr = "", outcome = com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, summary = "Passed",
+                        ),
+                    )
+                } else emptyList()
+                return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, out, testEvidence = testEv)
             }
             override fun cancel(requestId: String) = true
             override fun getProviderCapabilities(providerId: String) = RuntimeCapabilities(true, true, true, false)

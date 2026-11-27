@@ -86,7 +86,10 @@ class P0StartTeamCrashRegressionTest {
 
         val dummyRuntime = object : AIExecutionRuntime {
             override suspend fun execute(request: RuntimeExecutionRequest, onProgress: suspend (String) -> Unit) =
-                RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED")
+                RuntimeExecutionResponse(
+                    request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED",
+                    testEvidence = listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok")),
+                )
             override fun cancel(requestId: String) = true
             override fun getProviderCapabilities(providerId: String) = RuntimeCapabilities(true, false, false, false)
         }

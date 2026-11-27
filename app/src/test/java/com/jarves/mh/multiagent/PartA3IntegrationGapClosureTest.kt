@@ -98,6 +98,12 @@ class PartA3IntegrationGapClosureTest {
                         completedAtMs = 10L,
                         success = true,
                         outputText = "REVIEW_APPROVED\nTESTS_PASSED: All tests green.",
+                        testEvidence = listOf(
+                            com.jarves.mh.runtime.TestExecutionEvidence(
+                                command = "./gradlew test", startedAtMs = 0L, completedAtMs = 5L, exitCode = 0,
+                                stdout = "2 tests passed", stderr = "", outcome = com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, summary = "Passed",
+                            ),
+                        ),
                     )
                 }
                 return RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, "Plan ready")
@@ -150,7 +156,10 @@ class PartA3IntegrationGapClosureTest {
 
         val dummyRuntime = object : AIExecutionRuntime {
             override suspend fun execute(request: RuntimeExecutionRequest, onProgress: suspend (String) -> Unit) =
-                RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED")
+                RuntimeExecutionResponse(
+                    request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED",
+                    testEvidence = listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok")),
+                )
             override fun cancel(requestId: String) = true
             override fun getProviderCapabilities(providerId: String) = RuntimeCapabilities(true, false, false, false)
         }
@@ -239,7 +248,10 @@ class PartA3IntegrationGapClosureTest {
                         File(wsDir, "Dashboard.kt").writeText("class Dashboard")
                         RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, "Dashboard.kt created", modifiedFiles = listOf("Dashboard.kt"))
                     }
-                    else -> RuntimeExecutionResponse(request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED")
+                    else -> RuntimeExecutionResponse(
+                        request.requestId, "p", "m", 0L, 1L, true, "REVIEW_APPROVED\nTESTS_PASSED",
+                        testEvidence = listOf(com.jarves.mh.runtime.TestExecutionEvidence("./gradlew test", 0L, 1L, 0, "ok", "", com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED, "ok")),
+                    )
                 }
             }
             override fun cancel(requestId: String) = true

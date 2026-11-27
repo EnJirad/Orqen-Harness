@@ -53,7 +53,7 @@ fun resolveFileIconSpec(fileName: String, isDirectory: Boolean, isExpanded: Bool
     val ext = fileName.substringAfterLast('.', "").lowercase()
     return when (ext) {
         "html", "htm" -> Color(0xFFF97316).let { FileIconSpec(Icons.Default.Language, it, it.copy(alpha = 0.14f)) }
-        "css", "scss", "sass", "less" -> Color(0xFF38BDF8).let { FileIconSpec(Icons.Default.Palette, it, it.copy(alpha = 0.14f)) }
+        "css", "scss", "sass", "less" -> Color(0xFF6B80A8).let { FileIconSpec(Icons.Default.Palette, it, it.copy(alpha = 0.14f)) }
         "js", "mjs", "cjs", "jsx" -> Color(0xFFFACC15).let { FileIconSpec(Icons.Default.Code, it, it.copy(alpha = 0.14f)) }
         "ts", "tsx" -> Color(0xFF3B82F6).let { FileIconSpec(Icons.Default.Code, it, it.copy(alpha = 0.14f)) }
         "kt", "kts" -> Color(0xFFA855F7).let { FileIconSpec(Icons.Default.Code, it, it.copy(alpha = 0.14f)) }
@@ -67,7 +67,7 @@ fun resolveFileIconSpec(fileName: String, isDirectory: Boolean, isExpanded: Bool
         "ttf", "otf", "woff", "woff2" -> Color(0xFF818CF8).let { FileIconSpec(Icons.Default.TextFields, it, it.copy(alpha = 0.14f)) }
         "apk", "aab" -> Color(0xFF22C55E).let { FileIconSpec(Icons.Default.Android, it, it.copy(alpha = 0.14f)) }
         "zip", "tar", "gz", "tgz", "rar", "7z", "zst" -> Color(0xFFD97706).let { FileIconSpec(Icons.Default.FolderZip, it, it.copy(alpha = 0.14f)) }
-        "sql", "db", "sqlite" -> Color(0xFF06B6D4).let { FileIconSpec(Icons.Default.Storage, it, it.copy(alpha = 0.14f)) }
+        "sql", "db", "sqlite" -> Color(0xFF537380).let { FileIconSpec(Icons.Default.Storage, it, it.copy(alpha = 0.14f)) }
         else -> OrqenMint.let { FileIconSpec(Icons.Default.Description, it, it.copy(alpha = 0.12f)) }
     }
 }

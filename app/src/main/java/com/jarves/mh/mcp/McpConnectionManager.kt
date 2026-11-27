@@ -31,6 +31,97 @@ class McpConnectionManager(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val clients = ConcurrentHashMap<String, McpTransportClient>()
+    /**
+     * Phase G (9.2): Team/workspace-specific enabled MCP server selection.
+     * Separates Global MCP connections from which servers are enabled for a specific AI Team workspace.
+     * Null entry for a workspaceId means all enabled connected servers in scope are available by default.
+     */
+    private val teamEnabledServers = ConcurrentHashMap<String, Set<String>>()
+    private val _teamEnabledServersFlow = MutableStateFlow<Map<String, Set<String>>>(emptyMap())
+    val teamEnabledServersFlow: StateFlow<Map<String, Set<String>>> = _teamEnabledServersFlow.asStateFlow()
+
+    fun setTeamServerEnabled(workspaceId: String, serverId: String, enabled: Boolean) {
+        val allIds = _servers.value.map { it.serverId }.toSet()
+        val current = teamEnabledServers[workspaceId] ?: allIds
+        val updated = if (enabled) current + serverId else current - serverId
+        teamEnabledServers[workspaceId] = updated
+        _teamEnabledServersFlow.value = teamEnabledServers.toMap()
+        if (!enabled) {
+            authEngine.revokeGrantsForServer(serverId, "Disabled for team workspace $workspaceId")
+            refreshStateFlows()
+        }
+    }
+
+    fun getTeamEnabledServerIds(workspaceId: String?): Set<String>? =
+        workspaceId?.let { teamEnabledServers[it] }
+
+    fun isServerEnabledForTeam(workspaceId: String?, serverId: String): Boolean {
+        val allowed = getTeamEnabledServerIds(workspaceId) ?: return true
+        return serverId in allowed
+    }
+
+    /**
+     * Phase G (9.3): SPV least-privilege team MCP permission configurator.
+     * Configures role-appropriate base permissions for connected team servers while preserving
+     * Owner security boundaries (never grants high-risk bypass, never escalates SPV itself).
+     */
+    fun applyRecommendedTeamPermissions(
+        workspaceId: String?,
+        agents: List<com.jarves.mh.multiagent.model.AgentState>,
+    ): List<String> {
+        val visibleServers = store.listServersForWorkspace(workspaceId).filter { s ->
+            s.enabled && isServerEnabledForTeam(workspaceId, s.serverId)
+        }
+        val changes = mutableListOf<String>()
+        for (agent in agents.filter { it.config.isEnabled }) {
+            val agentId = agent.config.slot.id
+            val roleType = agent.config.role.type
+            val level = when (roleType) {
+                com.jarves.mh.multiagent.model.AgentRoleType.TEAM_LEADER -> McpPermissionLevel.READ
+                com.jarves.mh.multiagent.model.AgentRoleType.TESTER,
+                com.jarves.mh.multiagent.model.AgentRoleType.SECURITY_ENGINEER,
+                -> McpPermissionLevel.READ
+                com.jarves.mh.multiagent.model.AgentRoleType.SOFTWARE_ENGINEER,
+                com.jarves.mh.multiagent.model.AgentRoleType.BACKEND_ENGINEER,
+                com.jarves.mh.multiagent.model.AgentRoleType.FRONTEND_ENGINEER,
+                com.jarves.mh.multiagent.model.AgentRoleType.SPECIALIST,
+                com.jarves.mh.multiagent.model.AgentRoleType.DEVOPS_ENGINEER,
+                com.jarves.mh.multiagent.model.AgentRoleType.CUSTOM,
+                -> McpPermissionLevel.WRITE
+            }
+            if (visibleServers.isEmpty()) {
+                authEngine.setBasePermission(
+                    McpAgentBasePermission(
+                        agentId = agentId,
+                        serverId = "*",
+                        maxLevel = level,
+                        allowDynamicRequest = true,
+                    ),
+                )
+                changes += "${agent.config.name} (${agent.config.role.title}): default MCP level -> ${level.label}"
+            } else {
+                for (srv in visibleServers) {
+                    val srvLevel = if (srv.name.contains("terminal", ignoreCase = true) || srv.name.contains("gradle", ignoreCase = true)) {
+                        if (roleType == com.jarves.mh.multiagent.model.AgentRoleType.SOFTWARE_ENGINEER ||
+                            roleType == com.jarves.mh.multiagent.model.AgentRoleType.DEVOPS_ENGINEER ||
+                            roleType == com.jarves.mh.multiagent.model.AgentRoleType.TESTER
+                        ) McpPermissionLevel.EXECUTE else McpPermissionLevel.READ
+                    } else level
+                    authEngine.setBasePermission(
+                        McpAgentBasePermission(
+                            agentId = agentId,
+                            serverId = srv.serverId,
+                            maxLevel = srvLevel,
+                            allowDynamicRequest = true,
+                        ),
+                    )
+                    changes += "${agent.config.name} -> ${srv.name}: ${srvLevel.label}"
+                }
+            }
+        }
+        refreshStateFlows()
+        return changes
+    }
 
     private val _servers = MutableStateFlow(runCatching { store.listServers() }.getOrDefault(emptyList()))
     val servers: StateFlow<List<McpServerConfig>> = _servers.asStateFlow()
@@ -254,6 +345,15 @@ class McpConnectionManager(
             ?: return@withContext McpToolCallResult(namespacedToolId, "", false, "Unknown MCP tool: $namespacedToolId", errorCode = "UNKNOWN_TOOL")
         val server = store.getServer(tool.serverId)
             ?: return@withContext McpToolCallResult(namespacedToolId, tool.serverId, false, "MCP server not found for tool $namespacedToolId", errorCode = "UNKNOWN_SERVER")
+        if (!isServerEnabledForTeam(workspaceId, server.serverId)) {
+            return@withContext McpToolCallResult(
+                toolId = namespacedToolId,
+                serverId = server.serverId,
+                success = false,
+                contentText = "MCP server '${server.name}' is disabled for this AI Team workspace in Team MCP Settings.",
+                errorCode = "TEAM_SERVER_DISABLED",
+            )
+        }
         val client = clients[server.serverId]
         val connected = client != null && client.isConnected
 
@@ -334,7 +434,9 @@ class McpConnectionManager(
     /** Builds a concise prompt summary of connected & authorized MCP tools for an AI agent. */
     fun buildAuthorizedToolPromptBlock(agentId: String, workspaceId: String?): String {
         val visibleServers = store.listServersForWorkspace(workspaceId).filter { s ->
-            s.enabled && _runtimeStates.value[s.serverId]?.status == McpConnectionStatus.CONNECTED
+            s.enabled &&
+                isServerEnabledForTeam(workspaceId, s.serverId) &&
+                _runtimeStates.value[s.serverId]?.status == McpConnectionStatus.CONNECTED
         }
         if (visibleServers.isEmpty()) return ""
         val serverIds = visibleServers.mapTo(mutableSetOf()) { it.serverId }
