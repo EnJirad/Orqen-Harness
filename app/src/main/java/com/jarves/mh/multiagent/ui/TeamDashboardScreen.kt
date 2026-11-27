@@ -485,7 +485,7 @@ fun TeamDashboardScreen(
                 }
             }
 
-            // 1.5 Workspace & Git Repository Card (Same Git/Folder/ZIP/GitHub powers as Projects tab!)
+            // 1.5 Auto-Push to Git Toggle Card (Duplicate Workspace & Git Panel removed from Team Settings)
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -494,160 +494,31 @@ fun TeamDashboardScreen(
                         .fillMaxWidth()
                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
                 ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        // Auto-Push to Git Toggle Switch
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = "Push ขึ้น Git อัตโนมัติเมื่องานเสร็จ",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                    )
-                                    Text(
-                                        text = if (autoPushGitEnabled) "เปิดใช้งาน — ระบบจะ commit & push ให้อัตโนมัติ" else "ปิดใช้งาน — กดปุ่ม Push ที่มุมขวาบนแชทเอง",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                            Switch(
-                                checked = autoPushGitEnabled,
-                                onCheckedChange = onToggleAutoPushGit,
-                            )
-                        }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { showWorkspaceGitPanel = !showWorkspaceGitPanel },
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Default.FolderShared, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Spacer(Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = stringResource(R.string.team_workspace_git_title),
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                    )
-                                    Text(
-                                        text = activeProject?.name ?: stringResource(R.string.team_workspace_git_desc),
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
-                            Icon(
-                                if (showWorkspaceGitPanel) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                contentDescription = null,
-                            )
-                        }
-
-                        AnimatedVisibility(visible = showWorkspaceGitPanel) {
-                            Column(
-                                modifier = Modifier.padding(top = 12.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                if (projects.isNotEmpty()) {
-                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        items(projects, key = { it.id }) { project ->
-                                            FilterChip(
-                                                selected = activeProject?.id == project.id,
-                                                onClick = { onSelectProject(project) },
-                                                label = { Text(project.name, fontSize = 11.sp) },
-                                                trailingIcon = if (activeProject?.id == project.id) {
-                                                    {
-                                                        Icon(
-                                                            Icons.Default.Close,
-                                                            contentDescription = stringResource(R.string.action_delete),
-                                                            modifier = Modifier.size(14.dp).clickable { onDeleteTeamProject(project) },
-                                                        )
-                                                    }
-                                                } else null,
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    Text(
-                                        text = stringResource(R.string.team_no_projects_yet),
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-
-                                FilledTonalButton(
-                                    onClick = { showCloneSoloDialog = true },
-                                    enabled = !projectImporting && !gitCloneRunning,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(10.dp),
-                                ) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = null, Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(stringResource(R.string.team_clone_from_solo), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                }
-
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(
-                                        onClick = { showNewProjectDialog = true },
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(10.dp),
-                                    ) {
-                                        Icon(Icons.Default.CreateNewFolder, contentDescription = null, Modifier.size(16.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(stringResource(R.string.projects_new_project), fontSize = 11.sp, maxLines = 1)
-                                    }
-                                    OutlinedButton(
-                                        onClick = { importZipLauncher.launch("*/*") },
-                                        enabled = !projectImporting && !gitCloneRunning,
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(10.dp),
-                                    ) {
-                                        Icon(Icons.Default.Download, contentDescription = null, Modifier.size(16.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(stringResource(R.string.projects_zip_file), fontSize = 11.sp, maxLines = 1)
-                                    }
-                                }
-
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(
-                                        onClick = { showGitCloneDialog = true },
-                                        enabled = !gitCloneRunning,
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(10.dp),
-                                    ) {
-                                        Icon(Icons.Default.Code, contentDescription = null, Modifier.size(16.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(stringResource(R.string.projects_git_url), fontSize = 11.sp, maxLines = 1)
-                                    }
-                                    Button(
-                                        onClick = {
-                                            showGitHubRepoDialog = true
-                                            if (githubAuthStatus == GitHubAuthStatus.CONNECTED && githubRepositories.isEmpty()) {
-                                                onRefreshGitHub()
-                                            }
-                                        },
-                                        enabled = !gitCloneRunning,
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(10.dp),
-                                    ) {
-                                        Icon(Icons.Default.CloudSync, contentDescription = null, Modifier.size(16.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(githubLogin ?: "GitHub", fontSize = 11.sp, maxLines = 1)
-                                    }
-                                }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Push ขึ้น Git อัตโนมัติเมื่องานเสร็จ",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Text(
+                                    text = if (autoPushGitEnabled) "เปิดใช้งาน — ระบบจะ commit & push ให้อัตโนมัติ" else "ปิดใช้งาน — กดปุ่ม Push ที่มุมขวาบนแชทเอง",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
+                        Switch(
+                            checked = autoPushGitEnabled,
+                            onCheckedChange = onToggleAutoPushGit,
+                        )
                     }
                 }
             }

@@ -793,7 +793,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             },
         )
     }
-    val autonomousSupervisorEngine by lazy {
+    val autonomousSupervisorEngine: com.jarves.mh.multiagent.supervisor.AutonomousSupervisorEngine by lazy {
         com.jarves.mh.multiagent.supervisor.AutonomousSupervisorEngine(
             taskStore = orqenTaskStore,
             collabStore = collaborationStore,
@@ -907,6 +907,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 else -> if (isThai) "กำลังเขียนโค้ด" else "Writing code"
                             }
                             updateAgentActivity(slot, act, upd.stepTitle, "$actLabel: ${upd.stepTitle.take(60)}")
+                            _state.value.teamAgents.firstOrNull { it.config.slot == slot }?.let { ag ->
+                                autonomousSupervisorEngine.markAgentConnected(slot.id, ag.config.providerId, ag.config.modelId)
+                            }
                             val stepPrefix = if (upd.stepNumber > 0 && upd.totalSteps > 0) {
                                 if (isThai) "ขั้น ${upd.stepNumber}/${upd.totalSteps} · " else "Step ${upd.stepNumber}/${upd.totalSteps} · "
                             } else ""
@@ -923,11 +926,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 val currentAct = _state.value.teamAgents
                                     .firstOrNull { it.config.slot == slot }
                                     ?.activityState?.activity
-                                    ?.takeIf { it != ActivityType.WAITING && it != ActivityType.COMPLETED }
+                                    ?.takeIf { it != ActivityType.WAITING && it != ActivityType.COMPLETED && it != ActivityType.ERROR }
                                     ?: if (upd.stepTitle.contains("review", ignoreCase = true) || upd.stepTitle.contains("verify", ignoreCase = true)) {
                                         ActivityType.REVIEWING
                                     } else ActivityType.WRITING_CODE
                                 updateAgentActivity(slot, currentAct, upd.stepTitle, humanProgress, activeFile)
+                                // Clear any stale PROVIDER_ERROR/DISCONNECTED banner once the agent recovers and emits real progress!
+                                _state.value.teamAgents.firstOrNull { it.config.slot == slot }?.let { ag ->
+                                    autonomousSupervisorEngine.markAgentConnected(slot.id, ag.config.providerId, ag.config.modelId)
+                                }
                                 val now = System.currentTimeMillis()
                                 if (now - lastNotifProgressUpdateMs >= 3_500L) {
                                     lastNotifProgressUpdateMs = now
@@ -7234,7 +7241,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             teamName = project.name,
             memberAgentIds = registered.map { it.agentId },
             requireIndependentReview = true,
-            maxConcurrentAgents = if (enabledCount >= 2) 2 else 1, // Safe parallel execution for non-conflicting steps with FileLockManager
+            maxConcurrentAgents = enabledCount.coerceIn(1, 4), // Safe parallel execution across multiple coding agents via FileLockManager
         )
     }
 
@@ -8834,6 +8841,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     appendLine("Current team status:")
                     appendLine(teamStatusSummary)
+                    appendLine(
+                        com.jarves.mh.skills.AppSettingsActionDispatcher.buildReadOnlySettingsContext(
+                            themeMode = _state.value.themeMode,
+                            languageCode = _state.value.languageCode,
+                            ownerName = ownerName,
+                            autoSkillsEnabled = skillManager.autoSelectEnabled.value,
+                            skillCount = skillManager.skills.value.size,
+                            autoPushGitEnabled = _state.value.teamAutoPushGitEnabled,
+                            agents = _state.value.teamAgents,
+                        ),
+                    )
                     appendLine("Current workspace files:")
                     appendLine(workspaceFileListingSummary(workspaceDir))
                     appendLine()
@@ -8873,7 +8891,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     cleanChatSummary(res.responseText)
                 }
-                val finalReply = replyBody
+                val parsedActions = com.jarves.mh.skills.AppSettingsActionDispatcher.parseAndStripActions(replyBody)
+                val appliedNotes = mutableListOf<String>()
+                parsedActions.safeActions.forEach { act ->
+                    if (applySafeAppControlAction(act)) {
+                        appliedNotes.add(com.jarves.mh.skills.AppSettingsActionDispatcher.describeActionForUser(act))
+                    }
+                }
+                val approvalNotes = parsedActions.approvalActions.map { act ->
+                    com.jarves.mh.skills.AppSettingsActionDispatcher.describeActionForUser(act)
+                }
+                val finalReply = buildString {
+                    append(parsedActions.cleanReplyText.ifBlank { replyBody })
+                    if (appliedNotes.isNotEmpty()) {
+                        appendLine()
+                        appendLine()
+                        append("ปรับตั้งค่าแอปให้เรียบร้อยแล้ว: ${appliedNotes.joinToString(", ")}")
+                    }
+                    if (approvalNotes.isNotEmpty()) {
+                        appendLine()
+                        appendLine()
+                        append("รายการนี้มีผลกระทบสำคัญ กรุณายืนยันก่อนดำเนินการ: ${approvalNotes.joinToString(", ")}")
+                    }
+                }
                 val lines = finalReply.lines()
                 if (lines.size > 1) {
                     val step = (lines.size / 10).coerceAtLeast(1)
@@ -8958,6 +8998,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 handleIdleAgentChatReply(projectId, text, targetSlot)
             }
             return
+        }
+
+        // Fast-path for direct APK build requests ("บิ้ว APK ให้หน่อย" / "build apk") when idle:
+        // Directly builds & verifies the Debug APK without re-planning or re-running old completed tasks!
+        val lowerTextForApk = text.lowercase()
+        val isPureApkBuildRequest = (lowerTextForApk.contains("บิ้ว apk") || lowerTextForApk.contains("บิว apk") ||
+            lowerTextForApk.contains("build apk") || lowerTextForApk.contains("สร้าง apk")) &&
+            text.length <= 90 && !_state.value.teamIsRunning && projectId != null
+        if (isPureApkBuildRequest) {
+            val activeProj = _state.value.activeTeamProject
+            if (activeProj != null) {
+                appendProjectTeamMessage(
+                    projectId = projectId,
+                    senderSlot = null,
+                    senderName = ownerName,
+                    text = text,
+                    messageType = type,
+                )
+                clearTeamChatDraft(projectId)
+                val spvName = agentNameFor(AgentSlot.AGENT_1)
+                appendProjectTeamMessage(
+                    projectId = projectId,
+                    senderSlot = AgentSlot.AGENT_1,
+                    senderName = spvName,
+                    text = "รับทราบครับ $ownerName กำลังเริ่มบิ้วและตรวจสอบ Debug APK จากโค้ดล่าสุดให้ทันทีครับ (ไม่ต้องรันแผนเดิมซ้ำ)",
+                    messageType = GroupMessageType.PROGRESS_UPDATE,
+                )
+                viewModelScope.launch {
+                    updateAgentActivity(AgentSlot.AGENT_1, ActivityType.BUILDING_APK, "Build Debug APK", "กำลังบิ้ว Debug APK...")
+                    val builtApk = withContext(Dispatchers.IO) { buildAndLocateTeamAndroidApk(activeProj) }
+                    updateAgentActivity(AgentSlot.AGENT_1, ActivityType.WAITING, "", "พร้อมใช้งาน")
+                    if (builtApk != null && builtApk.isFile) {
+                        appendProjectTeamMessage(
+                            projectId = projectId,
+                            senderSlot = AgentSlot.AGENT_1,
+                            senderName = spvName,
+                            text = "บิ้ว Debug APK ของโปรเจกต์ '${activeProj.name}' เสร็จสมบูรณ์แล้วครับ $ownerName สามารถกดปุ่มติดตั้ง APK ด้านล่างได้ทันที",
+                            messageType = GroupMessageType.COMPLETION_REPORT,
+                            apkFilePath = builtApk.absolutePath,
+                            workStatus = "APK Ready",
+                        )
+                    } else {
+                        appendProjectTeamMessage(
+                            projectId = projectId,
+                            senderSlot = AgentSlot.AGENT_1,
+                            senderName = spvName,
+                            text = "ไม่พบไฟล์ APK ที่บิ้วสำเร็จในโปรเจกต์นี้ครับ $ownerName (อาจไม่ใช่โปรเจกต์ Android หรือยังมีจุดคอมไพล์ผิดพลาด ตรวจสอบได้ในแท็บ Terminal)",
+                            messageType = GroupMessageType.PROGRESS_UPDATE,
+                        )
+                    }
+                }
+                return
+            }
         }
 
         // Explicit TASK_EXECUTION transition: synthesize finalized requirements from prior Chat consultation
@@ -9191,15 +9284,79 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(teamAgentLiveLogs = it.teamAgentLiveLogs + (slot to emptyList())) }
     }
 
+    private fun applySafeAppControlAction(action: com.jarves.mh.skills.AppControlAction): Boolean {
+        return when (action.action) {
+            "set_theme" -> {
+                val mode = when (action.value.uppercase()) {
+                    "DARK", "มืด" -> com.jarves.mh.ui.theme.AppThemeMode.DARK
+                    "LIGHT", "สว่าง" -> com.jarves.mh.ui.theme.AppThemeMode.LIGHT
+                    else -> com.jarves.mh.ui.theme.AppThemeMode.SYSTEM
+                }
+                setThemeMode(mode)
+                true
+            }
+            "set_language" -> {
+                val code = when (action.value.lowercase()) {
+                    "th", "thai", "ไทย" -> "th"
+                    "en", "english", "อังกฤษ" -> "en"
+                    else -> "system"
+                }
+                setLanguage(code)
+                true
+            }
+            "set_owner_name" -> {
+                if (action.value.isNotBlank()) {
+                    setOwnerDisplayName(action.value.trim())
+                    true
+                } else false
+            }
+            "set_auto_skills" -> {
+                val enabled = action.value.equals("true", true) || action.value == "1" || action.value.equals("on", true)
+                skillManager.setAutoSelectEnabled(enabled)
+                true
+            }
+            "toggle_skill" -> {
+                if (action.target.isNotBlank()) {
+                    val enabled = action.value.equals("true", true) || action.value == "1" || action.value.equals("on", true)
+                    skillManager.toggleSkill(action.target, enabled)
+                    true
+                } else false
+            }
+            "set_auto_push_git" -> {
+                val enabled = action.value.equals("true", true) || action.value == "1" || action.value.equals("on", true)
+                setTeamAutoPushGitEnabled(enabled)
+                true
+            }
+            "toggle_agent" -> {
+                val slot = AgentSlot.fromId(action.target) ?: return false
+                val targetAgent = _state.value.teamAgents.firstOrNull { it.config.slot == slot }
+                if (targetAgent != null) {
+                    val enabled = action.value.equals("true", true) || action.value == "1" || action.value.equals("on", true)
+                    updateAgentConfig(slot, targetAgent.config.copy(isEnabled = enabled))
+                    true
+                } else false
+            }
+            "set_agent_model" -> {
+                val slot = AgentSlot.fromId(action.target) ?: return false
+                val targetAgent = _state.value.teamAgents.firstOrNull { it.config.slot == slot }
+                if (targetAgent != null && action.value.isNotBlank()) {
+                    updateAgentConfig(slot, targetAgent.config.copy(modelId = action.value.trim()))
+                    true
+                } else false
+            }
+            else -> false
+        }
+    }
+
     private fun cleanChatSummary(rawText: String, writtenFiles: List<String> = emptyList()): String {
         val withoutCodeBlocks = rawText
             .replace(Regex("```[\\s\\S]*?```"), "")
             .replace(Regex("\n{3,}"), "\n\n")
             .trim()
         val base = when {
-            withoutCodeBlocks.isNotBlank() -> withoutCodeBlocks.take(1200)
+            withoutCodeBlocks.isNotBlank() -> withoutCodeBlocks.take(24_000)
             writtenFiles.isNotEmpty() -> "อัปเดตไฟล์เรียบร้อยแล้ว (${writtenFiles.size} ไฟล์)"
-            else -> rawText.trim().take(600)
+            else -> rawText.trim().take(12_000)
         }
         return if (writtenFiles.isNotEmpty()) {
             "$base\n\nไฟล์ที่อัปเดต: ${writtenFiles.joinToString(", ")}"

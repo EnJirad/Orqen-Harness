@@ -91,10 +91,22 @@ object SpvModePolicy {
         explicitInstruction: String = "",
         attachmentPaths: List<String> = emptyList(),
     ): NormalizedTaskBrief {
-        val relevant = conversationHistory.filter {
+        val cleanExplicit = explicitInstruction.trim()
+        // Only synthesize messages AFTER the last completed task report so already-completed past tasks
+        // are NEVER re-planned or re-executed when the Owner sends a brand-new instruction!
+        val lastCompletedIdx = conversationHistory.indexOfLast {
+            it.messageType == GroupMessageType.COMPLETION_REPORT
+        }
+        val freshWindow = when {
+            lastCompletedIdx >= 0 && lastCompletedIdx < conversationHistory.lastIndex ->
+                conversationHistory.subList(lastCompletedIdx + 1, conversationHistory.size)
+            lastCompletedIdx == conversationHistory.lastIndex && cleanExplicit.isNotBlank() ->
+                emptyList()
+            else -> conversationHistory
+        }
+        val relevant = freshWindow.filter {
             it.messageType == GroupMessageType.NORMAL || it.messageType == GroupMessageType.TASK_ASSIGNMENT
         }
-        val cleanExplicit = explicitInstruction.trim()
         val finalDecisions = linkedSetOf<String>()
         val rejectedIdeas = linkedSetOf<String>()
 

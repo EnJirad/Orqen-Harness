@@ -146,11 +146,23 @@ fun CentralGroupChatScreen(
         }
     }
     var showClearConfirm by remember { mutableStateOf(false) }
+    var showUploadSheet by remember { mutableStateOf(false) }
+    var uploadTabIndex by remember { mutableIntStateOf(0) }
     var showGitPushDialog by remember { mutableStateOf(false) }
     var gitPushUrlInput by remember { mutableStateOf("") }
     var gitPushApiKeyInput by remember { mutableStateOf("") }
     var pendingUserSendScroll by remember { mutableStateOf(false) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (uris.isNotEmpty()) {
+            selectedImageUris = (selectedImageUris + uris).distinct().take(3)
+        }
+    }
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (uris.isNotEmpty()) {
+            selectedImageUris = (selectedImageUris + uris).distinct().take(3)
+        }
+    }
+    val genericFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         if (uris.isNotEmpty()) {
             selectedImageUris = (selectedImageUris + uris).distinct().take(3)
         }
@@ -512,11 +524,13 @@ fun CentralGroupChatScreen(
                                     val isTypingThis = effectiveTypingAgents.containsKey(slot)
                                     val isWorkingThis = agent.isWorking && !isTypingThis
                                     val act = agent.activityState.activity
-                                    val statusLabel = when {
-                                        isTypingThis -> "กำลังคิด..."
-                                        !agent.config.isEnabled -> stringResource(R.string.team_overlay_paused)
-                                        else -> stringResource(act.labelRes)
-                                    }
+                                    val statusLabel = com.jarves.mh.skills.PlayfulAgentStatus.format(
+                                        activity = act,
+                                        isWorking = isWorkingThis,
+                                        isTyping = isTypingThis,
+                                        isEnabled = agent.config.isEnabled,
+                                        slot = slot,
+                                    )
                                     val currentTaskDesc = agent.activityState.currentTask.ifBlank { agent.activityState.lastAction }
                                         .takeIf { it.isNotBlank() && !it.equals("Idle", ignoreCase = true) }
                                     Row(
@@ -745,6 +759,21 @@ fun CentralGroupChatScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(12.dp)) {
+                    // Mode helper text placed ABOVE mode buttons so it never gets in the way of the text input box!
+                    Text(
+                        text = when (selectedType) {
+                            GroupMessageType.NORMAL -> "โหมดคุยปรึกษา — ตอบคำถาม/วิเคราะห์โค้ดอย่างเดียว ยังไม่แก้ไฟล์"
+                            GroupMessageType.TASK_ASSIGNMENT -> "โหมดสั่งทำงาน — ทีม AI จะวางแผน แก้โค้ด ทดสอบ และบิ้ว APK ให้ทันที"
+                            GroupMessageType.BUG_REPORT -> "โหมดแจ้งบั๊ก — ทีม AI จะไล่หาสาเหตุและแก้บั๊กพร้อมทดสอบซ้ำ"
+                            GroupMessageType.REVIEW_REQUEST -> "โหมดรีวิว — ทีม AI จะตรวจสอบคุณภาพและความปลอดภัยของโค้ด"
+                            else -> ""
+                        },
+                        fontSize = 10.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(bottom = 5.dp),
+                    )
                     // Clean, Beginner-Friendly Mode Selector: Chat (Consult) vs Task (Build) + More menu
                     var moreModeMenuOpen by remember { mutableStateOf(false) }
                     Row(
@@ -803,7 +832,7 @@ fun CentralGroupChatScreen(
                                 onClick = onStartImplementation,
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                 modifier = Modifier.height(28.dp),
-                                shape = RoundedCornerShape(14.dp),
+                                shape = RoundedCornerShape(10.dp),
                             ) {
                                 Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(14.dp))
                                 Spacer(Modifier.width(3.dp))
@@ -811,20 +840,6 @@ fun CentralGroupChatScreen(
                             }
                         }
                     }
-                    Text(
-                        text = when (selectedType) {
-                            GroupMessageType.NORMAL -> "โหมดคุยปรึกษา — ตอบคำถาม/วิเคราะห์โค้ดอย่างเดียว ยังไม่แก้ไฟล์"
-                            GroupMessageType.TASK_ASSIGNMENT -> "โหมดสั่งทำงาน — ทีม AI จะวางแผน แก้โค้ด ทดสอบ และบิ้ว APK ให้ทันที"
-                            GroupMessageType.BUG_REPORT -> "โหมดแจ้งบั๊ก — ทีม AI จะไล่หาสาเหตุและแก้บั๊กพร้อมทดสอบซ้ำ"
-                            GroupMessageType.REVIEW_REQUEST -> "โหมดรีวิว — ทีม AI จะตรวจสอบคุณภาพและความปลอดภัยของโค้ด"
-                            else -> ""
-                        },
-                        fontSize = 10.5.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
 
                     Spacer(Modifier.height(8.dp))
 
@@ -877,25 +892,106 @@ fun CentralGroupChatScreen(
                         }
                     }
 
+                    // 2-Tab Upload Picker Dialog (Tab 0: Photos & Videos | Tab 1: Files)
+                    if (showUploadSheet) {
+                        AlertDialog(
+                            onDismissRequest = { showUploadSheet = false },
+                            icon = { Icon(Icons.Default.AttachFile, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            title = { Text("อัปโหลดให้ทีม AI ดู", fontWeight = FontWeight.SemiBold) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    TabRow(selectedTabIndex = uploadTabIndex) {
+                                        Tab(
+                                            selected = uploadTabIndex == 0,
+                                            onClick = { uploadTabIndex = 0 },
+                                            text = { Text("รูปและวิดีโอ", fontSize = 12.5.sp) },
+                                            icon = { Icon(Icons.Default.PermMedia, null, modifier = Modifier.size(18.dp)) },
+                                        )
+                                        Tab(
+                                            selected = uploadTabIndex == 1,
+                                            onClick = { uploadTabIndex = 1 },
+                                            text = { Text("ไฟล์เอกสาร/โค้ด", fontSize = 12.5.sp) },
+                                            icon = { Icon(Icons.Default.InsertDriveFile, null, modifier = Modifier.size(18.dp)) },
+                                        )
+                                    }
+                                    if (uploadTabIndex == 0) {
+                                        Text(
+                                            text = "เลือกรูปภาพหน้าจอหรือคลิปวิดีโอเพื่อให้ทีม AI วิเคราะห์และออกแบบตามได้ทันที",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                            Button(
+                                                onClick = {
+                                                    showUploadSheet = false
+                                                    imagePicker.launch("image/*")
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                shape = RoundedCornerShape(10.dp),
+                                            ) {
+                                                Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("เลือกรูปภาพ", fontSize = 12.sp)
+                                            }
+                                            FilledTonalButton(
+                                                onClick = {
+                                                    showUploadSheet = false
+                                                    videoPicker.launch("video/*")
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                shape = RoundedCornerShape(10.dp),
+                                            ) {
+                                                Icon(Icons.Default.Videocam, null, modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("เลือกวิดีโอ", fontSize = 12.sp)
+                                            }
+                                        }
+                                    } else {
+                                        Text(
+                                            text = "เลือกไฟล์โค้ด, JSON, PDF, TXT หรือเอกสารจากเครื่องเพื่อให้ AI อ่าน",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        Button(
+                                            onClick = {
+                                                showUploadSheet = false
+                                                genericFilePicker.launch("*/*")
+                                            },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(10.dp),
+                                        ) {
+                                            Icon(Icons.Default.UploadFile, null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("เลือกไฟล์จากเครื่อง", fontSize = 12.5.sp)
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showUploadSheet = false }) { Text("ปิด") }
+                            },
+                        )
+                    }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconButton(
-                            onClick = { imagePicker.launch("image/*") },
+                            onClick = { showUploadSheet = true },
                             modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .background(OrqenMint.copy(alpha = 0.14f)),
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)),
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AddPhotoAlternate,
-                                contentDescription = "Attach Image",
-                                tint = OrqenMint,
+                                imageVector = Icons.Default.AttachFile,
+                                contentDescription = "Upload Media or Files",
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
-                        Spacer(Modifier.width(6.dp))
+                        Spacer(Modifier.width(8.dp))
                         val mentionVisualTransformation = remember(agents) {
                             androidx.compose.ui.text.input.VisualTransformation { text ->
                                 val highlighted = buildAnnotatedString {
@@ -934,14 +1030,16 @@ fun CentralGroupChatScreen(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
-                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.background)
+                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 14.dp, vertical = 11.dp),
                         ) {
                             if (inputValue.text.isEmpty()) {
                                 Text(
                                     text = stringResource(R.string.chat_send_to_team),
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
                                 )
                             }
                             BasicTextField(
@@ -961,7 +1059,7 @@ fun CentralGroupChatScreen(
                             onClick = {
                                 if (canSend) {
                                     pendingUserSendScroll = true
-                                    val finalPrompt = inputValue.text.ifBlank { "ช่วยวิเคราะห์รูปภาพที่แนบมาและออกแบบ/สร้างตามภาพนี้" }
+                                    val finalPrompt = inputValue.text.ifBlank { "ช่วยวิเคราะห์รูปภาพ/ไฟล์ที่แนบมาและออกแบบ/สร้างตามนี้" }
                                     val sendOk = runCatching {
                                         if (selectedImageUris.isNotEmpty() && onSendMessageWithImages != null) {
                                             onSendMessageWithImages(finalPrompt, selectedType, targetSlot, selectedImageUris)
@@ -982,7 +1080,7 @@ fun CentralGroupChatScreen(
                             enabled = canSend,
                             modifier = Modifier
                                 .size(42.dp)
-                                .clip(CircleShape)
+                                .clip(RoundedCornerShape(10.dp))
                                 .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
                         ) {
                             Icon(
@@ -1122,10 +1220,9 @@ private fun AiStreamingBubble(
         Column(
             modifier = Modifier
                 .widthIn(max = 315.dp)
-                .clip(RoundedCornerShape(15.dp))
+                .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surface)
-                .background(accent.copy(alpha = 0.08f))
-                .border(1.3.dp, accent.copy(alpha = 0.72f), RoundedCornerShape(15.dp))
+                .background(accent.copy(alpha = 0.10f))
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
             Text(
@@ -1145,20 +1242,19 @@ private fun AiTypingWaveBubble(
     agentIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
 ) {
     val accent = agentAccentColor(agentSlot)
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp),
-        horizontalArrangement = Arrangement.Start,
+        horizontalAlignment = Alignment.Start,
     ) {
         Surface(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(8.dp),
             color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.2.dp, accent.copy(alpha = 0.65f)),
         ) {
             Row(
                 modifier = Modifier
-                    .background(accent.copy(alpha = 0.08f))
+                    .background(accent.copy(alpha = 0.10f))
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -1193,6 +1289,12 @@ private fun AiTypingWaveBubble(
                 )
             }
         }
+        Text(
+            text = com.jarves.mh.skills.TaskEtaEstimator.estimateChatReplyLabel(isBusyWithCode = false),
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+        )
     }
 }
 
@@ -1225,14 +1327,13 @@ private fun LiveAgentWorkingBubble(
         Spacer(Modifier.height(3.dp))
 
         Surface(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(8.dp),
             color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.2.dp, agentColor.copy(alpha = 0.65f)),
             modifier = Modifier.widthIn(max = 300.dp),
         ) {
             Column(
                 Modifier
-                    .background(agentColor.copy(alpha = 0.07f))
+                    .background(agentColor.copy(alpha = 0.09f))
                     .padding(horizontal = 11.dp, vertical = 7.dp),
             ) {
                 // Clean pill format: [Status Icon] วิเคราะห์ ••• | ▼
@@ -1305,6 +1406,20 @@ private fun LiveAgentWorkingBubble(
                 }
             }
         }
+        val etaLabel = com.jarves.mh.skills.TaskEtaEstimator.estimateWorkingAgentEta(
+            activity = act,
+            pendingTasksCount = 0,
+            elapsedMs = if (agent.activityState.startedAtElapsedMs > 0L) {
+                (android.os.SystemClock.elapsedRealtime() - agent.activityState.startedAtElapsedMs).coerceAtLeast(0L)
+            } else 0L,
+            taskTitle = agent.activityState.currentTask,
+        )
+        Text(
+            text = etaLabel,
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+        )
     }
 }
 
@@ -1437,10 +1552,9 @@ fun GroupChatBubble(
         Column(
             modifier = Modifier
                 .widthIn(max = 315.dp)
-                .clip(RoundedCornerShape(15.dp))
+                .clip(RoundedCornerShape(8.dp))
                 .background(bg)
                 .background(tintOverlay)
-                .border(1.3.dp, borderColor, RoundedCornerShape(15.dp))
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp),
         ) {
@@ -1535,13 +1649,19 @@ fun GroupChatBubble(
                 }
             }
 
-            SelectionContainer {
-                Text(
-                    text = formattedText,
-                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 20.sp),
+            androidx.compose.foundation.text.ClickableText(
+                text = formattedText,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    lineHeight = 20.sp,
                     color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                )
-            }
+                ),
+                onClick = { offset ->
+                    val fileAnn = formattedText.getStringAnnotations(tag = "FILE_LINK", start = offset, end = offset).firstOrNull()
+                    if (fileAnn != null && onOpenFile != null) {
+                        onOpenFile(fileAnn.item)
+                    }
+                },
+            )
 
             // 1-tap "Send as Task" button when user sends a build/edit instruction in Chat mode
             if (!isUser && !message.suggestedTaskPrompt.isNullOrBlank() && onSendAsTask != null) {
@@ -1716,14 +1836,56 @@ private fun extractMentionedFiles(message: GroupChatMessage): List<String> {
     return found.take(8)
 }
 
-private fun simplifyNestedPathsForHumans(raw: String): String {
-    // Convert verbose nested paths like ".ai/automation-reports/plugin-ecosystem-audit.md" or
-    // "app/src/main/java/com/jarves/mh/MainActivity.kt" into crisp human-readable basenames
-    // (preserving URLs like https://... untouched!)
-    val deepPathRegex = Regex("""(?<![:/\w])(?:\.?[A-Za-z0-9_.-]+/){2,}([A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})""")
-    return deepPathRegex.replace(raw) { match ->
-        match.groupValues[1]
+private fun stripMarkdownAndLinksForHumans(raw: String): Pair<String, Map<String, String>> {
+    // Track display basename -> real relative path so tapping ANY highlighted filename opens the exact file!
+    val fileTargetMap = linkedMapOf<String, String>()
+
+    // 1. Replace markdown file links like [swift-build.gradle.kts](file:///workspace/swift-build.gradle.kts)
+    //    or bare (file:///workspace/...) with just the clean basename!
+    val mdFileLinkRegex = Regex("""\[([^\]]+)\]\(file:///[^)]+\)""")
+    var text = mdFileLinkRegex.replace(raw) { match ->
+        val fullMatch = match.value
+        val pathPart = fullMatch.substringAfter("file:///").substringBefore(")").substringBefore("#")
+        val cleanRel = pathPart.removePrefix("workspace/").substringAfter("/", pathPart)
+        val display = match.groupValues[1].substringAfterLast('/').trim()
+        if (display.isNotBlank()) fileTargetMap[display] = cleanRel
+        display
     }
+    val bareFileUriRegex = Regex("""\(?file:///([^\s)]+)\)?""")
+    text = bareFileUriRegex.replace(text) { match ->
+        val rawPath = match.groupValues[1].substringBefore("#")
+        val cleanRel = rawPath.removePrefix("workspace/").substringAfter("/", rawPath)
+        val base = rawPath.substringAfterLast('/').trim()
+        if (base.isNotBlank()) fileTargetMap[base] = cleanRel
+        base
+    }
+
+    // 2. Simplify verbose nested paths like ".ai/automation-reports/plugin-ecosystem-audit.md" -> "plugin-ecosystem-audit.md"
+    val deepPathRegex = Regex("""(?<![:/\w])((?:\.?[A-Za-z0-9_.-]+/){2,}([A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}))""")
+    text = deepPathRegex.replace(text) { match ->
+        val full = match.groupValues[1]
+        val base = match.groupValues[2]
+        fileTargetMap.putIfAbsent(base, full)
+        base
+    }
+
+    // 3. Remove distracting raw markdown symbols (###, ##, #, ***, **, backticks, horizontal rules ---)
+    val cleanedLines = text.lines().map { line ->
+        val trimmed = line.trim()
+        when {
+            trimmed == "---" || trimmed == "***" || trimmed == "___" -> ""
+            trimmed.startsWith("#") -> trimmed.trimStart('#').trim()
+            else -> line
+        }
+    }
+    val cleaned = cleanedLines.joinToString("\n")
+        .replace("***", "")
+        .replace("**", "")
+        .replace("`", "")
+        .replace(Regex("\n{3,}"), "\n\n")
+        .trim()
+
+    return cleaned to fileTargetMap
 }
 
 private fun buildOrqenFormattedMessage(
@@ -1732,56 +1894,94 @@ private fun buildOrqenFormattedMessage(
     isUser: Boolean,
     agents: List<AgentState> = emptyList(),
 ): AnnotatedString = buildAnnotatedString {
-    val humanReadable = if (isUser) raw else simplifyNestedPathsForHumans(raw)
-    val cleaned = humanReadable.replace("**", "")
+    val (cleaned, fileTargets) = if (isUser) {
+        raw.replace("**", "").replace("`", "") to emptyMap()
+    } else {
+        stripMarkdownAndLinksForHumans(raw)
+    }
     append(cleaned)
 
-    // Highlight bold markdown spans from original text (**...**)
+    // Highlight headings (lines that originally started with #) & bold spans (**...**) cleanly without raw symbols
     var searchStart = 0
     val boldRegex = Regex("""\*\*([^*]+)\*\*""")
-    boldRegex.findAll(humanReadable).forEach { match ->
-        val inner = match.groupValues[1]
-        val idx = cleaned.indexOf(inner, startIndex = searchStart)
-        if (idx >= 0) {
-            addStyle(
-                SpanStyle(
-                    fontWeight = FontWeight.Bold,
-                    color = if (isUser) Color.Unspecified else mintColor,
-                ),
-                idx,
-                idx + inner.length,
-            )
-            searchStart = idx + inner.length
+    boldRegex.findAll(raw).forEach { match ->
+        val inner = match.groupValues[1].replace("`", "").trim()
+        if (inner.isNotBlank()) {
+            val idx = cleaned.indexOf(inner, startIndex = searchStart)
+            if (idx >= 0) {
+                addStyle(
+                    SpanStyle(
+                        fontWeight = FontWeight.Bold,
+                        color = if (isUser) Color.Unspecified else mintColor,
+                    ),
+                    idx,
+                    idx + inner.length,
+                )
+                searchStart = idx + inner.length
+            }
+        }
+    }
+    raw.lines().filter { it.trim().startsWith("#") }.forEach { headingLine ->
+        val cleanHeading = headingLine.trim().trimStart('#').trim().replace("**", "").replace("`", "")
+        if (cleanHeading.isNotBlank()) {
+            val idx = cleaned.indexOf(cleanHeading)
+            if (idx >= 0) {
+                addStyle(
+                    SpanStyle(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.5.sp,
+                        color = if (isUser) Color.Unspecified else mintColor,
+                    ),
+                    idx,
+                    idx + cleanHeading.length,
+                )
+            }
         }
     }
 
-    // Highlight inline code (`...`) in Mint-Cyan monospace
-    val codeRegex = Regex("""`([^`]+)`""")
-    codeRegex.findAll(cleaned).forEach { match ->
-        addStyle(
-            SpanStyle(
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.SemiBold,
-                color = mintColor,
-                background = mintColor.copy(alpha = 0.12f),
-            ),
-            match.range.first,
-            match.range.last + 1,
-        )
-    }
-
-    // Highlight file paths & filenames in Mint-Cyan bold underline
+    // Highlight & make ALL filenames clickable to open directly in the file viewer!
     FILE_PATH_REGEX.findAll(cleaned).forEach { match ->
+        val token = match.value
+        val targetPath = fileTargets[token] ?: token
         addStyle(
             SpanStyle(
                 color = mintColor,
                 fontWeight = FontWeight.SemiBold,
-                fontFamily = FontFamily.Monospace,
+                background = mintColor.copy(alpha = 0.12f),
                 textDecoration = TextDecoration.Underline,
             ),
             match.range.first,
             match.range.last + 1,
         )
+        addStringAnnotation(
+            tag = "FILE_LINK",
+            annotation = targetPath,
+            start = match.range.first,
+            end = match.range.last + 1,
+        )
+    }
+    // Also annotate any mapped basenames from markdown links
+    fileTargets.forEach { (displayBase, targetPath) ->
+        var idx = cleaned.indexOf(displayBase)
+        while (idx >= 0) {
+            addStyle(
+                SpanStyle(
+                    color = mintColor,
+                    fontWeight = FontWeight.SemiBold,
+                    background = mintColor.copy(alpha = 0.12f),
+                    textDecoration = TextDecoration.Underline,
+                ),
+                idx,
+                idx + displayBase.length,
+            )
+            addStringAnnotation(
+                tag = "FILE_LINK",
+                annotation = targetPath,
+                start = idx,
+                end = idx + displayBase.length,
+            )
+            idx = cleaned.indexOf(displayBase, startIndex = idx + displayBase.length)
+        }
     }
 
     // Highlight @mentions with EACH mentioned agent's own distinct accent color!

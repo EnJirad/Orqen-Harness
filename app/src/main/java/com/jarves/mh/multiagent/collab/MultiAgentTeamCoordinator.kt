@@ -49,12 +49,12 @@ object AgentProfileMapper {
     fun capabilitiesForRole(roleType: AgentRoleType): Set<String> = when (roleType) {
         AgentRoleType.TEAM_LEADER -> setOf("lead", "plan", "architect", "coordinate", AgentCapability.ARCHITECTURE_DESIGN)
         AgentRoleType.SOFTWARE_ENGINEER -> setOf("code", "fix", AgentCapability.KOTLIN_DEVELOPMENT, AgentCapability.ANDROID_DEVELOPMENT)
-        AgentRoleType.SPECIALIST, AgentRoleType.BACKEND_ENGINEER -> setOf("code", "backend", "api", AgentCapability.BACKEND_DEVELOPMENT, AgentCapability.API_INTEGRATION)
-        AgentRoleType.FRONTEND_ENGINEER -> setOf("code", "frontend", "ui", AgentCapability.WEB_DEVELOPMENT)
+        AgentRoleType.SPECIALIST, AgentRoleType.BACKEND_ENGINEER -> setOf("code", "fix", "backend", "api", AgentCapability.BACKEND_DEVELOPMENT, AgentCapability.API_INTEGRATION)
+        AgentRoleType.FRONTEND_ENGINEER -> setOf("code", "fix", "frontend", "ui", AgentCapability.WEB_DEVELOPMENT)
         AgentRoleType.TESTER -> setOf("review", "qa", "test", AgentCapability.CODE_REVIEW, AgentCapability.TESTING)
-        AgentRoleType.SECURITY_ENGINEER -> setOf("review", "security", AgentCapability.SECURITY_REVIEW, AgentCapability.CODE_REVIEW)
-        AgentRoleType.DEVOPS_ENGINEER -> setOf("build", "deploy", AgentCapability.BUILD_VERIFICATION)
-        AgentRoleType.CUSTOM -> setOf("code")
+        AgentRoleType.SECURITY_ENGINEER -> setOf("code", "fix", "review", "security", AgentCapability.SECURITY_REVIEW, AgentCapability.CODE_REVIEW)
+        AgentRoleType.DEVOPS_ENGINEER -> setOf("code", "fix", "build", "deploy", AgentCapability.BUILD_VERIFICATION)
+        AgentRoleType.CUSTOM -> setOf("code", "fix")
     }
 
     fun fromAgentConfig(config: AgentConfig): AgentProfileEntity = AgentProfileEntity(

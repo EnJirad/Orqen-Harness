@@ -1,5 +1,6 @@
 package com.jarves.mh.multiagent
 
+import com.jarves.mh.multiagent.chat.*
 import com.jarves.mh.multiagent.collab.*
 import com.jarves.mh.multiagent.engine.*
 import com.jarves.mh.multiagent.locks.FileLockManager
@@ -1065,6 +1066,49 @@ class OverhaulEfficiencyAndReliabilityTest {
         val manualResolved = manager.resolveSkillsForWorkspace(androidDir)
         assertFalse(manualResolved.isAutoMode)
         assertEquals(listOf(imported.id), manualResolved.skills.map { it.id })
+    }
+
+    // --- Test R: App Control Bridge, Fresh Objective Window After Completion, Playful Status & ETA ---
+    @Test
+    fun testR_AppControlActionsFreshObjectiveWindowPlayfulStatusAndEta() {
+        // 1. AppSettingsActionDispatcher strips <orqen_action> and classifies safe vs sensitive
+        val rawAi = """
+            เปลี่ยนเป็นโหมดสว่างให้เรียบร้อยครับ
+            <orqen_action>{"action":"set_theme","value":"LIGHT","reason":"Owner requested"}</orqen_action>
+            <orqen_action>{"action":"delete_project","value":"p1","reason":"Owner requested"}</orqen_action>
+        """.trimIndent()
+        val parsed = com.jarves.mh.skills.AppSettingsActionDispatcher.parseAndStripActions(rawAi)
+        assertFalse("Hidden action tag must be stripped from visible chat", parsed.cleanReplyText.contains("orqen_action"))
+        assertEquals(1, parsed.safeActions.size)
+        assertEquals("set_theme", parsed.safeActions.first().action)
+        assertEquals(1, parsed.approvalActions.size)
+        assertEquals("delete_project", parsed.approvalActions.first().action)
+
+        // 2. SpvModePolicy.synthesizeTaskBrief ignores messages BEFORE the last COMPLETION_REPORT
+        val history = listOf(
+            GroupChatMessage(id = "m1", senderSlot = null, senderName = "En", text = "แก้เครื่องหมาย ## ในแชทด้วย", messageType = GroupMessageType.TASK_ASSIGNMENT),
+            GroupChatMessage(id = "m2", senderSlot = AgentSlot.AGENT_1, senderName = "SPV", text = "เสร็จเรียบร้อยแล้วครับ", messageType = GroupMessageType.COMPLETION_REPORT),
+        )
+        val brief = SpvModePolicy.synthesizeTaskBrief(history, explicitInstruction = "บิ้ว APK ให้ผมหน่อย")
+        assertEquals("บิ้ว APK ให้ผมหน่อย", brief.normalizedObjective)
+        assertFalse("Must NOT pull in already-completed old task from before COMPLETION_REPORT", brief.renderedBrief.contains("แก้เครื่องหมาย ##"))
+
+        // 3. Playful status & dynamic ETA (strictly zero emojis!)
+        val status = com.jarves.mh.skills.PlayfulAgentStatus.format(
+            activity = ActivityType.WRITING_CODE,
+            isWorking = true,
+            isTyping = false,
+            isEnabled = true,
+            slot = AgentSlot.AGENT_2,
+        )
+        assertTrue("Playful status should contain '|' separator", status.contains("|"))
+        val eta = com.jarves.mh.skills.TaskEtaEstimator.estimateWorkingAgentEta(
+            activity = ActivityType.WRITING_CODE,
+            pendingTasksCount = 2,
+            elapsedMs = 0L,
+            taskTitle = "Part 1: Core Implementation",
+        )
+        assertTrue("ETA should provide a Thai time estimate", eta.contains("นาที") || eta.contains("ชม."))
     }
 
     private fun locateRepoRoot(): File {

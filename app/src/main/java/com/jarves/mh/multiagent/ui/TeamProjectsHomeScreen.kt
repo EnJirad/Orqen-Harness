@@ -356,12 +356,12 @@ fun TeamProjectsHomeScreen(
                 title = {
                     Column {
                         Text(
-                            text = stringResource(R.string.team_folders_title),
+                            text = "โปรเจกต์ทีม",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            text = stringResource(R.string.team_folders_subtitle, teamProjects.size),
+                            text = "${teamProjects.size} โปรเจกต์ | ทำงานได้ทีละ 1 โปรเจกต์เท่านั้น",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -379,42 +379,6 @@ fun TeamProjectsHomeScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // Active Single-Project Running Banner
-            if (runningProject != null) {
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = Color(0xFF22C55E).copy(alpha = 0.14f),
-                        border = BorderStroke(1.dp, Color(0xFF22C55E).copy(alpha = 0.45f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenTeamProject(runningProject) },
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFF22C55E)))
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    text = stringResource(R.string.team_active_running_banner, runningProject.name),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF16A34A),
-                                )
-                                Text(
-                                    text = stringResource(R.string.team_single_project_rule),
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color(0xFF16A34A))
-                        }
-                    }
-                }
-            }
-
             // Clean Modern Action Bar: 1 Primary CTA + Quick Start + Compact Import Menu (Zero Clutter)
             item {
                 var importMenuExpanded by remember { mutableStateOf(false) }
