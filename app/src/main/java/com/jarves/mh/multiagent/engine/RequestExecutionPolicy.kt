@@ -91,18 +91,25 @@ object StructuredErrorClassifier {
             )
         }
 
-        // 3. Quota / billing exhaustion — non-retryable on same provider without fallback
-        if (lower.contains("quota") && (lower.contains("exhaust") || lower.contains("exceed") || lower.contains("depleted")) ||
+        // 3. Quota / billing exhaustion — non-retryable on same model; supports per-model switch & reset countdown
+        if ((lower.contains("quota") && (lower.contains("exhaust") || lower.contains("exceed") || lower.contains("depleted") || lower.contains("reached") || lower.contains("limit"))) ||
+            lower.contains("individual quota") ||
             lower.contains("insufficient_quota") ||
             lower.contains("billing") ||
             lower.contains("credits exhausted")
         ) {
+            val resetMs = parseResetDurationMs(message)
             return ClassifiedError(
                 category = ExecutionErrorCategory.QUOTA_EXHAUSTED,
                 retryable = false,
+                retryAfterMs = resetMs,
                 httpStatusCode = detectedCode,
                 message = message,
-                userExplanation = "Provider quota or credits are exhausted. Configure a fallback provider or top up credits.",
+                userExplanation = if (resetMs != null) {
+                    "Model quota reached (resets in ${resetMs / 60_000L}m ${(resetMs % 60_000L) / 1000L}s). Switching to an available model automatically."
+                } else {
+                    "Provider quota or credits are exhausted. Switching to a fallback model/provider."
+                },
             )
         }
 
@@ -183,6 +190,17 @@ object StructuredErrorClassifier {
             message = message,
             userExplanation = message.take(240),
         )
+    }
+
+    private fun parseResetDurationMs(message: String): Long? {
+        val lower = message.lowercase()
+        // Matches patterns like "Resets in 29m25s", "resets in 1h 5m 10s", "resets in 45s"
+        val resetBlock = Regex("""resets?\s+in\s+([0-9hms\s]+)""").find(lower)?.groupValues?.get(1) ?: return null
+        val hours = Regex("""(\d+)\s*h""").find(resetBlock)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+        val mins = Regex("""(\d+)\s*m""").find(resetBlock)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+        val secs = Regex("""(\d+)\s*s""").find(resetBlock)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+        val totalMs = ((hours * 3600L) + (mins * 60L) + secs) * 1000L
+        return totalMs.takeIf { it > 0L }
     }
 
     private fun extractHttpStatusCode(lower: String): Int? {

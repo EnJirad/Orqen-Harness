@@ -805,6 +805,110 @@ class OverhaulEfficiencyAndReliabilityTest {
         )
     }
 
+    // --- Test N: Individual Quota Auto-Switch & Earliest-Reset Auto-Wakeup When All Models Exhausted ---
+    @Test
+    fun testN_IndividualQuotaReachedAutoSwitchesModelAndWaitsForEarliestResetWhenAllExhausted() = runBlocking {
+        // 1. Verify classifier parses "Individual quota reached ... Resets in 29m25s."
+        val classified = StructuredErrorClassifier.classify(
+            "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 29m25s.",
+        )
+        assertEquals(ExecutionErrorCategory.QUOTA_EXHAUSTED, classified.category)
+        assertEquals((29L * 60L + 25L) * 1000L, classified.retryAfterMs)
+
+        // 2. Same-provider individual quota failover: primary model hits quota -> automatically switches to backup model on same provider!
+        val store = InMemoryOrqenTaskStore()
+        val collab = InMemoryCollaborationStore()
+        val (proj, wsDir) = newProject(store, "test-n-quota-switch")
+        val usedDevModels = CopyOnWriteArrayList<String>()
+
+        val engine = AutonomousSupervisorEngine(
+            taskStore = store,
+            collabStore = collab,
+            modelPoolProvider = {
+                listOf(
+                    ModelCandidate("provider-dev", "model-dev-primary", setOf("code", "fix"), priority = 10),
+                    ModelCandidate("provider-dev", "model-dev-flash", setOf("code", "fix"), priority = 8),
+                )
+            },
+            runtime = fakeRuntime { req ->
+                val aid = req.agent.config.slot.id
+                if (aid == "agent-02") {
+                    usedDevModels.add(req.agent.config.modelId)
+                    if (req.agent.config.modelId == "model-dev-primary") {
+                        RuntimeExecutionResponse(
+                            req.requestId, "provider-dev", "model-dev-primary", 0L, 10L, false, "",
+                            error = StructuredErrorClassifier.classify("Individual quota reached. Resets in 29m25s."),
+                        )
+                    } else {
+                        File(wsDir, "src/QuotaRecovered.kt").apply { parentFile?.mkdirs(); writeText("val ok = true") }
+                        RuntimeExecutionResponse(req.requestId, "provider-dev", req.agent.config.modelId, 0L, 10L, true, "Done on backup model", modifiedFiles = listOf("src/QuotaRecovered.kt"))
+                    }
+                } else {
+                    val ev = realShellTestEvidence(wsDir, "test -s src/QuotaRecovered.kt")
+                    RuntimeExecutionResponse(req.requestId, "provider-spv", "model-spv-primary", 0L, 10L, true, "REVIEW_APPROVED\nTESTS_PASSED", testEvidence = listOf(ev))
+                }
+            },
+            delayFn = {},
+        )
+        val team = registerTwoAgentTeam(engine, proj.projectId)
+        val finished = engine.submitAndSupervise(proj.projectId, team, "Build QuotaRecovered", requiredDeliverableFiles = listOf("src/QuotaRecovered.kt"))
+        assertEquals(PersistentTaskStatus.COMPLETED, finished?.status)
+        assertEquals(listOf("model-dev-primary", "model-dev-flash"), usedDevModels)
+
+        // 3. When ALL models hit quota (primary resets in 29m25s, flash resets in 10s), engine picks earliest reset (flash, ~10s) and auto-resumes!
+        val store2 = InMemoryOrqenTaskStore()
+        val collab2 = InMemoryCollaborationStore()
+        val (proj2, wsDir2) = newProject(store2, "test-n-quota-wait")
+        val devCalls = AtomicInteger(0)
+        val waitedMs = AtomicLong(0L)
+        val resumedModels = CopyOnWriteArrayList<String>()
+        val engine2 = AutonomousSupervisorEngine(
+            taskStore = store2,
+            collabStore = collab2,
+            modelPoolProvider = {
+                listOf(
+                    ModelCandidate("provider-dev", "model-dev-primary", setOf("code", "fix"), priority = 10),
+                    ModelCandidate("provider-dev", "model-dev-flash", setOf("code", "fix"), priority = 8),
+                )
+            },
+            runtime = fakeRuntime { req ->
+                val aid = req.agent.config.slot.id
+                if (aid == "agent-02") {
+                    val call = devCalls.incrementAndGet()
+                    resumedModels.add(req.agent.config.modelId)
+                    when (call) {
+                        1 -> RuntimeExecutionResponse(
+                            req.requestId, "provider-dev", "model-dev-primary", 0L, 10L, false, "",
+                            error = StructuredErrorClassifier.classify("Individual quota reached. Resets in 29m25s."),
+                        )
+                        2 -> RuntimeExecutionResponse(
+                            req.requestId, "provider-dev", "model-dev-flash", 0L, 10L, false, "",
+                            error = StructuredErrorClassifier.classify("Individual quota reached. Resets in 10s."),
+                        )
+                        else -> {
+                            File(wsDir2, "src/AfterReset.kt").apply { parentFile?.mkdirs(); writeText("val reset = true") }
+                            RuntimeExecutionResponse(req.requestId, "provider-dev", req.agent.config.modelId, 0L, 10L, true, "Done after earliest quota reset", modifiedFiles = listOf("src/AfterReset.kt"))
+                        }
+                    }
+                } else {
+                    val ev = realShellTestEvidence(wsDir2, "test -s src/AfterReset.kt")
+                    RuntimeExecutionResponse(req.requestId, "provider-spv", "model-spv-primary", 0L, 10L, true, "REVIEW_APPROVED\nTESTS_PASSED", testEvidence = listOf(ev))
+                }
+            },
+            delayFn = { ms -> waitedMs.addAndGet(ms) },
+        )
+        val team2 = registerTwoAgentTeam(engine2, proj2.projectId)
+        // Ensure SPV has no "code" capability so when BOTH Dev models hit quota, no other agent can steal Dev's step
+        // and the engine enters WAIT_FOR_QUOTA_RESET for the earliest-resetting Dev model!
+        engine2.registry.register(
+            engine2.registry.get("agent-01")!!.copy(capabilities = setOf("lead", "architect", "plan", "review", "qa")),
+        )
+        val finished2 = engine2.submitAndSupervise(proj2.projectId, team2, "Build AfterReset", requiredDeliverableFiles = listOf("src/AfterReset.kt"))
+        assertEquals(PersistentTaskStatus.COMPLETED, finished2?.status)
+        assertTrue("Expected auto-wait around earliest 10s reset (< 60s), got ${waitedMs.get()}ms", waitedMs.get() in 10_000L..60_000L)
+        assertEquals("Should resume automatically on earliest-resetting model", "model-dev-flash", resumedModels.last())
+    }
+
     private fun locateRepoRoot(): File {
         var cur = File(System.getProperty("user.dir") ?: ".")
         repeat(4) {

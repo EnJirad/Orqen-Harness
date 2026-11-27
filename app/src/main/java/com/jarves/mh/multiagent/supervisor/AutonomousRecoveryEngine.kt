@@ -84,7 +84,7 @@ data class TaskEfficiencyMetrics(
 data class RecoveryLimitsConfig(
     val maxRetriesPerExecution: Int = 2,
     val maxConsecutiveProviderFailures: Int = 3,
-    val maxModelSwitchesPerStep: Int = 3,
+    val maxModelSwitchesPerStep: Int = 8,
     val maxAgentReassignments: Int = 2,
     val maxReviewCycles: Int = 3,
     val maxReplanAttempts: Int = 2,
@@ -99,6 +99,7 @@ enum class RecoveryStrategyKind {
     SWITCH_MODEL_SAME_PROVIDER,
     SWITCH_PROVIDER_AND_MODEL,
     REASSIGN_AGENT,
+    WAIT_FOR_QUOTA_RESET,
     BLOCK_NEEDS_ATTENTION,
 }
 
@@ -137,10 +138,16 @@ class AutonomousRecoveryEngine(
 ) {
     private val decisionAudit = ConcurrentHashMap<String, MutableList<SupervisorDecisionRecord>>()
     private val failedModelKeysPerStep = ConcurrentHashMap<String, MutableSet<String>>()
+    private val modelQuotaResetAtMs = ConcurrentHashMap<String, Long>()
     private val modelSwitchCountPerStep = ConcurrentHashMap<String, Int>()
     private val reassignmentCountPerStep = ConcurrentHashMap<String, Int>()
     private val providerFailureCounts = ConcurrentHashMap<String, Int>()
     private val processedRecoveryIds = ConcurrentHashMap.newKeySet<String>()
+
+    fun clearFailedModelsForStep(stepId: String) {
+        failedModelKeysPerStep.remove(stepId)
+        modelSwitchCountPerStep.remove(stepId)
+    }
 
     fun auditTrail(taskId: String): List<SupervisorDecisionRecord> =
         decisionAudit[taskId]?.toList().orEmpty()
@@ -199,11 +206,19 @@ class AutonomousRecoveryEngine(
         val providerFails = providerFailureCounts.merge(failedAgent.providerId, 1, Int::plus) ?: 1
         val failedModels = failedModelKeysPerStep.computeIfAbsent(step.stepId) { ConcurrentHashMap.newKeySet() }
 
-        val isProviderWideFailure = error.category in setOf(
-            ExecutionErrorCategory.AUTH_FAILURE,
-            ExecutionErrorCategory.QUOTA_EXHAUSTED,
-            ExecutionErrorCategory.RATE_LIMIT,
-        ) || providerFails >= limits.maxConsecutiveProviderFailures
+        val lowerErrMsg = error.message.lowercase()
+        val isIndividualModelQuota = error.category == ExecutionErrorCategory.QUOTA_EXHAUSTED && (
+            lowerErrMsg.contains("individual quota") ||
+                lowerErrMsg.contains("resets in") ||
+                lowerErrMsg.contains("model quota")
+            )
+        val isProviderWideFailure = (
+            error.category in setOf(
+                ExecutionErrorCategory.AUTH_FAILURE,
+                ExecutionErrorCategory.RATE_LIMIT,
+            ) || (error.category == ExecutionErrorCategory.QUOTA_EXHAUSTED && !isIndividualModelQuota)
+                || (!isIndividualModelQuota && providerFails >= limits.maxConsecutiveProviderFailures)
+            )
 
         // 1. Retry current model if transient, retryable, provider healthy, and under retry limit
         val canRetrySameModel = error.retryable &&
@@ -242,19 +257,31 @@ class AutonomousRecoveryEngine(
         }
 
         // Mark this (provider, model) pair as failed for this step so we never rotate back to it
-        failedModels.add("${failedAgent.providerId}:${failedAgent.modelId}")
+        val failedKey = "${failedAgent.providerId}:${failedAgent.modelId}"
+        failedModels.add(failedKey)
+        if (error.category == ExecutionErrorCategory.QUOTA_EXHAUSTED && error.retryAfterMs != null && error.retryAfterMs > 0L) {
+            modelQuotaResetAtMs[failedKey] = nowMs + error.retryAfterMs
+        }
+        // Automatically un-fail any model whose quota reset countdown has already elapsed!
+        failedModels.removeAll { key ->
+            val resetAt = modelQuotaResetAtMs[key]
+            resetAt != null && resetAt <= nowMs
+        }
 
         val currentSwitches = modelSwitchCountPerStep[step.stepId] ?: 0
         val downProviders = unavailableProviders()
-        val eligibleModels = modelPoolProvider().filter { cand ->
+        val allBaseEligible = modelPoolProvider().filter { cand ->
             cand.isEnabled &&
                 "${cand.providerId}:${cand.modelId}" !in failedModels &&
                 cand.providerId !in downProviders &&
                 !healthMonitor.isProviderRateLimited(cand.providerId, nowMs) &&
                 (!requireTools || cand.supportsTools) &&
-                cand.contextWindowTokens >= minContextTokens &&
-                (requiredCapabilities.isEmpty() || requiredCapabilities.all { it in cand.capabilities })
-        }.sortedWith(
+                cand.contextWindowTokens >= minContextTokens
+        }
+        val strictEligible = allBaseEligible.filter { cand ->
+            requiredCapabilities.isEmpty() || requiredCapabilities.all { it in cand.capabilities }
+        }
+        val eligibleModels = (if (strictEligible.isNotEmpty()) strictEligible else allBaseEligible).sortedWith(
             compareByDescending<ModelCandidate> { it.priority }
                 .thenBy { it.estimatedCostPer1kTokens },
         )
@@ -352,6 +379,45 @@ class AutonomousRecoveryEngine(
                         evidence = "Preserved ${preservedFiles.size} file(s); previous error=${error.category}",
                         actionTaken = "Reassign ${failedAgent.agentId} -> ${replacement.agentId}",
                         result = "REASSIGNED",
+                    ),
+                )
+                return plan
+            }
+        }
+
+        // 4.5 If ALL models across ALL providers hit quota, pick the EARLIEST-resetting model,
+        // wait until its quota resets, and automatically wake up & resume work with zero user intervention!
+        if (error.category == ExecutionErrorCategory.QUOTA_EXHAUSTED) {
+            val earliestEntry = failedModels
+                .mapNotNull { key -> modelQuotaResetAtMs[key]?.let { resetAt -> key to resetAt } }
+                .minByOrNull { it.second }
+            val fallbackWaitMs = error.retryAfterMs
+            if (earliestEntry != null || (fallbackWaitMs != null && fallbackWaitMs > 0L)) {
+                val (targetProv, targetMod) = earliestEntry?.first?.split(":", limit = 2)?.let { parts ->
+                    if (parts.size == 2) parts[0] to parts[1] else failedAgent.providerId to failedAgent.modelId
+                } ?: (failedAgent.providerId to failedAgent.modelId)
+                val rawWaitMs = earliestEntry?.let { (it.second - nowMs).coerceAtLeast(1_000L) } ?: fallbackWaitMs!!
+                val waitMs = (rawWaitMs + 3_000L).coerceAtMost(3_600_000L)
+                val plan = RecoveryPlan(
+                    strategy = RecoveryStrategyKind.WAIT_FOR_QUOTA_RESET,
+                    targetAgentId = failedAgent.agentId,
+                    targetProviderId = targetProv,
+                    targetModelId = targetMod,
+                    backoffMs = waitMs,
+                    reason = "All models reached quota; auto-waiting ${waitMs / 60_000L}m ${(waitMs % 60_000L) / 1000L}s for earliest reset ($targetMod) to resume automatically.",
+                    preservedModifiedFiles = preservedFiles,
+                )
+                recordDecision(
+                    SupervisorDecisionRecord(
+                        taskId = task.taskId,
+                        stepId = step.stepId,
+                        agentId = failedAgent.agentId,
+                        executionId = executionId,
+                        decisionType = SupervisorDecisionType.RETRY_INITIATED,
+                        reason = plan.reason,
+                        evidence = error.message.take(200),
+                        actionTaken = "Wait ${waitMs}ms for earliest model quota reset ($targetProv/$targetMod) then auto-resume",
+                        result = "WAITING_QUOTA_RESET",
                     ),
                 )
                 return plan

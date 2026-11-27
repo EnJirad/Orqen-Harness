@@ -1581,6 +1581,50 @@ class AutonomousSupervisorEngine(
                             )
                         }
 
+                        RecoveryStrategyKind.WAIT_FOR_QUOTA_RESET -> {
+                            if (isSpvStep) spvConnectionStates[taskId] = ModelConnectionState.RETRYING
+                            else devConnectionStates[taskId] = ModelConnectionState.RETRYING
+                            val waitMs = recoveryPlan.backoffMs.coerceAtLeast(1_000L)
+                            val waitMins = waitMs / 60_000L
+                            val waitSecs = (waitMs % 60_000L) / 1000L
+                            val waitMsg = "⏳ โควต้าโมเดลทุกตัวหมดชั่วคราว — ระบบจะรอโควต้าของ ${recoveryPlan.targetModelId} รีเซ็ต (อีก ${waitMins} นาที ${waitSecs} วินาที) แล้วปลุกทีมกลับมาทำงานต่อให้อัตโนมัติทันทีครับ"
+                            updateSnapshot(taskId, SupervisorOperationalStatus.RECOVERING, waitMsg, activePhase = "WAITING_QUOTA_RESET")
+                            onStepLifecycleUpdate(
+                                StepLifecycleUpdate(
+                                    projectId = task.projectId,
+                                    taskId = taskId,
+                                    stepId = runningStep.stepId,
+                                    stepTitle = runningStep.title,
+                                    agentId = agentProfile.agentId,
+                                    agentDisplayName = agentProfile.displayName,
+                                    phase = "RECOVERING",
+                                    detail = waitMsg,
+                                ),
+                            )
+                            var remainingMs = waitMs
+                            while (remainingMs > 0L && currentCoroutineContext().isActive) {
+                                val slice = minOf(remainingMs, 5_000L)
+                                delayFn(slice)
+                                remainingMs -= slice
+                                val latest = taskStore.getTask(taskId)
+                                if (latest == null || latest.ownerStopRequested || latest.pauseRequested ||
+                                    latest.status == PersistentTaskStatus.CANCELLED || latest.status == PersistentTaskStatus.PAUSED
+                                ) {
+                                    break
+                                }
+                                taskStore.upsertTask(latest.copy(lastHeartbeatAt = nowProvider(), updatedAt = nowProvider()))
+                            }
+                            recoveryEngine.clearFailedModelsForStep(runningStep.stepId)
+                            registry.register(
+                                agentProfile.copy(
+                                    providerId = recoveryPlan.targetProviderId,
+                                    modelId = recoveryPlan.targetModelId,
+                                    updatedAt = nowProvider(),
+                                ),
+                            )
+                            taskStore.upsertStep(runningStep.copy(status = StepStatus.READY, retryCount = 0))
+                        }
+
                         RecoveryStrategyKind.BLOCK_NEEDS_ATTENTION -> {
                             if (isSpvStep) spvConnectionStates[taskId] = ModelConnectionState.DISCONNECTED
                             else devConnectionStates[taskId] = ModelConnectionState.DISCONNECTED
@@ -1783,7 +1827,8 @@ class AutonomousSupervisorEngine(
         )
 
         when (plan.strategy) {
-            RecoveryStrategyKind.RETRY_SAME_MODEL -> {
+            RecoveryStrategyKind.RETRY_SAME_MODEL,
+            RecoveryStrategyKind.WAIT_FOR_QUOTA_RESET -> {
                 taskStore.upsertStep(step.copy(status = StepStatus.READY, retryCount = step.retryCount + 1))
             }
             RecoveryStrategyKind.SWITCH_MODEL_SAME_PROVIDER,
