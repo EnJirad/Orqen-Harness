@@ -7328,13 +7328,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (result != null) {
                     activeSupervisedTaskId = result.taskId
                     _state.update { it.copy(activeSupervisedTaskId = result.taskId) }
+                    val wsDir = File(getApplication<Application>().filesDir, "team_workspaces/${activeProj.id}")
                     val builtApk = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                         buildAndLocateTeamAndroidApk(activeProj)
                     } else null
-                    val completionMsg = if (builtApk != null) {
-                        "🎉 แอป '${activeProj.name}' สร้างและบิลด์ APK เสร็จสมบูรณ์แล้วครับ! กดปุ่มดาวน์โหลดและติดตั้งด้านล่างเพื่อลงเครื่องทดสอบได้เลย ชอบหรือไม่ชอบตรงไหนบอกให้ทีมแก้ได้ทันทีครับ"
-                    } else {
-                        formatTeamTaskCompletionMessage(activeProj.name, result.title, result.taskId, result.status, result.lastError)
+                    val webEntryRel = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && builtApk == null) {
+                        listOf("index.html", "dist/index.html", "build/index.html", "public/index.html", "src/index.html")
+                            .firstOrNull { File(wsDir, it).isFile }
+                    } else null
+                    val deliveredFiles = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                        wsDir.walkTopDown()
+                            .maxDepth(5)
+                            .filter { f ->
+                                f.isFile &&
+                                    !f.path.contains("/.git/") &&
+                                    !f.path.contains("/.gradle/") &&
+                                    !f.path.contains("/build/") &&
+                                    !f.path.contains("/.orqen/") &&
+                                    f.name != ".orqen_chat.json"
+                            }
+                            .sortedByDescending { it.lastModified() }
+                            .take(5)
+                            .mapNotNull { runCatching { it.relativeTo(wsDir).path }.getOrNull() }
+                            .toList()
+                    } else emptyList()
+
+                    val completionMsg = when {
+                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && builtApk != null ->
+                            "🎉 แอป '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถกดปุ่มติดตั้ง APK ด้านล่างเพื่อลงเครื่องทดสอบได้ทันที (ไฟล์ถูกเก็บไว้ในแถบ Files: apk/${builtApk.name})"
+                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && webEntryRel != null ->
+                            "🎉 เว็บโปรเจกต์ '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม กดปุ่มเปิดดู Preview ด้านล่างหรือแตะที่ไฟล์ `$webEntryRel` เพื่อตรวจสอบได้เลยครับ"
+                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED -> {
+                            val fileListText = if (deliveredFiles.isNotEmpty()) {
+                                "\n📁 ไฟล์ผลงานพร้อมตรวจ: " + deliveredFiles.joinToString(", ") { "`$it`" }
+                            } else ""
+                            "🎉 โปรเจกต์ '${activeProj.name}' ดำเนินการเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถเข้าไปตรวจสอบผลงานในแถบ Files ได้ทันทีครับ$fileListText"
+                        }
+                        else -> formatTeamTaskCompletionMessage(activeProj.name, result.title, result.taskId, result.status, result.lastError)
+                    }
+                    val completionWorkDetails = buildList {
+                        if (webEntryRel != null) add("PREVIEW_READY")
+                        if (builtApk != null) add("APK: apk/${builtApk.name}")
+                        deliveredFiles.forEach { add("File: $it") }
                     }
                     appendProjectTeamMessage(
                         projectId = activeProj.id,
@@ -7346,10 +7381,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             GroupMessageType.PROGRESS_UPDATE
                         },
+                        workStatus = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) "Done" else null,
+                        workDetails = completionWorkDetails,
                         apkFilePath = builtApk?.absolutePath,
                     )
                     if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
-                        notifyTeamTaskCompleted(activeProj.name, formatTeamTaskCompletionNotifDetail(activeProj.name, result.title))
+                        // Archive any older stale QUEUED/BLOCKED/READY tasks for this project so they
+                        // never re-run and spam [BLOCKED] banners right after the project completes!
+                        withContext(Dispatchers.IO) {
+                            orqenTaskStore.listTasksForProject(activeProj.id)
+                                .filter { old ->
+                                    old.taskId != result.taskId && old.status in setOf(
+                                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.QUEUED,
+                                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.READY,
+                                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.BLOCKED,
+                                    )
+                                }
+                                .forEach { old ->
+                                    orqenTaskStore.upsertTask(
+                                        old.copy(
+                                            status = com.jarves.mh.multiagent.persistence.PersistentTaskStatus.CANCELLED,
+                                            ownerStopRequested = true,
+                                            lastError = "Superseded by completed task ${result.taskId}",
+                                            updatedAt = System.currentTimeMillis(),
+                                        ),
+                                    )
+                                }
+                        }
+                        val notifSummary = when {
+                            builtApk != null -> "สร้างแอป '${activeProj.name}' เสร็จสมบูรณ์แล้ว พร้อมติดตั้ง APK ได้ทันที"
+                            webEntryRel != null -> "สร้างเว็บ '${activeProj.name}' เสร็จสมบูรณ์แล้ว กดเปิดดู Preview ได้เลย"
+                            else -> formatTeamTaskCompletionNotifDetail(activeProj.name, result.title)
+                        }
+                        notifyTeamTaskCompleted(activeProj.name, notifSummary)
                         if (_state.value.teamAutoPushGitEnabled) {
                             pushTeamProjectToGit(isAuto = true)
                         }
@@ -7453,12 +7517,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun notifyTeamTaskCompleted(projectName: String, summary: String) {
         val app = getApplication<Application>()
+        val title = if (isThaiUiLanguage()) {
+            "🎉 งานเสร็จสมบูรณ์: $projectName"
+        } else {
+            "🎉 Task Completed: $projectName"
+        }
+        // Post directly via NotificationManager on a high-importance channel so the top Android
+        // status bar notification ALWAYS appears reliably even if the app is backgrounded!
+        runCatching {
+            val nm = app.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val channelId = "orqen_team_completion_v1"
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val ch = android.app.NotificationChannel(
+                    channelId,
+                    "ORQEN AI Team Completions",
+                    android.app.NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "Notifications when AI Team finishes building and verifying a project"
+                    enableVibration(true)
+                }
+                nm.createNotificationChannel(ch)
+            }
+            val launchIntent = app.packageManager.getLaunchIntentForPackage(app.packageName)?.apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = launchIntent?.let {
+                android.app.PendingIntent.getActivity(
+                    app,
+                    projectName.hashCode(),
+                    it,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
+                )
+            }
+            val notif = androidx.core.app.NotificationCompat.Builder(app, channelId)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title)
+                .setContentText(summary)
+                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(summary))
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(android.app.Notification.DEFAULT_ALL)
+                .setAutoCancel(true)
+                .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
+                .build()
+            nm.notify(7100 + (projectName.hashCode() and 0x7FF), notif)
+        }
         runCatching {
             app.startService(
                 Intent(app, RuntimeExecutionService::class.java)
                     .setAction(RuntimeExecutionService.ACTION_NOTIFY_RESULT)
                     .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
-                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, str(R.string.team_notif_completed_title))
+                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, title)
                     .putExtra(RuntimeExecutionService.EXTRA_DETAIL, summary),
             )
         }

@@ -305,6 +305,7 @@ fun TeamWorkspaceScreen(
                         gitPushRunning = gitPushRunning,
                         onPushToGit = onPushToGit,
                         onInstallApk = onInstallApk,
+                        onOpenPreview = { activeTab = TeamWorkspaceTab.PREVIEW },
                         onOpenFile = { path ->
                             pendingFileToOpen = path
                             activeTab = TeamWorkspaceTab.FILES

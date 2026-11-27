@@ -99,6 +99,7 @@ fun CentralGroupChatScreen(
     gitPushRunning: Boolean = false,
     onPushToGit: ((gitUrl: String?, apiKey: String?) -> Unit)? = null,
     onInstallApk: ((String) -> Unit)? = null,
+    onOpenPreview: (() -> Unit)? = null,
     onOpenFile: ((String) -> Unit)? = null,
     draftConversationKey: String = "",
     initialDraftText: String = "",
@@ -573,6 +574,7 @@ fun CentralGroupChatScreen(
                         senderIcon = senderAgent?.let { AgentIconCatalog.iconFor(it.config) },
                         onOpenFile = onOpenFile,
                         onInstallApk = onInstallApk,
+                        onOpenPreview = onOpenPreview,
                         onSendAsTask = { taskPrompt ->
                             pendingUserSendScroll = true
                             onSendMessage(taskPrompt, GroupMessageType.TASK_ASSIGNMENT, null)
@@ -1139,6 +1141,7 @@ fun GroupChatBubble(
     senderIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     onOpenFile: ((String) -> Unit)? = null,
     onInstallApk: ((String) -> Unit)? = null,
+    onOpenPreview: (() -> Unit)? = null,
     onSendAsTask: ((String) -> Unit)? = null,
 ) {
     val isUser = message.isUser
@@ -1441,6 +1444,27 @@ fun GroupChatBubble(
                             Spacer(Modifier.width(6.dp))
                             Text("ดาวน์โหลดและติดตั้ง APK", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
+                    }
+                }
+            }
+
+            // Direct Web Preview Card right inside Group Chat when a Web project finishes!
+            if (message.workDetails.any { it == "PREVIEW_READY" } && onOpenPreview != null) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = OrqenMint.copy(alpha = 0.14f),
+                    border = BorderStroke(1.2.dp, OrqenMint.copy(alpha = 0.65f)),
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                ) {
+                    Button(
+                        onClick = onOpenPreview,
+                        colors = ButtonDefaults.buttonColors(containerColor = OrqenMint),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(8.dp),
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.Black)
+                        Spacer(Modifier.width(6.dp))
+                        Text("เปิดดู Preview เว็บไซต์", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                     }
                 }
             }
