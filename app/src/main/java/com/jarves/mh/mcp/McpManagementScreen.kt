@@ -736,7 +736,7 @@ private fun AddOrEditMcpServerDialog(
                                     Text("Parsed ${res.drafts.size} server(s):", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = McpEmerald)
                                     res.drafts.forEach { d ->
                                         Text("• ${d.config.name} (${d.config.transportType.displayName})", fontSize = 11.sp)
-                                        d.warnings.forEach { w -> Text("  ⚠ $w", fontSize = 10.sp, color = McpAmber) }
+                                        d.warnings.forEach { w -> Text("  [Warning] $w", fontSize = 10.sp, color = McpAmber) }
                                     }
                                 }
                             }

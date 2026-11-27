@@ -946,7 +946,7 @@ class AutonomousSupervisorEngine(
                             agentId = agentProfile.agentId,
                             agentDisplayName = agentProfile.displayName,
                             phase = "STARTED",
-                            detail = "📌 เริ่มขั้นตอนที่ ${effectiveStep.sequenceNumber}/$totalPlannedSteps: ${effectiveStep.title}$retrySuffix (ใช้โมเดล ${agentProfile.modelId})",
+                            detail = "เริ่มขั้นตอนที่ ${effectiveStep.sequenceNumber}/$totalPlannedSteps: ${effectiveStep.title}$retrySuffix (ใช้โมเดล ${agentProfile.modelId})",
                             stepNumber = effectiveStep.sequenceNumber,
                             totalSteps = totalPlannedSteps,
                         ),
@@ -1337,18 +1337,18 @@ class AutonomousSupervisorEngine(
                         it.sequenceNumber > runningStep.sequenceNumber && it.status != StepStatus.COMPLETED
                     }
                     val completionDetail = buildString {
-                        appendLine("✅ ทำขั้นตอนที่ ${runningStep.sequenceNumber}/$completedTotalSteps เสร็จแล้ว: ${runningStep.title}")
+                        appendLine("ทำขั้นตอนที่ ${runningStep.sequenceNumber}/$completedTotalSteps เสร็จแล้ว: ${runningStep.title}")
                         if (changedFiles.isNotEmpty()) {
-                            appendLine("📁 ไฟล์ที่อัปเดต (${changedFiles.size}): ${changedFiles.take(4).joinToString(", ")}")
+                            appendLine("ไฟล์ที่อัปเดต (${changedFiles.size}): ${changedFiles.take(4).joinToString(", ")}")
                         }
                         val cleanOut = output.summary.trim().take(320)
                         if (cleanOut.isNotBlank()) {
                             appendLine(cleanOut)
                         }
                         if (nextPendingStep != null) {
-                            append("➡️ ขั้นตอนถัดไป (#${nextPendingStep.sequenceNumber}/$completedTotalSteps): ${nextPendingStep.title}")
+                            append("ขั้นตอนถัดไป (#${nextPendingStep.sequenceNumber}/$completedTotalSteps): ${nextPendingStep.title}")
                         } else {
-                            append("🔍 ส่งต่อให้ Supervisor ตรวจสอบความครบถ้วนและผลทดสอบครับ")
+                            append("ส่งต่อให้ Supervisor ตรวจสอบความครบถ้วนและผลทดสอบครับ")
                         }
                     }
                     onStepLifecycleUpdate(
@@ -1587,7 +1587,7 @@ class AutonomousSupervisorEngine(
                             val waitMs = recoveryPlan.backoffMs.coerceAtLeast(1_000L)
                             val waitMins = waitMs / 60_000L
                             val waitSecs = (waitMs % 60_000L) / 1000L
-                            val waitMsg = "⏳ โควต้าโมเดลทุกตัวหมดชั่วคราว — ระบบจะรอโควต้าของ ${recoveryPlan.targetModelId} รีเซ็ต (อีก ${waitMins} นาที ${waitSecs} วินาที) แล้วปลุกทีมกลับมาทำงานต่อให้อัตโนมัติทันทีครับ"
+                            val waitMsg = "โควต้าโมเดลทุกตัวหมดชั่วคราว — ระบบจะรอโควต้าของ ${recoveryPlan.targetModelId} รีเซ็ต (อีก ${waitMins} นาที ${waitSecs} วินาที) แล้วปลุกทีมกลับมาทำงานต่อให้อัตโนมัติทันทีครับ"
                             updateSnapshot(taskId, SupervisorOperationalStatus.RECOVERING, waitMsg, activePhase = "WAITING_QUOTA_RESET")
                             onStepLifecycleUpdate(
                                 StepLifecycleUpdate(

@@ -520,7 +520,7 @@ private fun TerminalKeyButton(
         ),
     ) {
         Text(
-            if (active) "$label ✓" else label,
+            if (active) "$label (ON)" else label,
             fontFamily = FontFamily.Monospace,
             fontSize = 12.sp,
             maxLines = 1,

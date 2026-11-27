@@ -988,6 +988,34 @@ class OverhaulEfficiencyAndReliabilityTest {
         assertEquals(StepStatus.READY, stepsAfter["S-2"]?.status)
     }
 
+    // --- Test P: Zero Emojis Allowed Anywhere in app/src/main (Use Vector Icons Instead) ---
+    @Test
+    fun testP_ZeroEmojisInAppMainSourceAndResources() {
+        val repoRoot = locateRepoRoot()
+        val mainDir = File(repoRoot, "app/src/main")
+        val offenders = mutableListOf<String>()
+        mainDir.walkTopDown()
+            .filter { it.isFile && (it.extension == "kt" || it.extension == "xml") }
+            .forEach { file ->
+                file.readLines().forEachIndexed { idx, line ->
+                    val hasEmoji = line.codePoints().anyMatch { cp ->
+                        cp in 0x1F300..0x1FAFF ||
+                            cp in 0x2600..0x27BF ||
+                            cp in 0x231A..0x23FF ||
+                            cp in 0x2B50..0x2B55 ||
+                            cp == 0xFE0F
+                    }
+                    if (hasEmoji) {
+                        offenders.add("${file.relativeTo(repoRoot).path}:${idx + 1}")
+                    }
+                }
+            }
+        assertTrue(
+            "Emojis are forbidden in app/src/main (use Material Icons instead). Found in: ${offenders.take(10)}",
+            offenders.isEmpty(),
+        )
+    }
+
     private fun locateRepoRoot(): File {
         var cur = File(System.getProperty("user.dir") ?: ".")
         repeat(4) {

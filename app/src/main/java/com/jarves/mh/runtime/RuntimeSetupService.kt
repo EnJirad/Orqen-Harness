@@ -141,7 +141,7 @@ object RuntimeSetupController {
                 indeterminate = false,
                 downloadedBytes = null,
                 totalBytes = null,
-                logs = (current.logs + "✓ Setup completed successfully").takeLast(MAX_LOG_LINES),
+                logs = (current.logs + "[OK] Setup completed successfully").takeLast(MAX_LOG_LINES),
             ),
         )
     }
@@ -173,7 +173,7 @@ object RuntimeSetupController {
                 errorMessage = friendly,
                 offline = offline,
                 indeterminate = false,
-                logs = (current.logs + "✕ $friendly").takeLast(MAX_LOG_LINES),
+                logs = (current.logs + "[ERROR] $friendly").takeLast(MAX_LOG_LINES),
             ),
         )
     }

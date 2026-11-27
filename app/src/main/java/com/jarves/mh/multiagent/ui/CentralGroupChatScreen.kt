@@ -1715,8 +1715,8 @@ private fun buildOrqenFormattedMessage(
         )
     }
 
-    // Highlight key status markers (PASS:, FAIL:, 📋 heading)
-    val keyMarkers = listOf("PASS:", "FAIL:", "📋 รายงานสรุปงานเสร็จสิ้นถึง")
+    // Highlight key status markers (PASS:, FAIL:, completion summary heading)
+    val keyMarkers = listOf("PASS:", "FAIL:", "รายงานสรุปงานเสร็จสิ้นถึง")
     keyMarkers.forEach { marker ->
         val idx = cleaned.indexOf(marker)
         if (idx >= 0) {

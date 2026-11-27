@@ -268,7 +268,11 @@ fun SettingsScreen(
                                 },
                                 shape = RoundedCornerShape(12.dp),
                             ) {
-                                Text(if (savedOwnerName) "✓" else stringResource(R.string.action_save), fontWeight = FontWeight.Bold)
+                                if (savedOwnerName) {
+                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                } else {
+                                    Text(stringResource(R.string.action_save), fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }

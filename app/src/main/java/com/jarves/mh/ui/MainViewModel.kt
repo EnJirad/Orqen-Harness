@@ -7050,9 +7050,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         lastError: String?,
     ): String = if (status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
         if (isThaiUiLanguage()) {
-            "✅ งานเสร็จสมบูรณ์แล้ว! โปรเจกต์ '$projectName' ดำเนินการ '${taskTitle}' เสร็จเรียบร้อยครับ ($taskId)"
+            "งานเสร็จสมบูรณ์แล้ว! โปรเจกต์ '$projectName' ดำเนินการ '${taskTitle}' เสร็จเรียบร้อยครับ ($taskId)"
         } else {
-            "✅ Task Completed! Project '$projectName' finished '${taskTitle}' ($taskId)"
+            "Task Completed! Project '$projectName' finished '${taskTitle}' ($taskId)"
         }
     } else {
         if (isThaiUiLanguage()) {
@@ -7354,7 +7354,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 projectId = activeProj.id,
                                 senderSlot = AgentSlot.AGENT_1,
                                 senderName = agentNameFor(AgentSlot.AGENT_1),
-                                text = "▶️ รับทราบครับ กำลังทำงานต่อจากจุดที่ค้างไว้ (${resumableTask.taskId}: ${resumableTask.title}) ทันทีครับ",
+                                text = "รับทราบครับ กำลังทำงานต่อจากจุดที่ค้างไว้ (${resumableTask.taskId}: ${resumableTask.title}) ทันทีครับ",
                                 messageType = GroupMessageType.PROGRESS_UPDATE,
                                 workStatus = "Working",
                             )
@@ -7426,14 +7426,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } else null
                     val completionMsg = aiFinalSummary ?: when {
                         result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && builtApk != null ->
-                            "🎉 แอป '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถกดปุ่มติดตั้ง APK ด้านล่างเพื่อลงเครื่องทดสอบได้ทันที (ไฟล์ถูกเก็บไว้ในแถบ Files: apk/${builtApk.name})"
+                            "แอป '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถกดปุ่มติดตั้ง APK ด้านล่างเพื่อลงเครื่องทดสอบได้ทันที (ไฟล์ถูกเก็บไว้ในแถบ Files: apk/${builtApk.name})"
                         result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && webEntryRel != null ->
-                            "🎉 เว็บโปรเจกต์ '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม กดปุ่มเปิดดู Preview ด้านล่างหรือแตะที่ไฟล์ `$webEntryRel` เพื่อตรวจสอบได้เลยครับ"
+                            "เว็บโปรเจกต์ '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม กดปุ่มเปิดดู Preview ด้านล่างหรือแตะที่ไฟล์ `$webEntryRel` เพื่อตรวจสอบได้เลยครับ"
                         result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED -> {
                             val fileListText = if (deliveredFiles.isNotEmpty()) {
-                                "\n📁 ไฟล์ผลงานพร้อมตรวจ: " + deliveredFiles.joinToString(", ") { "`$it`" }
+                                "\nไฟล์ผลงานพร้อมตรวจ: " + deliveredFiles.joinToString(", ") { "`$it`" }
                             } else ""
-                            "🎉 โปรเจกต์ '${activeProj.name}' ดำเนินการเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถเข้าไปตรวจสอบผลงานในแถบ Files ได้ทันทีครับ$fileListText"
+                            "โปรเจกต์ '${activeProj.name}' ดำเนินการเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถเข้าไปตรวจสอบผลงานในแถบ Files ได้ทันทีครับ$fileListText"
                         }
                         else -> formatTeamTaskCompletionMessage(activeProj.name, result.title, result.taskId, result.status, result.lastError)
                     }
@@ -7769,9 +7769,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun notifyTeamTaskCompleted(projectName: String, summary: String) {
         val app = getApplication<Application>()
         val title = if (isThaiUiLanguage()) {
-            "🎉 งานเสร็จสมบูรณ์: $projectName"
+            "งานเสร็จสมบูรณ์: $projectName"
         } else {
-            "🎉 Task Completed: $projectName"
+            "Task Completed: $projectName"
         }
         // Post directly via NotificationManager on a high-importance channel so the top Android
         // status bar notification ALWAYS appears reliably even if the app is backgrounded!
@@ -7980,14 +7980,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             it.copy(
                                 teamGitPushRunning = false,
                                 teamActiveProjectHasGitRemote = true,
-                                toastMessage = "✅ Push โปรเจกต์ '${project.name}' ขึ้น Git เรียบร้อยแล้ว",
+                                toastMessage = "Push โปรเจกต์ '${project.name}' ขึ้น Git เรียบร้อยแล้ว",
                             )
                         }
                         appendProjectTeamMessage(
                             projectId = project.id,
                             senderSlot = AgentSlot.AGENT_1,
                             senderName = agentNameFor(AgentSlot.AGENT_1),
-                            text = "✅ Push โค้ดโปรเจกต์ '${project.name}' ขึ้น Git เรียบร้อยแล้วครับ",
+                            text = "Push โค้ดโปรเจกต์ '${project.name}' ขึ้น Git เรียบร้อยแล้วครับ",
                             messageType = GroupMessageType.SYSTEM,
                         )
                     } else {
@@ -9187,7 +9187,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             else -> rawText.trim().take(600)
         }
         return if (writtenFiles.isNotEmpty()) {
-            "$base\n\n📁 ${writtenFiles.joinToString(", ")}"
+            "$base\n\nไฟล์ที่อัปเดต: ${writtenFiles.joinToString(", ")}"
         } else {
             base
         }
@@ -9561,7 +9561,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 val ceoWorkDetails = _state.value.teamAgentLiveLogs[ceo.config.slot].orEmpty()
                 val ceoChatText = if (ceoResult.isError) {
-                    "⚠️ ${ceoResult.responseText}"
+                    "[Warning] ${ceoResult.responseText}"
                 } else {
                     val summary = cleanChatSummary(ceoResult.responseText)
                     if (ceo.config.slot != coder.config.slot && !summary.contains("@${coder.config.name}")) {
@@ -9656,7 +9656,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val coderWorkDetails = _state.value.teamAgentLiveLogs[coder.config.slot].orEmpty() +
                         coderResult.writtenFiles.map { "Updated file: $it" }
                     val coderChatText = if (coderResult.isError) {
-                        "⚠️ ${coderResult.responseText}"
+                        "[Warning] ${coderResult.responseText}"
                     } else {
                         val summary = cleanChatSummary(coderResult.responseText, coderResult.writtenFiles)
                         if (coder.config.slot != reviewer.config.slot && !summary.contains("@${reviewer.config.name}")) {
@@ -9735,7 +9735,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     val reviewerWorkDetails = _state.value.teamAgentLiveLogs[reviewer.config.slot].orEmpty()
                     val reviewChatText = if (reviewResult.isError) {
-                        "⚠️ ${reviewResult.responseText}"
+                        "[Warning] ${reviewResult.responseText}"
                     } else {
                         val summary = cleanChatSummary(reviewResult.responseText)
                         when {
@@ -9773,7 +9773,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (!taskHadFatalError && _state.value.teamIsRunning) {
                     val ownerSummary = buildString {
                         appendLine("@$ownerName ทีม AI ทำงานและตรวจสอบระบบเสร็จสมบูรณ์แล้วครับ!")
-                        appendLine("📋 รายงานสรุปงานเสร็จสิ้นถึง $ownerName")
+                        appendLine("รายงานสรุปงานเสร็จสิ้นถึง $ownerName")
                         appendLine("• คำสั่ง: ${accumulatedRequirements.joinToString(" / ").take(180)}")
                         if (allWrittenFiles.isNotEmpty()) {
                             appendLine("• ไฟล์ที่สร้าง/แก้ไข (${allWrittenFiles.size} ไฟล์): ${allWrittenFiles.joinToString(", ")}")
