@@ -216,12 +216,17 @@ class TeamAgentRunner(
                 agyRes
             }
         } else {
+            val apiPrompt = if (enableWorkspaceTools && !readOnlyTools) {
+                antigravityWorkspacePrompt(safeSlug, effectivePrompt)
+            } else {
+                effectivePrompt
+            }
             runApiProvider(
                 agent = agent,
                 providerConfig = providerConfig,
                 workspaceDir = safeWorkspaceDir,
                 projectSlug = safeSlug,
-                prompt = effectivePrompt,
+                prompt = apiPrompt,
                 imageFiles = validImages,
                 taskId = taskId,
                 stepId = stepId,

@@ -221,4 +221,28 @@ class ManagerWorkspaceAndParallelCoderTest {
         assertTrue(File(ws, "src/agent-02.kt").isFile)
         assertTrue(File(ws, "src/agent-03.kt").isFile)
     }
+
+    @Test
+    fun `LocalWorkspaceWebServer hosts workspace index html and assets on 127_0_0_1`() {
+        val ws = tempFolder.newFolder("web-host-ws")
+        File(ws, "index.html").writeText("<!doctype html><html><body><h1>ORQEN Web</h1></body></html>")
+        File(ws, "app.js").writeText("console.log('ok');")
+
+        com.jarves.mh.runtime.LocalWorkspaceWebServer(ws).use { server ->
+            val url = server.start()
+            assertTrue("Expected localhost URL, got $url", url.startsWith("http://127.0.0.1:"))
+
+            val htmlConn = java.net.URL("$url/").openConnection() as java.net.HttpURLConnection
+            assertEquals(200, htmlConn.responseCode)
+            assertTrue(htmlConn.contentType.contains("text/html"))
+            val html = htmlConn.inputStream.bufferedReader().readText()
+            assertTrue(html.contains("ORQEN Web"))
+
+            val jsConn = java.net.URL("$url/app.js").openConnection() as java.net.HttpURLConnection
+            assertEquals(200, jsConn.responseCode)
+            assertTrue(jsConn.contentType.contains("javascript"))
+            val js = jsConn.inputStream.bufferedReader().readText()
+            assertTrue(js.contains("console.log('ok')"))
+        }
+    }
 }

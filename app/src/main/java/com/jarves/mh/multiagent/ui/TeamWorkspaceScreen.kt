@@ -203,6 +203,7 @@ fun TeamWorkspaceScreen(
     initialChatDraft: String = "",
     onChatDraftChanged: (String) -> Unit = {},
     onStartImplementation: (() -> Unit)? = null,
+    onCancelThinkingAgent: (AgentSlot) -> Unit = {},
 ) {
     var activeTab by rememberSaveable(project.id) { mutableStateOf(TeamWorkspaceTab.CHAT) }
     var showTeamMcpSettings by remember { mutableStateOf(false) }
@@ -316,6 +317,7 @@ fun TeamWorkspaceScreen(
                         initialDraftText = initialChatDraft,
                         onDraftTextChanged = onChatDraftChanged,
                         onStartImplementation = onStartImplementation,
+                        onCancelThinkingAgent = onCancelThinkingAgent,
                         onSendMessageWithImages = onSendGroupMessageWithImages,
                         onSendMessage = onSendGroupMessage,
                         onBack = onBackToFolders,
@@ -1371,6 +1373,26 @@ private fun TeamDualPreviewTab(
                 .firstOrNull { it.isFile && it.extension.equals("html", ignoreCase = true) }
     }
 
+    // Automatic local HTTP server hosting for Web Projects (http://127.0.0.1:<port>)
+    val webServeRoot = remember(indexHtmlFile, workspaceDir) {
+        indexHtmlFile?.parentFile ?: workspaceDir
+    }
+    var localHostedUrl by remember(webServeRoot) { mutableStateOf("") }
+    DisposableEffect(webServeRoot, indexHtmlFile != null) {
+        if (indexHtmlFile == null) {
+            localHostedUrl = ""
+            onDispose {}
+        } else {
+            val server = com.jarves.mh.runtime.LocalWorkspaceWebServer(webServeRoot)
+            val startedUrl = runCatching { server.start() }.getOrDefault("")
+            localHostedUrl = startedUrl
+            onDispose {
+                runCatching { server.close() }
+                localHostedUrl = ""
+            }
+        }
+    }
+
     val detectedAppScreens = remember(workspaceDir, reloadNonce) {
         workspaceDir.walkTopDown()
             .maxDepth(7)
@@ -1539,7 +1561,18 @@ private fun TeamDualPreviewTab(
                     OutlinedTextField(
                         value = webUrlInput,
                         onValueChange = { webUrlInput = it },
-                        placeholder = { Text(if (indexHtmlFile != null) "Auto: ${indexHtmlFile.name} (or http://127.0.0.1:3000)" else "http://127.0.0.1:3000", fontSize = 11.sp) },
+                        placeholder = {
+                            Text(
+                                text = when {
+                                    localHostedUrl.isNotBlank() -> "Local Host: $localHostedUrl"
+                                    indexHtmlFile != null -> "Auto: ${indexHtmlFile.name} (or http://127.0.0.1:3000)"
+                                    else -> "http://127.0.0.1:3000"
+                                },
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp),
@@ -1559,7 +1592,7 @@ private fun TeamDualPreviewTab(
                         }
                     }
                 } else {
-                    val targetUrl = webUrlInput.trim()
+                    val targetUrl = webUrlInput.trim().ifBlank { localHostedUrl }
                     val renderKey = "web|$reloadNonce|$workspaceFingerprint|$targetUrl|${indexHtmlFile?.absolutePath}|${indexHtmlFile?.lastModified()}"
                     AndroidView(
                         modifier = Modifier.weight(1f).fillMaxWidth(),

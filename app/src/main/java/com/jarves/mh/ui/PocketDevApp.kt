@@ -2795,6 +2795,7 @@ private fun RootScreenHost(
                                         targetSlot = null,
                                     )
                                 },
+                                onCancelThinkingAgent = viewModel::cancelTeamChatAgent,
                             )
                         }
                         TeamScreenMode.AGENT_DETAIL -> {

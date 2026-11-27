@@ -7404,15 +7404,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     activeSupervisedTaskId = result.taskId
                     _state.update { it.copy(activeSupervisedTaskId = result.taskId) }
                     val wsDir = File(getApplication<Application>().filesDir, "team_workspaces/${activeProj.id}")
-                    val builtApk = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                    val apkBuildResult = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
                         buildAndLocateTeamAndroidApk(activeProj)
-                    } else null
+                    } else TeamApkBuildResult()
+                    val builtApk = apkBuildResult.apkFile
                     val webEntryRel = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && builtApk == null) {
                         listOf("index.html", "dist/index.html", "build/index.html", "public/index.html", "src/index.html")
                             .firstOrNull { File(wsDir, it).isFile }
                     } else null
+                    val taskStepsForSummary = withContext(Dispatchers.IO) {
+                        orqenTaskStore.listStepsForTask(result.taskId)
+                    }
+                    val checkpointModifiedFiles = withContext(Dispatchers.IO) {
+                        orqenTaskStore.listCheckpointsForTask(result.taskId)
+                            .flatMap { it.modifiedFiles }
+                            .filter { it.isNotBlank() && !it.startsWith(".orqen/") }
+                            .distinct()
+                    }
                     val deliveredFiles = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
-                        wsDir.walkTopDown()
+                        val recentWsFiles = wsDir.walkTopDown()
                             .maxDepth(5)
                             .filter { f ->
                                 f.isFile &&
@@ -7423,9 +7433,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     f.name != ".orqen_chat.json"
                             }
                             .sortedByDescending { it.lastModified() }
-                            .take(5)
+                            .take(6)
                             .mapNotNull { runCatching { it.relativeTo(wsDir).path }.getOrNull() }
                             .toList()
+                        (checkpointModifiedFiles + recentWsFiles).distinct().take(8)
                     } else emptyList()
 
                     val aiFinalSummary = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
@@ -7437,25 +7448,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             existingTask = result,
                             deliveredFiles = deliveredFiles,
                             builtApkName = builtApk?.name,
+                            builtApkRelPath = apkBuildResult.relativePath,
+                            apkBuildError = apkBuildResult.buildError,
                             webEntryRel = webEntryRel,
                         )
                     } else null
-                    val completionMsg = aiFinalSummary ?: when {
-                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && builtApk != null ->
-                            "แอป '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถกดปุ่มติดตั้ง APK ด้านล่างเพื่อลงเครื่องทดสอบได้ทันที (ไฟล์ถูกเก็บไว้ในแถบ Files: apk/${builtApk.name})"
-                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && webEntryRel != null ->
-                            "เว็บโปรเจกต์ '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม กดปุ่มเปิดดู Preview ด้านล่างหรือแตะที่ไฟล์ `$webEntryRel` เพื่อตรวจสอบได้เลยครับ"
-                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED -> {
-                            val fileListText = if (deliveredFiles.isNotEmpty()) {
-                                "\nไฟล์ผลงานพร้อมตรวจ: " + deliveredFiles.joinToString(", ") { "`$it`" }
-                            } else ""
-                            "โปรเจกต์ '${activeProj.name}' ดำเนินการเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถเข้าไปตรวจสอบผลงานในแถบ Files ได้ทันทีครับ$fileListText"
+                    val deterministicSummaryDetails = buildString {
+                        val completedSteps = taskStepsForSummary.filter {
+                            it.status == com.jarves.mh.multiagent.persistence.StepStatus.COMPLETED
                         }
+                        if (completedSteps.isNotEmpty()) {
+                            appendLine("\nสรุปสิ่งที่ดำเนินการและแก้ไข:")
+                            completedSteps.take(6).forEach { st ->
+                                val cleanNote = st.outputSummary
+                                    .replace("REVIEW_APPROVED", "")
+                                    .replace("TESTS_PASSED", "")
+                                    .trim()
+                                    .replace(Regex("\\s+"), " ")
+                                    .take(180)
+                                appendLine("- ${st.title}${if (cleanNote.isNotBlank()) ": $cleanNote" else ""}")
+                            }
+                        }
+                        if (deliveredFiles.isNotEmpty()) {
+                            appendLine("\nไฟล์ที่แก้ไข/อัปเดต:")
+                            deliveredFiles.take(6).forEach { f -> appendLine("- `$f`") }
+                        }
+                        if (builtApk != null) {
+                            val displayApkRel = apkBuildResult.relativePath ?: "app/build/outputs/apk/debug/app-debug.apk"
+                            appendLine("\nไฟล์ APK พร้อมติดตั้ง: `$displayApkRel` (กดปุ่มติดตั้ง APK ด้านล่างได้เลย)")
+                        } else if (!apkBuildResult.buildError.isNullOrBlank()) {
+                            appendLine("\nหมายเหตุการบิลด์ APK: ไม่สามารถสร้าง APK อัตโนมัติได้ (${apkBuildResult.buildError.take(240)})")
+                        }
+                    }.trim()
+                    val completionMsg = aiFinalSummary?.let { aiText ->
+                        val needsApkNote = builtApk != null && !aiText.contains("apk", ignoreCase = true)
+                        val needsErrNote = builtApk == null && !apkBuildResult.buildError.isNullOrBlank() && !aiText.contains("apk", ignoreCase = true)
+                        buildString {
+                            append(aiText.trim())
+                            if (needsApkNote) {
+                                append("\n\nไฟล์ APK พร้อมติดตั้ง: `${apkBuildResult.relativePath ?: "app/build/outputs/apk/debug/app-debug.apk"}` (กดปุ่มติดตั้งด้านล่างได้เลยครับ)")
+                            } else if (needsErrNote) {
+                                append("\n\nหมายเหตุการบิลด์ APK: บิลด์ไม่สำเร็จ (${apkBuildResult.buildError!!.take(220)})")
+                            }
+                        }
+                    } ?: when {
+                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && builtApk != null ->
+                            "งานในโปรเจกต์ '${activeProj.name}' เสร็จสมบูรณ์ ตรวจสอบผ่าน และบิลด์ Debug APK เรียบร้อยแล้วครับ!\n$deterministicSummaryDetails"
+                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && webEntryRel != null ->
+                            "เว็บโปรเจกต์ '${activeProj.name}' ดำเนินการและตรวจสอบเสร็จสมบูรณ์แล้วครับ! กดเปิดดู Preview ด้านล่างหรือแตะไฟล์ `$webEntryRel` ได้เลย\n$deterministicSummaryDetails"
+                        result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED ->
+                            "โปรเจกต์ '${activeProj.name}' ดำเนินการและตรวจสอบเสร็จสมบูรณ์แล้วครับ!\n$deterministicSummaryDetails"
                         else -> formatTeamTaskCompletionMessage(activeProj.name, result.title, result.taskId, result.status, result.lastError)
                     }
                     val completionWorkDetails = buildList {
                         if (webEntryRel != null) add("PREVIEW_READY")
-                        if (builtApk != null) add("APK: apk/${builtApk.name}")
+                        if (builtApk != null) add("APK: ${apkBuildResult.relativePath ?: "apk/${builtApk.name}"}")
                         deliveredFiles.forEach { add("File: $it") }
                     }
                     appendProjectTeamMessage(
@@ -7615,6 +7662,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         existingTask: com.jarves.mh.multiagent.persistence.TaskEntity? = null,
         deliveredFiles: List<String> = emptyList(),
         builtApkName: String? = null,
+        builtApkRelPath: String? = null,
+        apkBuildError: String? = null,
         webEntryRel: String? = null,
     ): String? {
         val enabledAgents = _state.value.teamAgents.filter { it.config.isEnabled }
@@ -7678,20 +7727,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 appendLine("Do NOT ask the Owner for permission to start — execution is starting immediately.")
             } else {
                 appendLine("TASK: All work and verification for project '${project.name}' (objective: \"$objective\") has COMPLETED successfully with zero remaining blockers!")
+                if (taskSteps.isNotEmpty()) {
+                    appendLine("Completed steps and real changes:")
+                    taskSteps.forEach { st ->
+                        val summary = st.outputSummary
+                            .replace("REVIEW_APPROVED", "")
+                            .replace("TESTS_PASSED", "")
+                            .trim()
+                            .replace(Regex("\\s+"), " ")
+                            .take(260)
+                        appendLine("- #${st.sequenceNumber} ${st.title} (${st.status}): $summary")
+                    }
+                }
                 if (deliveredFiles.isNotEmpty()) {
-                    appendLine("Verified deliverable files: ${deliveredFiles.joinToString(", ")}")
+                    appendLine("Verified modified/deliverable files: ${deliveredFiles.joinToString(", ")}")
                 }
                 if (builtApkName != null) {
-                    appendLine("Android Debug APK built and ready to install right below this message: apk/$builtApkName")
+                    appendLine("Android Debug APK built and ready to install right below this message: ${builtApkRelPath ?: "app/build/outputs/apk/debug/app-debug.apk"} (apk/$builtApkName)")
+                } else if (!apkBuildError.isNullOrBlank()) {
+                    appendLine("Android APK build failed with error: ${apkBuildError.take(280)}")
                 }
                 if (webEntryRel != null) {
                     appendLine("Web entry file ready for live Preview right below this message: $webEntryRel")
                 }
                 appendLine()
-                appendLine("Write a warm, clear, natural final delivery summary to $ownerName confirming:")
-                appendLine("1. Everything requested is complete, tested, and verified with no errors.")
-                appendLine("2. Highlight the key deliverables created.")
-                appendLine("3. Invite $ownerName to tap the APK install button / Web Preview button / Files tab below to try it out.")
+                appendLine("Write a clear, natural, detailed final delivery summary to $ownerName confirming:")
+                appendLine("1. Specifically what was fixed/implemented and where (mention exact changes and modified files).")
+                appendLine("2. Verification & QA results.")
+                appendLine("3. If APK was built, invite $ownerName to tap the Install APK button right below this message (or mention the exact APK build error if it failed).")
             }
         }
 
@@ -8422,20 +8485,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private data class TeamApkBuildResult(
+        val apkFile: File? = null,
+        val relativePath: String? = null,
+        val buildError: String? = null,
+    )
+
     /**
      * Checks if [project] is an Android project; if so, finds an already-built debug APK or builds
-     * one automatically inside PRoot using PocketDev's Gradle command so Owner can install it directly from Chat!
+     * one automatically inside PRoot with live Manager status updates so Owner sees real progress
+     * and receives an installable APK button (`app/build/outputs/apk/debug/app-debug.apk`) directly in Chat!
      */
-    private suspend fun buildAndLocateTeamAndroidApk(project: Project): File? = withContext(Dispatchers.IO) {
+    private suspend fun buildAndLocateTeamAndroidApk(project: Project): TeamApkBuildResult = withContext(Dispatchers.IO) {
         val workspace = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}")
             .apply { mkdirs() }
             .canonicalFile
+        val appGradleKts = File(workspace, "app/build.gradle.kts")
+        val appGradle = File(workspace, "app/build.gradle")
         val isAndroidProj = project.type == ProjectType.ANDROID ||
-            File(workspace, "app/build.gradle").isFile ||
-            File(workspace, "app/build.gradle.kts").isFile ||
+            appGradle.isFile ||
+            appGradleKts.isFile ||
             File(workspace, "settings.gradle").isFile ||
             File(workspace, "settings.gradle.kts").isFile
-        if (!isAndroidProj) return@withContext null
+        if (!isAndroidProj) return@withContext TeamApkBuildResult()
 
         fun findNewestApk(): File? {
             val apkRoot = File(workspace, "app/build/outputs/apk")
@@ -8445,45 +8517,130 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .maxByOrNull { it.lastModified() }
         }
 
+        fun publishCanonicalApk(built: File): TeamApkBuildResult {
+            val safeSlug = project.slug.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "team-project" }
+            val standardDebugApk = File(workspace, "app/build/outputs/apk/debug/app-debug.apk")
+            if (built.canonicalPath != standardDebugApk.canonicalPath) {
+                runCatching {
+                    standardDebugApk.parentFile?.mkdirs()
+                    built.copyTo(standardDebugApk, overwrite = true)
+                }
+            }
+            val visibleApk = File(workspace, "apk/$safeSlug-debug.apk").apply { parentFile?.mkdirs() }
+            runCatching { built.copyTo(visibleApk, overwrite = true) }
+            val finalFile = when {
+                standardDebugApk.isFile && standardDebugApk.length() > 0L -> standardDebugApk
+                visibleApk.isFile && visibleApk.length() > 0L -> visibleApk
+                else -> built
+            }
+            val rel = runCatching { finalFile.relativeTo(workspace).path }.getOrDefault("app/build/outputs/apk/debug/app-debug.apk")
+            return TeamApkBuildResult(apkFile = finalFile, relativePath = rel)
+        }
+
         val existingApk = findNewestApk()
         val latestSrcMod = workspace.walkTopDown()
             .maxDepth(6)
-            .filter { it.isFile && !it.path.contains("/build/") && !it.path.contains("/.git/") && !it.path.contains("/.gradle/") && it.name != ".orqen_chat.json" }
+            .filter {
+                it.isFile &&
+                    !it.path.contains("/build/") &&
+                    !it.path.contains("/.git/") &&
+                    !it.path.contains("/.gradle/") &&
+                    !it.path.contains("/.orqen/") &&
+                    !it.path.contains("/apk/") &&
+                    it.name != ".orqen_chat.json"
+            }
             .maxOfOrNull { it.lastModified() } ?: 0L
 
         // If an APK already exists and is newer than all source files, return it immediately!
         if (existingApk != null && existingApk.lastModified() >= latestSrcMod) {
-            return@withContext existingApk
+            return@withContext publishCanonicalApk(existingApk)
         }
 
-        // Otherwise build the real Debug APK inside PRoot!
-        runCatching {
-            val installed = installer.installedRuntime()
-            val safeSlug = project.slug.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "team-project" }
-            val offlineFlag = if (existingApk != null) "--offline" else ""
-            val buildCmd = "timeout 15m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 $offlineFlag --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 assembleDebug --console=plain --stacktrace"
+        val isThai = isThaiUiLanguage()
+        val managerName = agentNameFor(AgentSlot.AGENT_1)
+        val buildStatusText = if (isThai) "กำลังบิลด์ Debug APK ให้พร้อมติดตั้ง..." else "Building Debug APK..."
+        withContext(Dispatchers.Main.immediate) {
+            updateAgentActivity(AgentSlot.AGENT_1, ActivityType.BUILDING_APK, project.name, buildStatusText)
+            _state.update { it.copy(teamTypingAgentName = managerName, teamTypingAgentSlot = AgentSlot.AGENT_1) }
+            appendAgentLiveLog(AgentSlot.AGENT_1, buildStatusText)
+            updateTeamForegroundNotification(project.name, buildStatusText)
+        }
+
+        val gradleScriptText = runCatching {
+            when {
+                appGradleKts.isFile -> appGradleKts.readText()
+                appGradle.isFile -> appGradle.readText()
+                else -> ""
+            }
+        }.getOrDefault("")
+        val hasOnlineFlavor = gradleScriptText.contains("productFlavors") &&
+            (gradleScriptText.contains("\"online\"") || gradleScriptText.contains("'online'"))
+        val assembleTask = if (hasOnlineFlavor) "assembleOnlineDebug" else "assembleDebug"
+
+        val safeSlug = project.slug.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "team-project" }
+        var lastBuildError: String? = null
+
+        suspend fun runGradleApkBuild(offline: Boolean): Boolean {
+            val timeoutArg = if (offline) "8m" else "15m"
+            val offlineFlag = if (offline) "--offline" else ""
+            val buildCmd = "timeout $timeoutArg gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 $offlineFlag --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 $assembleTask --console=plain --stacktrace"
             val outFile = File(getApplication<Application>().cacheDir, "team-apk-build-${System.nanoTime()}.log")
-            val proc = installer.process(
-                proot = installed.proot,
-                rootfs = installed.rootfs,
-                workspace = workspace,
-                environment = emptyMap(),
-                guestCommand = listOf("/bin/sh", "-lc", buildCmd),
-                guestWorkspacePath = "/workspace/$safeSlug",
-                emulateHardLinks = false,
-                outputFile = outFile,
-            )
-            proc.waitFor()
-            runCatching { outFile.delete() }
+            return runCatching {
+                val installed = installer.installedRuntime()
+                val proc = installer.process(
+                    proot = installed.proot,
+                    rootfs = installed.rootfs,
+                    workspace = workspace,
+                    environment = emptyMap(),
+                    guestCommand = listOf("/bin/sh", "-lc", buildCmd),
+                    guestWorkspacePath = "/workspace/$safeSlug",
+                    emulateHardLinks = false,
+                    outputFile = outFile,
+                )
+                try {
+                    runCatching { proc.outputStream.close() }
+                    val exitCode = proc.waitFor()
+                    val tail = runCatching { outFile.readTailText(4096).trim() }.getOrDefault("")
+                    if (exitCode == 0) {
+                        true
+                    } else {
+                        val errLine = tail.lineSequence()
+                            .filter { it.startsWith("e: ") || it.contains("FAILURE:") || it.contains("What went wrong:") || it.contains("Execution failed") }
+                            .take(4)
+                            .joinToString(" | ")
+                            .ifBlank { tail.takeLast(240) }
+                        lastBuildError = "Gradle $assembleTask exited with code $exitCode: $errLine"
+                        false
+                    }
+                } finally {
+                    runCatching { proc.destroy() }
+                    runCatching { outFile.delete() }
+                }
+            }.getOrElse { err ->
+                lastBuildError = err.message ?: err.javaClass.simpleName
+                false
+            }
         }
+
+        val tryOfflineFirst = existingApk != null
+        var ok = runGradleApkBuild(offline = tryOfflineFirst)
+        if (!ok && tryOfflineFirst && (lastBuildError?.contains("offline", ignoreCase = true) == true || lastBuildError?.contains("Could not resolve", ignoreCase = true) == true)) {
+            withContext(Dispatchers.Main.immediate) {
+                appendAgentLiveLog(AgentSlot.AGENT_1, "Offline cache miss — retrying Gradle $assembleTask online...")
+            }
+            ok = runGradleApkBuild(offline = false)
+        }
+
+        withContext(Dispatchers.Main.immediate) {
+            _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+        }
+
         val built = findNewestApk()
-        if (built != null && built.isFile && built.length() > 0L) {
-            val safeSlug = project.slug.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "team-project" }
-            val visibleApk = File(workspace, "apk/$safeSlug-debug.apk").apply { parentFile?.mkdirs() }
-            runCatching { built.copyTo(visibleApk, overwrite = true) }
-            if (visibleApk.isFile && visibleApk.length() > 0L) return@withContext visibleApk
+        if (ok && built != null && built.isFile && built.length() > 0L) {
+            publishCanonicalApk(built)
+        } else {
+            TeamApkBuildResult(apkFile = null, buildError = lastBuildError ?: "Debug APK not found after $assembleTask")
         }
-        built
     }
 
     fun clearTeamTerminal() {
@@ -8784,6 +8941,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    private val activeTeamChatRequestIds = java.util.concurrent.ConcurrentHashMap<AgentSlot, String>()
+
+    fun cancelTeamChatAgent(slot: AgentSlot) {
+        activeTeamChatJobs.remove(slot)?.cancel()
+        activeTeamChatRequestIds.remove(slot)?.let { reqId ->
+            teamAgentRunner.cancelRequest(reqId)
+        }
+        _state.update { cur ->
+            val remainingTyping = cur.teamTypingAgents - slot
+            val nextTyping = remainingTyping.entries.lastOrNull()
+            val clearStream = cur.teamStreamingAgentSlot == slot
+            cur.copy(
+                teamTypingAgents = remainingTyping,
+                teamTypingAgentName = nextTyping?.value,
+                teamTypingAgentSlot = nextTyping?.key,
+                teamStreamingAgentName = if (clearStream) null else cur.teamStreamingAgentName,
+                teamStreamingAgentSlot = if (clearStream) null else cur.teamStreamingAgentSlot,
+                teamStreamingText = if (clearStream) "" else cur.teamStreamingText,
+            )
+        }
+    }
+
     private fun launchConcurrentAgentChatTurn(
         project: Project,
         responder: AgentState,
@@ -8859,6 +9038,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLine("Reply naturally in the same language as $ownerName, addressing them as $ownerName, clearly helping refine their idea or answering their question concisely.")
                 }
                 val providerCfg = _state.value.providerConfigs.firstOrNull { it.id == responder.config.providerId }
+                val chatReqId = "chat-${responder.config.slot.id}-${System.nanoTime()}"
+                activeTeamChatRequestIds[responder.config.slot] = chatReqId
                 val res = teamAgentRunner.executeTurn(
                     agent = responder,
                     providerConfig = providerCfg,
@@ -8870,6 +9051,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     knownAgyModels = _state.value.antigravityModels,
                     enableWorkspaceTools = true,
                     readOnlyTools = true,
+                    requestId = chatReqId,
                     onProgress = { chunk ->
                         val cleanedChunk = chunk.trim()
                         if (cleanedChunk.isNotBlank() && !cleanedChunk.startsWith("Cache hit")) {
@@ -8951,6 +9133,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onReplyPosted?.invoke(finalReply)
             } finally {
                 activeTeamChatJobs.remove(responder.config.slot)
+                activeTeamChatRequestIds.remove(responder.config.slot)
                 _state.update {
                     val remainingTyping = it.teamTypingAgents - responder.config.slot
                     val nextTyping = remainingTyping.entries.lastOrNull()
@@ -9027,24 +9210,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 viewModelScope.launch {
                     updateAgentActivity(AgentSlot.AGENT_1, ActivityType.BUILDING_APK, "Build Debug APK", "กำลังบิ้ว Debug APK...")
-                    val builtApk = withContext(Dispatchers.IO) { buildAndLocateTeamAndroidApk(activeProj) }
+                    val apkRes = withContext(Dispatchers.IO) { buildAndLocateTeamAndroidApk(activeProj) }
+                    val builtApk = apkRes.apkFile
                     updateAgentActivity(AgentSlot.AGENT_1, ActivityType.WAITING, "", "พร้อมใช้งาน")
                     if (builtApk != null && builtApk.isFile) {
+                        val rel = apkRes.relativePath ?: "app/build/outputs/apk/debug/app-debug.apk"
                         appendProjectTeamMessage(
                             projectId = projectId,
                             senderSlot = AgentSlot.AGENT_1,
                             senderName = spvName,
-                            text = "บิ้ว Debug APK ของโปรเจกต์ '${activeProj.name}' เสร็จสมบูรณ์แล้วครับ $ownerName สามารถกดปุ่มติดตั้ง APK ด้านล่างได้ทันที",
+                            text = "บิ้ว Debug APK ของโปรเจกต์ '${activeProj.name}' เสร็จสมบูรณ์แล้วครับ $ownerName (`$rel`) สามารถกดปุ่มติดตั้ง APK ด้านล่างได้ทันที",
                             messageType = GroupMessageType.COMPLETION_REPORT,
                             apkFilePath = builtApk.absolutePath,
                             workStatus = "APK Ready",
                         )
                     } else {
+                        val errDetail = apkRes.buildError?.take(260)?.let { "\nรายละเอียด: $it" } ?: ""
                         appendProjectTeamMessage(
                             projectId = projectId,
                             senderSlot = AgentSlot.AGENT_1,
                             senderName = spvName,
-                            text = "ไม่พบไฟล์ APK ที่บิ้วสำเร็จในโปรเจกต์นี้ครับ $ownerName (อาจไม่ใช่โปรเจกต์ Android หรือยังมีจุดคอมไพล์ผิดพลาด ตรวจสอบได้ในแท็บ Terminal)",
+                            text = "ไม่พบไฟล์ APK ที่บิ้วสำเร็จในโปรเจกต์นี้ครับ $ownerName (อาจไม่ใช่โปรเจกต์ Android หรือยังมีจุดคอมไพล์ผิดพลาด ตรวจสอบได้ในแท็บ Terminal)$errDetail",
                             messageType = GroupMessageType.PROGRESS_UPDATE,
                         )
                     }

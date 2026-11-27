@@ -106,6 +106,7 @@ fun CentralGroupChatScreen(
     initialDraftText: String = "",
     onDraftTextChanged: (String) -> Unit = {},
     onStartImplementation: (() -> Unit)? = null,
+    onCancelThinkingAgent: (AgentSlot) -> Unit = {},
     onSendMessageWithImages: ((text: String, type: GroupMessageType, targetSlot: AgentSlot?, imageUris: List<Uri>) -> Unit)? = null,
     onSendMessage: (text: String, type: GroupMessageType, targetSlot: AgentSlot?) -> Unit,
     onBack: () -> Unit,
@@ -689,6 +690,7 @@ fun CentralGroupChatScreen(
                         agentName = thinkName,
                         agentSlot = thinkSlot,
                         agentIcon = thinkAgent?.let { AgentIconCatalog.iconFor(it.config) },
+                        onCancel = { onCancelThinkingAgent(thinkSlot) },
                     )
                 }
             }
@@ -1240,6 +1242,7 @@ private fun AiTypingWaveBubble(
     agentName: String,
     agentSlot: AgentSlot? = null,
     agentIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    onCancel: (() -> Unit)? = null,
 ) {
     val accent = agentAccentColor(agentSlot)
     Column(
@@ -1287,6 +1290,34 @@ private fun AiTypingWaveBubble(
                     fontWeight = FontWeight.Medium,
                     color = accent.copy(alpha = 0.9f),
                 )
+                if (onCancel != null) {
+                    Spacer(Modifier.width(4.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
+                        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
+                        modifier = Modifier.clickable(onClick = onCancel),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cancel",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(12.dp),
+                            )
+                            Text(
+                                text = "ยกเลิก",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
             }
         }
         Text(
