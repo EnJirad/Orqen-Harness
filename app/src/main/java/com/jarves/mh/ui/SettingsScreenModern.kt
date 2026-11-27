@@ -154,6 +154,9 @@ fun SettingsScreen(
     mcpServerCount: Int = 0,
     mcpToolCount: Int = 0,
     onOpenMcpManager: () -> Unit = {},
+    skillCount: Int = 0,
+    autoSkillsEnabled: Boolean = true,
+    onOpenSkillManager: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var expanded by rememberSaveable { mutableStateOf<SettingsSection?>(null) }
@@ -314,6 +317,55 @@ fun SettingsScreen(
                                     "$mcpServerCount servers • $mcpToolCount tools • SPV Permissions"
                                 } else {
                                     "Connect Neon, Git, GitHub, Postgres, Fetch & SPV Authorization"
+                                },
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            // AI Skills & Auto-Skill Management Card (Shared across AI Team & Solo Studio)
+            item {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenSkillManager() },
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text("AI Skills & Auto-Skill", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(
+                                text = if (autoSkillsEnabled) {
+                                    "Auto-Skill เปิดอยู่ · $skillCount สกิลพร้อมใช้งาน (AI Team & งานเดี่ยว)"
+                                } else {
+                                    "โหมดเลือกเอง · $skillCount สกิลในคลัง (เพิ่ม/นำเข้า SKILL.md ได้)"
                                 },
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

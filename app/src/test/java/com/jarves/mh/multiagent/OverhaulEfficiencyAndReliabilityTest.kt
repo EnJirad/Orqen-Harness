@@ -1016,6 +1016,57 @@ class OverhaulEfficiencyAndReliabilityTest {
         )
     }
 
+    // --- Test Q: Auto-Skill Project Detection, Custom SKILL.md Import & Manual Mode ---
+    @Test
+    fun testQ_AutoSkillDetectionCustomSkillImportAndPromptInjection() {
+        val manager = com.jarves.mh.skills.SkillManager(context = null)
+        assertTrue("Auto-Skill mode should be enabled by default", manager.autoSelectEnabled.value)
+
+        // 1. Android Compose project -> auto-detects Android & Compose + UI/UX skills
+        val androidDir = tmp.newFolder("skill-android-proj")
+        File(androidDir, "build.gradle.kts").writeText("plugins { id(\"com.android.application\") }")
+        File(androidDir, "AndroidManifest.xml").writeText("<manifest/>")
+        File(androidDir, "MainActivity.kt").writeText("class MainActivity")
+        val androidResolved = manager.resolveSkillsForWorkspace(androidDir, "Build a clean Android Compose UI")
+        assertTrue(androidResolved.isAutoMode)
+        assertTrue(
+            "Expected Android Compose skill to be auto-selected, got ${androidResolved.skills.map { it.id }}",
+            androidResolved.skills.any { it.id == "skill-android-compose" },
+        )
+
+        // 2. Modern Web project -> auto-detects Modern Web skill
+        val webDir = tmp.newFolder("skill-web-proj")
+        File(webDir, "package.json").writeText("""{"dependencies":{"react":"^18.0.0","vite":"^5.0.0"}}""")
+        File(webDir, "index.html").writeText("<html></html>")
+        val webResolved = manager.resolveSkillsForWorkspace(webDir, "Improve responsive landing page")
+        assertTrue(
+            "Expected Modern Web skill to be auto-selected, got ${webResolved.skills.map { it.id }}",
+            webResolved.skills.any { it.id == "skill-web-modern" },
+        )
+
+        // 3. Import custom SKILL.md with YAML frontmatter -> injected into prompt section
+        val customMd = """
+            ---
+            name: Thai E-Commerce Checkout
+            description: PromptPay QR & Thai VAT rules
+            tags: [promptpay, checkout, thai]
+            ---
+            Always validate 7% VAT and generate EMVCo PromptPay QR payloads.
+        """.trimIndent()
+        val imported = manager.importSkillFromMarkdown(customMd)
+        assertEquals("Thai E-Commerce Checkout", imported.name)
+        val promptBlock = manager.buildSkillsPromptSection(webDir, "Add PromptPay checkout")
+        assertTrue("Expected <active_skills> prompt block", promptBlock.contains("<active_skills"))
+        assertTrue("Expected imported custom skill in prompt block", promptBlock.contains("Thai E-Commerce Checkout"))
+
+        // 4. Manual mode respects explicit user toggles
+        manager.setAutoSelectEnabled(false)
+        manager.skills.value.forEach { manager.toggleSkill(it.id, it.id == imported.id) }
+        val manualResolved = manager.resolveSkillsForWorkspace(androidDir)
+        assertFalse(manualResolved.isAutoMode)
+        assertEquals(listOf(imported.id), manualResolved.skills.map { it.id })
+    }
+
     private fun locateRepoRoot(): File {
         var cur = File(System.getProperty("user.dir") ?: ".")
         repeat(4) {

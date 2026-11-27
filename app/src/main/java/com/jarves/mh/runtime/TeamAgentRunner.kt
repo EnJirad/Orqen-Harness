@@ -49,6 +49,7 @@ class TeamAgentRunner(
     private val installer: RuntimeInstaller,
     private val providerManager: ProviderManager,
     private val defaultPolicy: RequestExecutionPolicy = RequestExecutionPolicy(),
+    private val skillManager: com.jarves.mh.skills.SkillManager? = null,
 ) {
     private data class CachedTurnEntry(
         val result: TeamAgentExecutionResult,
@@ -131,10 +132,12 @@ class TeamAgentRunner(
         onProgress: suspend (String) -> Unit,
     ): TeamAgentExecutionResult = withContext(Dispatchers.IO) {
         val (safeWorkspaceDir, safeSlug) = resolveSafeWorkspace(workspaceDir, projectSlug)
+        val skillsBlock = skillManager?.buildSkillsPromptSection(safeWorkspaceDir, prompt).orEmpty()
+        val effectivePrompt = if (skillsBlock.isNotBlank()) "$skillsBlock\n$prompt" else prompt
         val validImages = imageFiles.filter { it.isFile && it.length() > 0L }.take(3)
         val cacheKey = if (enableCache && validImages.isEmpty()) {
             val wsSig = snapshotWorkspaceFiles(safeWorkspaceDir).hashCode()
-            "${agent.config.slot.id}|${agent.config.providerId}|${agent.config.modelId}|${prompt.hashCode()}|$wsSig"
+            "${agent.config.slot.id}|${agent.config.providerId}|${agent.config.modelId}|${effectivePrompt.hashCode()}|$wsSig"
         } else null
 
         if (cacheKey != null) {
@@ -160,9 +163,9 @@ class TeamAgentRunner(
                     appendLine("ATTACHED REFERENCE IMAGES FROM OWNER (inspect them visually with read_file to match the exact UI, layout, colors, and requirements):")
                     guestPaths.forEach { appendLine("- $it") }
                     appendLine()
-                    append(prompt)
+                    append(effectivePrompt)
                 }
-            } else prompt
+            } else effectivePrompt
             val agyPrompt = if (!enableWorkspaceTools) {
                 "CONSULTATION-ONLY CHAT MODE: Do NOT call any tools, do NOT execute commands, and do NOT create, edit, or delete any files. Reply conversationally only.\n\n$bodyWithImages"
             } else {
@@ -218,7 +221,7 @@ class TeamAgentRunner(
                 providerConfig = providerConfig,
                 workspaceDir = safeWorkspaceDir,
                 projectSlug = safeSlug,
-                prompt = prompt,
+                prompt = effectivePrompt,
                 imageFiles = validImages,
                 taskId = taskId,
                 stepId = stepId,

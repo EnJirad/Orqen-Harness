@@ -315,6 +315,7 @@ data class AppUiState(
     val ownerDisplayName: String = "",
     val teamTypingAgentName: String? = null,
     val teamTypingAgentSlot: AgentSlot? = null,
+    val teamTypingAgents: Map<AgentSlot, String> = emptyMap(),
     val teamStreamingAgentName: String? = null,
     val teamStreamingAgentSlot: AgentSlot? = null,
     val teamStreamingText: String = "",
@@ -716,8 +717,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.saveProjects(updated)
     }
 
+    val skillManager by lazy {
+        com.jarves.mh.skills.SkillManager(getApplication())
+    }
     private val teamAgentRunner by lazy {
-        com.jarves.mh.runtime.TeamAgentRunner(getApplication(), installer, providerManager)
+        com.jarves.mh.runtime.TeamAgentRunner(getApplication(), installer, providerManager, skillManager = skillManager)
     }
     private val orqenDbHelper by lazy {
         com.jarves.mh.multiagent.persistence.OrqenTaskDatabaseHelper(getApplication())
@@ -5775,7 +5779,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val ownerTag = _state.value.ownerDisplayName.trim().takeIf { it.isNotBlank() }
             ?.let { "[User Profile: Address the user as \"$it\" in your replies.]\n" }
             .orEmpty()
-        val runtimePrompt = ownerTag + if (attachments.isEmpty()) requestText else buildString {
+        val soloWorkspaceDir = File(getApplication<Application>().filesDir, "projects/${project.id}")
+        val soloSkillsTag = skillManager.buildSkillsPromptSection(soloWorkspaceDir, requestText)
+            .takeIf { it.isNotBlank() }
+            ?.let { "$it\n" }
+            .orEmpty()
+        val runtimePrompt = ownerTag + soloSkillsTag + if (attachments.isEmpty()) requestText else buildString {
             appendLine(requestText)
             appendLine()
             appendLine("<attached_files>")
@@ -8780,9 +8789,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val isBusyWorker = responder.isWorking && _state.value.teamIsRunning
         val job = viewModelScope.launch {
             _state.update {
+                val updatedTyping = it.teamTypingAgents + (responder.config.slot to responder.config.name)
                 it.copy(
                     teamTypingAgentName = responder.config.name,
                     teamTypingAgentSlot = responder.config.slot,
+                    teamTypingAgents = updatedTyping,
                 )
             }
             try {
@@ -8805,6 +8816,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLine("Your employee personality & tone: ${responder.config.effectivePersonality()}")
                     appendLine("STRICT RULES IN CHAT MODE:")
                     appendLine("- DO NOT create tasks, DO NOT delegate work, DO NOT modify/create/delete any files, and DO NOT claim you started building.")
+                    appendLine("- NEVER use emojis in your replies. Keep formatting clean and professional.")
+                    appendLine("- Explain in clear, plain, easy-to-understand language. When mentioning files, refer to them by short filename only (e.g. `MainActivity.kt` instead of long nested paths like `app/src/main/java/.../MainActivity.kt`) unless the Owner explicitly asks for full paths.")
                     appendLine("- Act as an intelligent technical partner: understand the Owner's idea, ask useful clarifying questions, analyze requirements, suggest architecture, compare options, and help refine a complete specification.")
                     appendLine("- Remember and build upon the recent conversation context below.")
                     if (isBusyWorker) {
@@ -8899,11 +8912,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 activeTeamChatJobs.remove(responder.config.slot)
                 _state.update {
-                    val clearTyping = it.teamTypingAgentSlot == responder.config.slot
+                    val remainingTyping = it.teamTypingAgents - responder.config.slot
+                    val nextTyping = remainingTyping.entries.lastOrNull()
                     val clearStream = it.teamStreamingAgentSlot == responder.config.slot
                     it.copy(
-                        teamTypingAgentName = if (clearTyping) null else it.teamTypingAgentName,
-                        teamTypingAgentSlot = if (clearTyping) null else it.teamTypingAgentSlot,
+                        teamTypingAgents = remainingTyping,
+                        teamTypingAgentName = nextTyping?.value,
+                        teamTypingAgentSlot = nextTyping?.key,
                         teamStreamingAgentName = if (clearStream) null else it.teamStreamingAgentName,
                         teamStreamingAgentSlot = if (clearStream) null else it.teamStreamingAgentSlot,
                         teamStreamingText = if (clearStream) "" else it.teamStreamingText,

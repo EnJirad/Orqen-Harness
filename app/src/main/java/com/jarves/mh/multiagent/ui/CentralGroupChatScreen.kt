@@ -86,6 +86,7 @@ fun CentralGroupChatScreen(
     ownerName: String = "",
     typingAgentName: String? = null,
     typingAgentSlot: AgentSlot? = null,
+    typingAgents: Map<AgentSlot, String> = emptyMap(),
     streamingAgentName: String? = null,
     streamingAgentSlot: AgentSlot? = null,
     streamingText: String = "",
@@ -111,17 +112,24 @@ fun CentralGroupChatScreen(
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
-    var inputText by remember(draftConversationKey) { mutableStateOf(initialDraftText) }
+    var inputValue by remember(draftConversationKey) {
+        mutableStateOf(
+            androidx.compose.ui.text.input.TextFieldValue(
+                text = initialDraftText,
+                selection = androidx.compose.ui.text.TextRange(initialDraftText.length),
+            ),
+        )
+    }
     var selectedType by remember { mutableStateOf(GroupMessageType.NORMAL) }
     var targetSlot by remember { mutableStateOf<AgentSlot?>(null) }
     var selectedImageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
 
     // Phase 9: Debounced autosave + immediate lifecycle flush (ON_PAUSE/ON_STOP + onDispose)!
-    val latestInputText by rememberUpdatedState(inputText)
+    val latestInputText by rememberUpdatedState(inputValue.text)
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    LaunchedEffect(draftConversationKey, inputText) {
+    LaunchedEffect(draftConversationKey, inputValue.text) {
         delay(220L)
-        onDraftTextChanged(inputText)
+        onDraftTextChanged(inputValue.text)
     }
     DisposableEffect(draftConversationKey, lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -154,11 +162,25 @@ fun CentralGroupChatScreen(
         else "$displayOwner · " + agents.joinToString(" · ") { it.config.name }
     }
 
-    val workingAgents = remember(agents, typingAgentSlot) {
-        agents.filter { it.isWorking && it.config.slot != typingAgentSlot }
+    val effectiveTypingAgents = remember(typingAgents, typingAgentSlot, typingAgentName) {
+        if (typingAgents.isNotEmpty()) {
+            typingAgents
+        } else if (typingAgentSlot != null && !typingAgentName.isNullOrBlank()) {
+            mapOf(typingAgentSlot to typingAgentName)
+        } else {
+            emptyMap()
+        }
+    }
+    val workingAgents = remember(agents, effectiveTypingAgents) {
+        agents.filter { it.isWorking && !effectiveTypingAgents.containsKey(it.config.slot) }
     }
     val hasStreaming = !streamingAgentName.isNullOrBlank() && streamingText.isNotBlank()
-    val totalItems = messages.size + workingAgents.size + (if (hasStreaming) 1 else 0) + (if (!hasStreaming && !typingAgentName.isNullOrBlank()) 1 else 0)
+    val visibleThinkingAgents = remember(effectiveTypingAgents, hasStreaming, streamingAgentSlot) {
+        effectiveTypingAgents.entries.filter { (slot, _) ->
+            !(hasStreaming && slot == streamingAgentSlot)
+        }
+    }
+    val totalItems = messages.size + workingAgents.size + (if (hasStreaming) 1 else 0) + visibleThinkingAgents.size
     var prevTotalCount by remember { mutableIntStateOf(totalItems) }
 
     val isPinnedToBottom by remember {
@@ -487,7 +509,7 @@ fun CentralGroupChatScreen(
                                 agents.forEach { agent ->
                                     val slot = agent.config.slot
                                     val accent = agentAccentColor(slot)
-                                    val isTypingThis = typingAgentSlot == slot
+                                    val isTypingThis = effectiveTypingAgents.containsKey(slot)
                                     val isWorkingThis = agent.isWorking && !isTypingThis
                                     val act = agent.activityState.activity
                                     val statusLabel = when {
@@ -619,6 +641,7 @@ fun CentralGroupChatScreen(
                     val senderAgent = msg.senderSlot?.let { slot -> agents.firstOrNull { it.config.slot == slot } }
                     GroupChatBubble(
                         message = msg,
+                        agents = agents,
                         senderIcon = senderAgent?.let { AgentIconCatalog.iconFor(it.config) },
                         onOpenFile = onOpenFile,
                         onInstallApk = onInstallApk,
@@ -645,15 +668,14 @@ fun CentralGroupChatScreen(
                             text = streamingText,
                         )
                     }
-                } else if (!typingAgentName.isNullOrBlank()) {
-                    item(key = "typing-wave-indicator") {
-                        val thinkAgent = typingAgentSlot?.let { slot -> agents.firstOrNull { it.config.slot == slot } }
-                        AiTypingWaveBubble(
-                            agentName = typingAgentName,
-                            agentSlot = typingAgentSlot,
-                            agentIcon = thinkAgent?.let { AgentIconCatalog.iconFor(it.config) },
-                        )
-                    }
+                }
+                items(visibleThinkingAgents, key = { "typing-${it.key.id}" }) { (thinkSlot, thinkName) ->
+                    val thinkAgent = agents.firstOrNull { it.config.slot == thinkSlot }
+                    AiTypingWaveBubble(
+                        agentName = thinkName,
+                        agentSlot = thinkSlot,
+                        agentIcon = thinkAgent?.let { AgentIconCatalog.iconFor(it.config) },
+                    )
                 }
             }
 
@@ -673,8 +695,19 @@ fun CentralGroupChatScreen(
                         SuggestionChip(
                             onClick = {
                                 targetSlot = if (isSelected) null else slot
-                                if (!inputText.contains("@$agentName")) {
-                                    inputText = "@$agentName $inputText"
+                                val mentionPrefix = "@$agentName "
+                                val curText = inputValue.text
+                                if (!curText.contains("@$agentName")) {
+                                    val newText = if (curText.isBlank()) mentionPrefix else "$mentionPrefix$curText"
+                                    // Place cursor '|' immediately AFTER "@AgentName " so user types naturally!
+                                    inputValue = androidx.compose.ui.text.input.TextFieldValue(
+                                        text = newText,
+                                        selection = androidx.compose.ui.text.TextRange(mentionPrefix.length),
+                                    )
+                                } else {
+                                    val idx = curText.indexOf("@$agentName") + agentName.length + 1
+                                    val cursorPos = if (idx < curText.length && curText[idx] == ' ') idx + 1 else idx
+                                    inputValue = inputValue.copy(selection = androidx.compose.ui.text.TextRange(cursorPos.coerceAtMost(curText.length)))
                                 }
                             },
                             icon = {
@@ -863,13 +896,48 @@ fun CentralGroupChatScreen(
                             )
                         }
                         Spacer(Modifier.width(6.dp))
+                        val mentionVisualTransformation = remember(agents) {
+                            androidx.compose.ui.text.input.VisualTransformation { text ->
+                                val highlighted = buildAnnotatedString {
+                                    append(text.text)
+                                    val rawStr = text.text
+                                    val lowerStr = rawStr.lowercase()
+                                    val sortedAgents = agents.sortedByDescending { it.config.name.length }
+                                    sortedAgents.forEach { ag ->
+                                        val color = agentAccentColor(ag.config.slot)
+                                        val tokens = listOf("@${ag.config.name}", "@${ag.config.slot.defaultName}", "@${ag.config.slot.id}")
+                                            .distinct()
+                                        tokens.forEach { tok ->
+                                            val lowerTok = tok.lowercase()
+                                            var idx = lowerStr.indexOf(lowerTok)
+                                            while (idx >= 0) {
+                                                addStyle(
+                                                    SpanStyle(
+                                                        color = color,
+                                                        fontWeight = FontWeight.Bold,
+                                                        background = color.copy(alpha = 0.14f),
+                                                    ),
+                                                    idx,
+                                                    idx + tok.length,
+                                                )
+                                                idx = lowerStr.indexOf(lowerTok, startIndex = idx + tok.length)
+                                            }
+                                        }
+                                    }
+                                }
+                                androidx.compose.ui.text.input.TransformedText(
+                                    highlighted,
+                                    androidx.compose.ui.text.input.OffsetMapping.Identity,
+                                )
+                            }
+                        }
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
                         ) {
-                            if (inputText.isEmpty()) {
+                            if (inputValue.text.isEmpty()) {
                                 Text(
                                     text = stringResource(R.string.chat_send_to_team),
                                     style = MaterialTheme.typography.bodyMedium,
@@ -877,8 +945,9 @@ fun CentralGroupChatScreen(
                                 )
                             }
                             BasicTextField(
-                                value = inputText,
-                                onValueChange = { inputText = it },
+                                value = inputValue,
+                                onValueChange = { inputValue = it },
+                                visualTransformation = mentionVisualTransformation,
                                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                 modifier = Modifier.fillMaxWidth(),
@@ -887,12 +956,12 @@ fun CentralGroupChatScreen(
 
                         Spacer(Modifier.width(8.dp))
 
-                        val canSend = inputText.isNotBlank() || selectedImageUris.isNotEmpty()
+                        val canSend = inputValue.text.isNotBlank() || selectedImageUris.isNotEmpty()
                         IconButton(
                             onClick = {
                                 if (canSend) {
                                     pendingUserSendScroll = true
-                                    val finalPrompt = inputText.ifBlank { "ช่วยวิเคราะห์รูปภาพที่แนบมาและออกแบบ/สร้างตามภาพนี้" }
+                                    val finalPrompt = inputValue.text.ifBlank { "ช่วยวิเคราะห์รูปภาพที่แนบมาและออกแบบ/สร้างตามภาพนี้" }
                                     val sendOk = runCatching {
                                         if (selectedImageUris.isNotEmpty() && onSendMessageWithImages != null) {
                                             onSendMessageWithImages(finalPrompt, selectedType, targetSlot, selectedImageUris)
@@ -902,7 +971,7 @@ fun CentralGroupChatScreen(
                                         true
                                     }.getOrDefault(false)
                                     if (sendOk) {
-                                        inputText = ""
+                                        inputValue = androidx.compose.ui.text.input.TextFieldValue("")
                                         onDraftTextChanged("")
                                         selectedImageUris = emptyList()
                                         selectedType = GroupMessageType.NORMAL
@@ -1242,6 +1311,7 @@ private fun LiveAgentWorkingBubble(
 @Composable
 fun GroupChatBubble(
     message: GroupChatMessage,
+    agents: List<AgentState> = emptyList(),
     senderIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     onOpenFile: ((String) -> Unit)? = null,
     onInstallApk: ((String) -> Unit)? = null,
@@ -1260,11 +1330,12 @@ fun GroupChatBubble(
     val mentionedFiles = remember(message.id, message.text, message.relatedFilePath, message.workDetails) {
         extractMentionedFiles(message)
     }
-    val formattedText = remember(message.id, message.text, isUser, agentColor) {
+    val formattedText = remember(message.id, message.text, isUser, agentColor, agents) {
         buildOrqenFormattedMessage(
             raw = message.text,
             mintColor = agentColor,
             isUser = isUser,
+            agents = agents,
         )
     }
 
@@ -1645,18 +1716,30 @@ private fun extractMentionedFiles(message: GroupChatMessage): List<String> {
     return found.take(8)
 }
 
+private fun simplifyNestedPathsForHumans(raw: String): String {
+    // Convert verbose nested paths like ".ai/automation-reports/plugin-ecosystem-audit.md" or
+    // "app/src/main/java/com/jarves/mh/MainActivity.kt" into crisp human-readable basenames
+    // (preserving URLs like https://... untouched!)
+    val deepPathRegex = Regex("""(?<![:/\w])(?:\.?[A-Za-z0-9_.-]+/){2,}([A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})""")
+    return deepPathRegex.replace(raw) { match ->
+        match.groupValues[1]
+    }
+}
+
 private fun buildOrqenFormattedMessage(
     raw: String,
     mintColor: Color,
     isUser: Boolean,
+    agents: List<AgentState> = emptyList(),
 ): AnnotatedString = buildAnnotatedString {
-    val cleaned = raw.replace("**", "")
+    val humanReadable = if (isUser) raw else simplifyNestedPathsForHumans(raw)
+    val cleaned = humanReadable.replace("**", "")
     append(cleaned)
 
     // Highlight bold markdown spans from original text (**...**)
     var searchStart = 0
     val boldRegex = Regex("""\*\*([^*]+)\*\*""")
-    boldRegex.findAll(raw).forEach { match ->
+    boldRegex.findAll(humanReadable).forEach { match ->
         val inner = match.groupValues[1]
         val idx = cleaned.indexOf(inner, startIndex = searchStart)
         if (idx >= 0) {
@@ -1701,18 +1784,45 @@ private fun buildOrqenFormattedMessage(
         )
     }
 
-    // Highlight @mentions (e.g., @Agent 01, @Agent 02, @เจ้าของบริษัท) in glowing Mint-Cyan pill style
+    // Highlight @mentions with EACH mentioned agent's own distinct accent color!
+    val lowerCleaned = cleaned.lowercase()
     val mentionRegex = Regex("""@(?:เจ้าของบริษัท|Agent\s*\d+|[^\s,:;()]+)""")
     mentionRegex.findAll(cleaned).forEach { match ->
+        val matchedText = match.value.lowercase()
+        val matchedAgent = agents.firstOrNull { ag ->
+            val nameTok = "@${ag.config.name.lowercase()}"
+            val defaultTok = "@${ag.config.slot.defaultName.lowercase()}"
+            val idTok = "@${ag.config.slot.id.lowercase()}"
+            matchedText == nameTok || matchedText == defaultTok || matchedText == idTok
+        }
+        val color = matchedAgent?.let { agentAccentColor(it.config.slot) } ?: mintColor
         addStyle(
             SpanStyle(
-                color = mintColor,
+                color = color,
                 fontWeight = FontWeight.ExtraBold,
-                background = mintColor.copy(alpha = 0.14f),
+                background = color.copy(alpha = 0.14f),
             ),
             match.range.first,
             match.range.last + 1,
         )
+    }
+    // Also match multi-word custom agent names (e.g. "@Agent 01", "@QA Engineer")
+    agents.forEach { ag ->
+        val token = "@${ag.config.name}".lowercase()
+        val color = agentAccentColor(ag.config.slot)
+        var idx = lowerCleaned.indexOf(token)
+        while (idx >= 0) {
+            addStyle(
+                SpanStyle(
+                    color = color,
+                    fontWeight = FontWeight.ExtraBold,
+                    background = color.copy(alpha = 0.14f),
+                ),
+                idx,
+                idx + token.length,
+            )
+            idx = lowerCleaned.indexOf(token, startIndex = idx + token.length)
+        }
     }
 
     // Highlight key status markers (PASS:, FAIL:, completion summary heading)

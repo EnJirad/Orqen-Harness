@@ -2528,10 +2528,12 @@ private fun RootScreenHost(
     var showQuickTerminal by rememberSaveable { mutableStateOf(false) }
     var openBackup by rememberSaveable { mutableStateOf(false) }
     var showMcpManager by rememberSaveable { mutableStateOf(false) }
+    var showSkillManager by rememberSaveable { mutableStateOf(false) }
 
     // System Back Button handling across all root tabs & AI Team sub-screens
-    BackHandler(enabled = showMcpManager || showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST) || screen != RootScreen.PROJECTS) {
+    BackHandler(enabled = showSkillManager || showMcpManager || showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST) || screen != RootScreen.PROJECTS) {
         when {
+            showSkillManager -> showSkillManager = false
             showMcpManager -> showMcpManager = false
             showQuickTerminal -> showQuickTerminal = false
             screen == RootScreen.TEAM && state.teamScreenMode == TeamScreenMode.DASHBOARD -> {
@@ -2569,7 +2571,7 @@ private fun RootScreenHost(
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            if (!keyboardVisible && !insideTeamWorkspace && !showMcpManager) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            if (!keyboardVisible && !insideTeamWorkspace && !showMcpManager && !showSkillManager) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 RootScreen.entries.forEach { tab ->
                     NavigationBarItem(
                         selected = screen == tab,
@@ -2693,6 +2695,7 @@ private fun RootScreenHost(
                                 ownerName = state.ownerDisplayName,
                                 typingAgentName = state.teamTypingAgentName,
                                 typingAgentSlot = state.teamTypingAgentSlot,
+                                typingAgents = state.teamTypingAgents,
                                 streamingAgentName = state.teamStreamingAgentName,
                                 streamingAgentSlot = state.teamStreamingAgentSlot,
                                 streamingText = state.teamStreamingText,
@@ -2868,6 +2871,7 @@ private fun RootScreenHost(
                             ownerName = state.ownerDisplayName,
                             typingAgentName = state.teamTypingAgentName,
                             typingAgentSlot = state.teamTypingAgentSlot,
+                            typingAgents = state.teamTypingAgents,
                             streamingAgentName = state.teamStreamingAgentName,
                             streamingAgentSlot = state.teamStreamingAgentSlot,
                             streamingText = state.teamStreamingText,
@@ -3053,7 +3057,22 @@ private fun RootScreenHost(
                 RootScreen.SETTINGS -> {
                     val mcpServers by viewModel.mcpConnectionManager.servers.collectAsStateWithLifecycle()
                     val mcpTools by viewModel.mcpConnectionManager.tools.collectAsStateWithLifecycle()
-                    if (showMcpManager) {
+                    val allSkills by viewModel.skillManager.skills.collectAsStateWithLifecycle()
+                    val autoSkillsEnabled by viewModel.skillManager.autoSelectEnabled.collectAsStateWithLifecycle()
+                    val skillContext = androidx.compose.ui.platform.LocalContext.current
+                    if (showSkillManager) {
+                        val activeSkillProj = state.activeTeamProject ?: state.activeProject
+                        val activeSkillWsDir = activeSkillProj?.let { proj ->
+                            val teamWs = java.io.File(skillContext.filesDir, "team_workspaces/${proj.id}")
+                            if (teamWs.isDirectory) teamWs else java.io.File(skillContext.filesDir, "projects/${proj.id}")
+                        }
+                        com.jarves.mh.skills.SkillManagementScreen(
+                            skillManager = viewModel.skillManager,
+                            activeWorkspaceDir = activeSkillWsDir,
+                            activeProjectName = activeSkillProj?.name,
+                            onBack = { showSkillManager = false },
+                        )
+                    } else if (showMcpManager) {
                         com.jarves.mh.mcp.McpManagementScreen(
                             manager = viewModel.mcpConnectionManager,
                             agents = state.teamAgents,
@@ -3072,6 +3091,9 @@ private fun RootScreenHost(
                             mcpServerCount = mcpServers.size,
                             mcpToolCount = mcpTools.size,
                             onOpenMcpManager = { showMcpManager = true },
+                            skillCount = allSkills.size,
+                            autoSkillsEnabled = autoSkillsEnabled,
+                            onOpenSkillManager = { showSkillManager = true },
                             onSaveProvider = { profile, key ->
                                 viewModel.updateProvider(profile, key)
                             },
