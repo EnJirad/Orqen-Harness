@@ -305,4 +305,31 @@
     <string name="cc_no_approvals_desc">การดำเนินการความเสี่ยงสูงที่ต้องให้เจ้าของยืนยันจะแสดงที่นี่</string>
     <string name="cc_approve_btn">อนุมัติ</string>
     <string name="cc_reject_btn">ปฏิเสธ</string>
+
+    <!-- Manager Workspace & 3D AI Universe (ภาษาไทย) -->
+    <string name="tab_manager">Manager</string>
+    <string name="manager_title_fmt">%1$s · Manager</string>
+    <string name="manager_subtitle">ศูนย์ติดตาม ควบคุม วางแผน และตรวจสอบทีม AI</string>
+    <string name="manager_tab_status">สถานะ</string>
+    <string name="manager_tab_plans">แผนงาน</string>
+    <string name="manager_tab_universe">จักรวาล AI</string>
+    <string name="manager_tab_decisions">ตัดสินใจ</string>
+    <string name="manager_section_members">สถานะสมาชิก</string>
+    <string name="manager_section_control">กำลังควบคุมและสั่งงานทีม</string>
+    <string name="manager_section_progress">ความคืบหน้าของงาน</string>
+    <string name="manager_section_current_plan">แผนงานปัจจุบัน</string>
+    <string name="manager_section_next_plan">แผนงานถัดไป</string>
+    <string name="manager_section_queued_plans">แผนงานที่รอดำเนินการ</string>
+    <string name="manager_section_all_plans">All Plans</string>
+    <string name="manager_decisions_header_fmt">การตัดสินใจและการกู้คืนล่าสุด (%1$d)</string>
+    <string name="manager_decisions_section_decisions">ประวัติการตัดสินใจ</string>
+    <string name="manager_decisions_section_recoveries">ประวัติการกู้คืนระบบ</string>
+    <string name="manager_decisions_empty_title">ยังไม่มีประวัติการตัดสินใจหรือการกู้คืน</string>
+    <string name="manager_decisions_empty_desc">เมื่อ Manager ตัดสินใจ ปรับแผน สลับโมเดล หรือกู้คืนการทำงาน ระบบจะบันทึกและแสดงที่นี่จากข้อมูลจริง</string>
+    <string name="manager_universe_reset_camera">รีเซ็ตมุมกล้อง</string>
+    <string name="manager_universe_mode_3d">3D</string>
+    <string name="manager_universe_mode_2d">2D</string>
+    <string name="manager_universe_empty_title">ยังไม่มีข้อมูลในจักรวาล AI</string>
+    <string name="manager_universe_empty_desc">สร้างโปรเจกต์หรือเพิ่ม AI Agent เพื่อแสดงดวงดาวและความเชื่อมโยงจากระบบจริง</string>
+    <string name="manager_universe_hint">ลากเพื่อหมุน · จีบนิ้วเพื่อซูม · แตะดวงดาวเพื่อดูข้อมูล</string>
 </resources>

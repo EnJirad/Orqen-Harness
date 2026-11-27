@@ -173,6 +173,7 @@ object MultiPartPlanManager {
         leaderAgentId: String = "agent-01",
         devAgentId: String = "agent-02",
         qaAgentId: String = "agent-03",
+        coderAgentIds: List<String> = listOf(devAgentId),
     ): MultiPartExecutionPlan {
         val cleanObj = objective.trim()
         val inspection = com.jarves.mh.runtime.SharedWorkspaceExecutionService(workspaceDir, projectId).inspectWorkspaceSummary()
@@ -205,14 +206,33 @@ object MultiPartPlanManager {
             else -> listOf(shortObjTitle to cleanObj)
         }
 
+        val effectiveCoders = coderAgentIds.filter { it.isNotBlank() }.distinct().ifEmpty { listOf(devAgentId) }
+        val enableParallelCoders = effectiveCoders.size >= 2 && rawPartDefs.size >= 2
+
         val parts = mutableListOf<MultiPartSpec>()
         rawPartDefs.forEachIndexed { idx, (partTitle, partObjective) ->
             val num = idx + 1
             val partId = "part-$num"
             val slug = slugify(partTitle)
-            // When explicit independent subtasks are requested, allow parallel execution unless sequential breakdown
-            val prevDeps = if (idx == 0 || explicitSubtasks.size > 1) emptyList() else listOf("part-${idx}")
             val isFinal = idx == rawPartDefs.lastIndex
+            // Multi-coder parallel planning: when 2+ coding agents are active, allow independent
+            // implementation parts to execute concurrently; final integration/build part waits for them.
+            val prevDeps = when {
+                idx == 0 -> emptyList()
+                explicitSubtasks.size > 1 -> emptyList()
+                enableParallelCoders && !isFinal -> emptyList()
+                enableParallelCoders && isFinal && rawPartDefs.size >= 3 -> (1 until num).map { "part-$it" }
+                enableParallelCoders && rawPartDefs.size == 2 -> emptyList()
+                else -> listOf("part-$idx")
+            }
+            val assignedCoderId = effectiveCoders[idx % effectiveCoders.size]
+            val scopedRelevantFiles = if (enableParallelCoders && relevantSourceSample.size >= effectiveCoders.size) {
+                relevantSourceSample.filterIndexed { fileIdx, _ -> fileIdx % effectiveCoders.size == (idx % effectiveCoders.size) }
+            } else if (enableParallelCoders) {
+                emptyList()
+            } else {
+                relevantSourceSample
+            }
             val specPath = ".orqen/plan/part_${num}_${slug}.md"
             val reportPath = ".orqen/reports/part_${num}_report.md"
 
@@ -231,12 +251,14 @@ object MultiPartPlanManager {
                 ),
                 architectureApproach = if (idx == 0) {
                     "Inspect existing project structure (${inspection.detectedStack}), establish core data/domain contracts, and ensure clean modularity."
+                } else if (prevDeps.isEmpty()) {
+                    "Collaborate in parallel with other coding agents on disjoint files/modules, inspect workspace interfaces, and implement cleanly."
                 } else {
                     "Build cleanly on verified outputs from ${prevDeps.joinToString(", ")}."
                 },
-                relevantFiles = relevantSourceSample,
-                // P0 Fix: Implementation Parts must ALWAYS be assigned to a Developer worker, never SPV.
-                assignedAgentId = devAgentId,
+                relevantFiles = scopedRelevantFiles,
+                // P0 Fix: Implementation Parts must ALWAYS be assigned to a Developer worker, never Manager.
+                assignedAgentId = assignedCoderId,
                 dependencies = prevDeps,
                 requiredMcpTools = if (isAndroidProject) listOf("workspace_files", "terminal_gradle") else listOf("workspace_files", "terminal"),
                 requiredPermissions = listOf("workspace:read", "workspace:write", "terminal:execute_tests"),

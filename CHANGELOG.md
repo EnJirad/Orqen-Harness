@@ -5,8 +5,7 @@ All notable changes to the ORQEN project are documented here.
 ## [2.0.0] - 2026-11-24
 
 ### Brand & Identity
-- Rebranded application from Mobile Harness to **ORQEN**.
-- Replaced all application icons and visual identity assets with official ORQEN Squircle brand pack from `.ai/orqen-brand-assets.zip`.
+- Established **ORQEN** brand identity and official Squircle icon set.
 - Integrated adaptive icons across `mipmap-hdpi`, `mipmap-mdpi`, `mipmap-xhdpi`, `mipmap-xxhdpi`, `mipmap-xxxhdpi`, `mipmap-anydpi-v26`, and `values/ic_launcher_background.xml`.
 - Added high-resolution Play Store icon and vector artwork (`ic_orqen_mark`).
 

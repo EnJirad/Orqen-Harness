@@ -171,7 +171,7 @@ fun McpManagementScreen(
                     Column {
                         Text("MCP Servers & Tools", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            text = "$connectedCount connected · $availableToolsCount tools · SPV Auth active",
+                            text = "$connectedCount connected · $availableToolsCount tools · Manager Auth active",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -206,7 +206,7 @@ fun McpManagementScreen(
                     text = {
                         val pendingCount = requests.count { it.status == McpRequestStatus.PENDING || it.status == McpRequestStatus.ESCALATED_TO_OWNER }
                         Text(
-                            text = if (pendingCount > 0) "SPV Auth ($pendingCount)" else "SPV Auth",
+                            text = if (pendingCount > 0) "Manager Auth ($pendingCount)" else "Manager Auth",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -657,7 +657,7 @@ private fun McpPermissionsTab(
                             fontWeight = FontWeight.Bold,
                         )
                         Text(rec.decisionReason, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("SPV: ${rec.supervisorId} · ${timeFmt.format(Date(rec.timestampMs))}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Manager: ${rec.supervisorId} · ${timeFmt.format(Date(rec.timestampMs))}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }

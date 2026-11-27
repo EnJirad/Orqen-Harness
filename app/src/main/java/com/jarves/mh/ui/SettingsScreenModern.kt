@@ -314,9 +314,9 @@ fun SettingsScreen(
                             Text("MCP Servers & Tools", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                             Text(
                                 if (mcpServerCount > 0) {
-                                    "$mcpServerCount servers • $mcpToolCount tools • SPV Permissions"
+                                    "$mcpServerCount servers • $mcpToolCount tools • Manager Permissions"
                                 } else {
-                                    "Connect Neon, Git, GitHub, Postgres, Fetch & SPV Authorization"
+                                    "Connect Neon, Git, GitHub, Postgres, Fetch & Manager Authorization"
                                 },
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

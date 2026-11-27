@@ -15,7 +15,7 @@
   [**System Requirements**](#system-requirements) &nbsp;•&nbsp;
   [**Build from Source**](#build-from-source) &nbsp;•&nbsp;
   [**Security & Limitations**](#security--limitations) &nbsp;•&nbsp;
-  [**License & Attribution**](#license--attribution)
+  [**License**](#license)
 
 </div>
 
@@ -163,8 +163,8 @@ adb install -r app/build/outputs/apk/online/debug/app-online-debug.apk
 
 ---
 
-## License & Attribution
+## License
 
 Licensed under the [MIT License](LICENSE).
 
-ORQEN originated as an independent fork of the open-source [Mobile Harness](https://github.com/techjarves/Mobile-Harness) project by TechJarves (Copyright © 2026 Mobile Harness Contributors / TechJarves, MIT License). ORQEN is an independent product and is not affiliated with, endorsed by, or sponsored by TechJarves. Third-party open-source licenses are included in [`app/src/main/assets/licenses`](app/src/main/assets/licenses).
+Copyright © 2026 ORQEN. All rights reserved. Third-party open-source component licenses are included in [`app/src/main/assets/licenses`](app/src/main/assets/licenses).

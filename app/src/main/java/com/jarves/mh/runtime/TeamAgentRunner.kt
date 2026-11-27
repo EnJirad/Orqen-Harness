@@ -643,7 +643,7 @@ class TeamAgentRunner(
                         executor = executor,
                         workspaceDir = workspaceDir,
                         extractFencedFiles = ::extractAndWriteFiles,
-                        maxTurns = 10,
+                        maxTurns = 18,
                         taskId = taskId,
                         stepId = stepId,
                         onProgress = onProgress,

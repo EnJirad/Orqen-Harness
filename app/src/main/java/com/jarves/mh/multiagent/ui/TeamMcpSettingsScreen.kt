@@ -107,14 +107,14 @@ fun TeamMcpSettingsScreen(
                             onClick = {
                                 val applied = manager.applyRecommendedTeamPermissions(workspaceId, agents)
                                 permRefreshTick++
-                                statusMessage = "SPV configured least-privilege permissions (${applied.size} rule(s)). High-risk tools still require Owner approval."
+                                statusMessage = "Manager configured least-privilege permissions (${applied.size} rule(s)). High-risk tools still require Owner approval."
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                         ) {
                             Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("SPV Auto-Configure Least-Privilege Permissions", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                            Text("Manager Auto-Configure Least-Privilege Permissions", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                         }
                     }
 

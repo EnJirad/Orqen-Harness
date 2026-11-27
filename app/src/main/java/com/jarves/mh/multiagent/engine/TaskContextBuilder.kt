@@ -26,7 +26,7 @@ object TaskContextBuilder {
         latestCheckpoint: CheckpointEntity?,
         recentMessages: List<AgentMessageEntity> = emptyList(),
         reviewFeedback: List<AgentReviewEntity> = emptyList(),
-        maxChars: Int = 8_000,
+        maxChars: Int = 16_000,
     ): String {
         require(task.projectId == project.projectId) {
             "Cross-project context violation: task ${task.taskId} belongs to ${task.projectId}, not ${project.projectId}"
@@ -98,6 +98,21 @@ object TaskContextBuilder {
                     val deps = if (s.dependencies.isEmpty()) "" else " [deps: ${s.dependencies.joinToString(",")}]"
                     appendLine("- #${s.sequenceNumber} [${s.status}] ${s.title} (${s.assignedAgentId})$deps")
                 }
+                val peerCoders = allSteps.filter {
+                    !it.requiresReview &&
+                        it.stepId != step.stepId &&
+                        it.assignedAgentId != step.assignedAgentId &&
+                        it.status in setOf(StepStatus.READY, StepStatus.RUNNING, StepStatus.PENDING)
+                }
+                if (!step.requiresReview && peerCoders.isNotEmpty()) {
+                    appendLine()
+                    appendLine("## Parallel Multi-Coder Collaboration Protocol")
+                    appendLine("- Multiple coding agents are dividing this project to finish faster:")
+                    peerCoders.take(4).forEach { peer ->
+                        appendLine("  - ${peer.assignedAgentId} owns #${peer.sequenceNumber} '${peer.title}'")
+                    }
+                    appendLine("- Inspect current workspace files first, build your assigned scope cleanly without duplicating teammate work, and coordinate shared contracts via `[MSG to=<agentId>]`.")
+                }
                 appendLine()
             }
             if (latestCheckpoint != null && latestCheckpoint.isValid) {
@@ -161,7 +176,7 @@ object TaskContextBuilder {
         latestCheckpoint: CheckpointEntity?,
         communicationManager: AgentCommunicationManager,
         reviewFeedback: List<AgentReviewEntity> = emptyList(),
-        maxChars: Int = 8_000,
+        maxChars: Int = 16_000,
     ): String {
         val isolatedMessages = communicationManager.getIsolatedContextMessages(
             projectId = project.projectId,

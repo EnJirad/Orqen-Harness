@@ -8359,7 +8359,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     "No eligible models found in configured providers. Please connect Antigravity or add an API key first."
                 } else {
                     buildString {
-                        appendLine("SPV updated team model assignments (Balanced quality & cost):")
+                        appendLine("Manager updated team model assignments (Balanced quality & cost):")
                         recs.forEach { r ->
                             val tag = if (r.changed) "UPDATED" else "KEPT"
                             appendLine("- [$tag] ${r.agentName}: ${r.recommendedModelId} — ${r.rationale}")
@@ -8373,7 +8373,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     "No eligible low-cost models found in configured providers."
                 } else {
                     buildString {
-                        appendLine("SPV optimized team for low API costs:")
+                        appendLine("Manager optimized team for low API costs:")
                         recs.forEach { r ->
                             appendLine("- ${r.agentName}: ${r.recommendedModelId} — ${r.rationale}")
                         }

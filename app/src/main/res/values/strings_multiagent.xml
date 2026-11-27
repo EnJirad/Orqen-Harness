@@ -305,4 +305,31 @@
     <string name="cc_no_approvals_desc">High-risk actions requiring owner confirmation will appear here.</string>
     <string name="cc_approve_btn">Approve</string>
     <string name="cc_reject_btn">Reject</string>
+
+    <!-- Manager Workspace & 3D AI Universe -->
+    <string name="tab_manager">Manager</string>
+    <string name="manager_title_fmt">%1$s · Manager</string>
+    <string name="manager_subtitle">AI Team Control, Plans &amp; Intelligence Hub</string>
+    <string name="manager_tab_status">Status</string>
+    <string name="manager_tab_plans">Plans</string>
+    <string name="manager_tab_universe">AI Universe</string>
+    <string name="manager_tab_decisions">Decisions</string>
+    <string name="manager_section_members">Team Members Status</string>
+    <string name="manager_section_control">Controlling &amp; Directing Team</string>
+    <string name="manager_section_progress">Task Progress</string>
+    <string name="manager_section_current_plan">Current Plan</string>
+    <string name="manager_section_next_plan">Next Plan</string>
+    <string name="manager_section_queued_plans">Queued / Waiting Plans</string>
+    <string name="manager_section_all_plans">All Plans</string>
+    <string name="manager_decisions_header_fmt">Recent Decisions &amp; Recoveries (%1$d)</string>
+    <string name="manager_decisions_section_decisions">Decision History</string>
+    <string name="manager_decisions_section_recoveries">Recovery History</string>
+    <string name="manager_decisions_empty_title">No decisions or recoveries recorded yet</string>
+    <string name="manager_decisions_empty_desc">Real Manager decisions, model failovers, retries, and recovery events will appear here automatically.</string>
+    <string name="manager_universe_reset_camera">Reset Camera</string>
+    <string name="manager_universe_mode_3d">3D</string>
+    <string name="manager_universe_mode_2d">2D</string>
+    <string name="manager_universe_empty_title">AI Universe is Empty</string>
+    <string name="manager_universe_empty_desc">Create a project or add AI agents to see live stars and real-time connections here.</string>
+    <string name="manager_universe_hint">Drag to rotate · Pinch to zoom · Tap any star</string>
 </resources>

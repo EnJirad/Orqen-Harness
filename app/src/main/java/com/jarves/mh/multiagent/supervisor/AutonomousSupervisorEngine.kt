@@ -263,7 +263,12 @@ class AutonomousSupervisorEngine(
             ?: capabilityResolver.selectBestAgent(candidates, setOf("code"))?.agentId
             ?: candidates.firstOrNull { it.agentId != leaderAgentId }?.agentId
             ?: candidates.first().agentId
-        // 2-Agent Team Rule: SPV acts as Planner + Supervisor + Independent QA when only SPV + Dev exist.
+        val coderAgentIds = candidates
+            .filter { it.agentId != leaderAgentId && ("code" in it.capabilities || it.role.contains("dev", ignoreCase = true) || it.role.contains("engineer", ignoreCase = true) || it.role.contains("specialist", ignoreCase = true)) }
+            .map { it.agentId }
+            .distinct()
+            .ifEmpty { listOf(devAgentId) }
+        // 2-Agent Team Rule: Manager acts as Planner + Supervisor + Independent QA when only Manager + Dev exist.
         val qaAgentId = capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"), excludeAgentIds = setOf(devAgentId))?.agentId
             ?: capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"))?.agentId
             ?: candidates.firstOrNull { it.agentId != devAgentId }?.agentId
@@ -285,6 +290,7 @@ class AutonomousSupervisorEngine(
             leaderAgentId = leaderAgentId,
             devAgentId = devAgentId,
             qaAgentId = qaAgentId,
+            coderAgentIds = coderAgentIds,
         )
         val planValidation = if (existingValidPlan != null) {
             MultiPartPlanManager.verifyPlanIntegrity(wsDir, mpPlan)
@@ -297,18 +303,23 @@ class AutonomousSupervisorEngine(
 
         val rawPlan = planner.planFromMultiPart(project, mpPlan, wsDir)
         val workloads = mutableMapOf<String, Int>()
+        val enabledById = candidates.associateBy { it.agentId }
         val assignedSteps = rawPlan.steps.map { step ->
+            val preAssigned = if (!step.requiresReview && step.assignedAgentId in coderAgentIds) {
+                enabledById[step.assignedAgentId]
+            } else null
             val exclude = when {
                 step.requiresReview -> setOf(devAgentId)
                 candidates.size > 1 -> setOf(leaderAgentId)
                 else -> emptySet()
             }
-            val selected = capabilityResolver.selectBestAgent(
-                candidates = candidates,
-                requiredCapabilities = step.requiredCapabilities,
-                excludeAgentIds = exclude,
-                activeWorkloads = workloads,
-            ) ?: capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities, activeWorkloads = workloads)
+            val selected = preAssigned
+                ?: capabilityResolver.selectBestAgent(
+                    candidates = candidates,
+                    requiredCapabilities = step.requiredCapabilities,
+                    excludeAgentIds = exclude,
+                    activeWorkloads = workloads,
+                ) ?: capabilityResolver.selectBestAgent(candidates, step.requiredCapabilities, activeWorkloads = workloads)
                 ?: candidates.firstOrNull { it.agentId == if (step.requiresReview) qaAgentId else devAgentId }
                 ?: candidates.first()
             workloads[selected.agentId] = (workloads[selected.agentId] ?: 0) + 1
@@ -644,20 +655,17 @@ class AutonomousSupervisorEngine(
                 }
 
                 // Execute independent non-review subtasks concurrently up to team.maxConcurrentAgents
-                // ONLY when agents are distinct AND targetFiles are non-empty & disjoint!
+                // across distinct coding agents (FileLockManager enforces per-file write safety at runtime!)
                 val parallelBatch = if (runnableSteps.size > 1 && team.maxConcurrentAgents > 1) {
                     val seenAgents = mutableSetOf<String>()
-                    val seenFiles = mutableSetOf<String>()
                     val selected = mutableListOf<TaskStepEntity>()
                     for (s in runnableSteps) {
                         if (selected.size >= team.maxConcurrentAgents) break
                         if (s.requiresReview) continue
                         if (taskStore.findIdempotency(s.idempotencyKey) != null) continue
                         if (s.assignedAgentId in seenAgents) continue
-                        if (s.targetFiles.any { it in seenFiles }) continue
                         selected.add(s)
                         seenAgents.add(s.assignedAgentId)
-                        seenFiles.addAll(s.targetFiles)
                     }
                     selected
                 } else emptyList()
@@ -665,6 +673,18 @@ class AutonomousSupervisorEngine(
                 if (parallelBatch.size > 1) {
                     val teamProfiles = teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
                     val accessibleImages = TaskAttachmentCodec.resolveAccessibleFiles(task.taskMemory, workspaceDir)
+                    val parallelNames = parallelBatch.mapNotNull { st ->
+                        teamProfiles.firstOrNull { it.agentId == st.assignedAgentId }?.displayName ?: st.assignedAgentId
+                    }.distinct().joinToString(" + ")
+                    updateSnapshot(
+                        taskId = taskId,
+                        status = SupervisorOperationalStatus.SUPERVISING,
+                        detail = "กำลังรันเขียนโค้ดแบบขนาน (${parallelBatch.size} ส่วนพร้อมกัน: $parallelNames)",
+                        activeAgentId = parallelBatch.first().assignedAgentId,
+                        activeAgentName = parallelNames,
+                        activeStepTitle = parallelBatch.joinToString(" | ") { it.title }.take(120),
+                        activePhase = "PARALLEL_EXECUTING",
+                    )
                     var anyLaunched = false
                     coroutineScope {
                         parallelBatch.map { pStep ->
@@ -693,6 +713,21 @@ class AutonomousSupervisorEngine(
                                         taskStore.upsertStep(runStep)
                                         taskStore.insertExecution(execRec)
                                     }
+                                    healthMonitor.markHealthy(prof.agentId, prof.providerId, prof.modelId, nowProvider())
+                                    onStepLifecycleUpdate(
+                                        StepLifecycleUpdate(
+                                            projectId = project.projectId,
+                                            taskId = taskId,
+                                            stepId = runStep.stepId,
+                                            stepTitle = runStep.title,
+                                            agentId = prof.agentId,
+                                            agentDisplayName = prof.displayName,
+                                            phase = "STARTED",
+                                            detail = "Parallel coding: ${runStep.title}",
+                                            stepNumber = runStep.sequenceNumber,
+                                            totalSteps = allSteps.size,
+                                        ),
+                                    )
                                     val ctx = TaskContextBuilder.buildAgentStepContext(
                                         project = project,
                                         task = task,
@@ -711,6 +746,22 @@ class AutonomousSupervisorEngine(
                                         teamRosterProvider = {
                                             teamManager.getTeamProfiles(team.teamId, onlyEnabled = true)
                                                 .map(AgentProfileMapper::toDynamicProfile)
+                                        },
+                                        onProgress = { _, _, _, prog ->
+                                            onStepLifecycleUpdate(
+                                                StepLifecycleUpdate(
+                                                    projectId = project.projectId,
+                                                    taskId = taskId,
+                                                    stepId = runStep.stepId,
+                                                    stepTitle = runStep.title,
+                                                    agentId = prof.agentId,
+                                                    agentDisplayName = prof.displayName,
+                                                    phase = "PROGRESS",
+                                                    detail = prog,
+                                                    stepNumber = runStep.sequenceNumber,
+                                                    totalSteps = allSteps.size,
+                                                ),
+                                            )
                                         },
                                     )
                                     val out = pAdapter.executeStep(
@@ -746,6 +797,22 @@ class AutonomousSupervisorEngine(
                                             event = TaskEventEntity(taskId = taskId, stepId = runStep.stepId, eventType = "PARALLEL_STEP_COMPLETED", eventPayload = "Parallel step '${runStep.title}' completed by ${prof.agentId}"),
                                             idempotency = IdempotencyRecordEntity(runStep.idempotencyKey, taskId, runStep.stepId, "STEP_EXECUTION", out.summary.take(500)),
                                         )
+                                        healthMonitor.markHealthy(prof.agentId, prof.providerId, prof.modelId, nowProvider())
+                                        onStepLifecycleUpdate(
+                                            StepLifecycleUpdate(
+                                                projectId = project.projectId,
+                                                taskId = taskId,
+                                                stepId = runStep.stepId,
+                                                stepTitle = runStep.title,
+                                                agentId = prof.agentId,
+                                                agentDisplayName = prof.displayName,
+                                                phase = "COMPLETED",
+                                                detail = out.summary.take(300),
+                                                modifiedFiles = changed,
+                                                stepNumber = runStep.sequenceNumber,
+                                                totalSteps = allSteps.size,
+                                            ),
+                                        )
                                     } else {
                                         taskStore.upsertStep(runStep.copy(status = StepStatus.READY))
                                         taskStore.updateExecution(execRec.copy(executionStatus = "FAILED", completedAt = nowProvider(), errorMessage = verOutcome?.details ?: out.error?.message ?: out.summary))
@@ -757,6 +824,7 @@ class AutonomousSupervisorEngine(
                             }
                         }.awaitAll()
                     }
+                    updateSnapshot(taskId, SupervisorOperationalStatus.SUPERVISING, "อัปเดตความคืบหน้าหลังทำงานแบบขนานเสร็จสิ้น")
                     if (!anyLaunched) kotlinx.coroutines.delay(150)
                     continue
                 }
