@@ -160,6 +160,27 @@ class AutonomousSupervisorEngine(
         if (isSupervisor) spvConnectionStates[taskId] ?: ModelConnectionState.CONNECTED
         else devConnectionStates[taskId] ?: ModelConnectionState.CONNECTED
 
+    /**
+     * Marks an agent as healthy/connected (e.g. after a successful Chat Consultation reply)
+     * and refreshes active snapshots so the Supervisor UI never displays stale disconnect badges.
+     */
+    fun markAgentConnected(agentId: String, providerId: String = "", modelId: String = "") {
+        healthMonitor.markHealthy(agentId, providerId, modelId, nowProvider())
+        val isSpv = agentId == AgentSlot.AGENT_1.id
+        val current = LinkedHashMap(_snapshots.value)
+        current.keys.forEach { tid ->
+            if (isSpv) spvConnectionStates[tid] = ModelConnectionState.CONNECTED
+            else devConnectionStates[tid] = ModelConnectionState.CONNECTED
+            val snap = current[tid] ?: return@forEach
+            current[tid] = snap.copy(
+                agentHealth = healthMonitor.snapshotAll(),
+                spvConnectionState = spvConnectionStates[tid] ?: snap.spvConnectionState,
+                devConnectionState = devConnectionStates[tid] ?: snap.devConnectionState,
+            )
+        }
+        _snapshots.value = current
+    }
+
     private fun updateMetrics(taskId: String, transform: (TaskEfficiencyMetrics) -> TaskEfficiencyMetrics) {
         efficiencyMetricsByTask.compute(taskId) { _, cur ->
             transform(cur ?: TaskEfficiencyMetrics())
@@ -461,6 +482,7 @@ class AutonomousSupervisorEngine(
         }
 
         val loopStartedAt = nowProvider()
+        var windowStartedAt = loopStartedAt
         var sessionActiveExecutionMs = 0L
         var reviewRejectCycles = 0
         var replanAttempts = 0
@@ -532,11 +554,33 @@ class AutonomousSupervisorEngine(
                     return paused
                 }
                 val wallClockElapsedMs = (nowProvider() - loopStartedAt).coerceAtLeast(0L)
+                val windowElapsedMs = (nowProvider() - windowStartedAt).coerceAtLeast(0L)
                 updateMetrics(taskId) { it.copy(wallClockDurationMs = wallClockElapsedMs) }
                 val activeBudgetExceeded = sessionActiveExecutionMs > limits.maxActiveExecutionBudgetMs
-                val wallClockBudgetExceeded = wallClockElapsedMs > limits.maxTotalTaskDurationMs
+                val wallClockBudgetExceeded = windowElapsedMs > limits.maxTotalTaskDurationMs
                 if (activeBudgetExceeded || wallClockBudgetExceeded) {
-                    if (limits.pauseOnDurationBudgetExceeded) {
+                    if (limits.autoContinueAfterCheckpoint) {
+                        // Continuous Rolling Execution: persist durable checkpoint, refresh lease/heartbeat,
+                        // reset slice window, and keep executing seamlessly past 1 hour with zero wasted tokens!
+                        val rolloverCheckpoint = checkpointManager.buildCheckpoint(
+                            taskId = taskId,
+                            stepId = task.currentStepId ?: "rolling-checkpoint",
+                            workspaceDir = workspaceDir,
+                            modifiedFiles = emptyList(),
+                            contextSummary = "Rolling execution checkpoint (sliceActive=${sessionActiveExecutionMs}ms, totalWall=${wallClockElapsedMs}ms). Continuing autonomously.",
+                        )
+                        taskStore.insertCheckpoint(rolloverCheckpoint)
+                        taskStore.upsertTask(task.copy(lastHeartbeatAt = nowProvider(), updatedAt = nowProvider()))
+                        taskStore.insertTaskEvent(
+                            TaskEventEntity(
+                                taskId = taskId,
+                                eventType = "TASK_CHECKPOINT_ROLLOVER",
+                                eventPayload = "Auto-checkpointed after ${windowElapsedMs}ms slice (totalWall=${wallClockElapsedMs}ms); continuing execution window.",
+                            ),
+                        )
+                        sessionActiveExecutionMs = 0L
+                        windowStartedAt = nowProvider()
+                    } else if (limits.pauseOnDurationBudgetExceeded) {
                         val budgetCheckpoint = checkpointManager.buildCheckpoint(
                             taskId = taskId,
                             stepId = task.currentStepId ?: "budget-checkpoint",
@@ -562,8 +606,9 @@ class AutonomousSupervisorEngine(
                         )
                         updateSnapshot(taskId, SupervisorOperationalStatus.PAUSED, paused.lastError.orEmpty(), activePhase = "PAUSED")
                         return paused
+                    } else {
+                        return blockTask(task, "Exceeded maximum autonomous task duration (${limits.maxTotalTaskDurationMs}ms).")
                     }
-                    return blockTask(task, "Exceeded maximum autonomous task duration (${limits.maxTotalTaskDurationMs}ms).")
                 }
 
                 // 4. Load steps & self-recover if an active task ever lost its steps ("No steps planned" guard!)

@@ -796,6 +796,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             checkpointManager = checkpointManager,
             fileLockManager = fileLockManager,
             livenessMonitor = persistentLivenessMonitor,
+            limits = com.jarves.mh.multiagent.supervisor.RecoveryLimitsConfig(
+                autoContinueAfterCheckpoint = true,
+            ),
             mcpManager = mcpConnectionManager,
             modelPoolProvider = {
                 val isAgySignedIn = _state.value.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN ||
@@ -8288,6 +8291,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "ตอนนี้ทีมกำลังดูแลโปรเจกต์ ${project.name} อยู่ครับ $ownerName (สถานะทีม: ${enabledAgents.count { it.isWorking }}/${enabledAgents.size} กำลังทำงาน)"
                     }
                 } else {
+                    autonomousSupervisorEngine.markAgentConnected(
+                        agentId = responder.config.slot.id,
+                        providerId = responder.config.providerId,
+                        modelId = responder.config.modelId,
+                    )
                     cleanChatSummary(res.responseText)
                 }
                 val finalReply = replyBody

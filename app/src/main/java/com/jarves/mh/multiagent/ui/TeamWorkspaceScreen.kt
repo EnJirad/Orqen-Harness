@@ -502,7 +502,7 @@ private fun TeamSupervisorTab(
         com.jarves.mh.multiagent.supervisor.AgentHealthState.TIMEOUT -> "หมดเวลารอ กำลังกู้คืน" to Color(0xFFEA580C)
         com.jarves.mh.multiagent.supervisor.AgentHealthState.RECOVERING -> "กำลังกู้คืนอัตโนมัติ" to Color(0xFFF59E0B)
         com.jarves.mh.multiagent.supervisor.AgentHealthState.RATE_LIMITED -> "ติดลิมิตชั่วคราว กำลังสลับ/รอ" to Color(0xFFF59E0B)
-        com.jarves.mh.multiagent.supervisor.AgentHealthState.PROVIDER_ERROR,
+        com.jarves.mh.multiagent.supervisor.AgentHealthState.PROVIDER_ERROR -> "โมเดลขัดข้องชั่วคราว" to Color(0xFFEA580C)
         com.jarves.mh.multiagent.supervisor.AgentHealthState.UNAVAILABLE -> "เชื่อมต่อโมเดลไม่ได้" to Color(0xFFDC2626)
         com.jarves.mh.multiagent.supervisor.AgentHealthState.DISABLED -> "ปิดใช้งาน" to Color(0xFF64748B)
     }

@@ -232,18 +232,29 @@ class AgentHealthMonitor(
             )
 
             ProgressEventType.FAILED -> {
+                val isActualModelOrProviderFailure = event.errorCategory in setOf(
+                    ExecutionErrorCategory.NETWORK_ERROR,
+                    ExecutionErrorCategory.AUTH_FAILURE,
+                    ExecutionErrorCategory.INVALID_MODEL,
+                    ExecutionErrorCategory.QUOTA_EXHAUSTED,
+                )
                 val state = when (event.errorCategory) {
                     ExecutionErrorCategory.RATE_LIMIT -> AgentHealthState.RATE_LIMITED
                     ExecutionErrorCategory.TIMEOUT, ExecutionErrorCategory.IDLE_STREAM -> AgentHealthState.TIMEOUT
-                    else -> AgentHealthState.PROVIDER_ERROR
+                    ExecutionErrorCategory.NETWORK_ERROR,
+                    ExecutionErrorCategory.AUTH_FAILURE,
+                    ExecutionErrorCategory.INVALID_MODEL,
+                    ExecutionErrorCategory.QUOTA_EXHAUSTED -> AgentHealthState.PROVIDER_ERROR
+                    else -> AgentHealthState.RECOVERING
                 }
                 val rateLimitUntil = if (event.errorCategory == ExecutionErrorCategory.RATE_LIMIT) {
                     now + (event.retryAfterMs ?: 30_000L)
                 } else current.rateLimitedUntilMs
                 val connState = when (event.errorCategory) {
                     ExecutionErrorCategory.NETWORK_ERROR, ExecutionErrorCategory.AUTH_FAILURE -> ModelConnectionState.DISCONNECTED
-                    ExecutionErrorCategory.RATE_LIMIT, ExecutionErrorCategory.TIMEOUT, ExecutionErrorCategory.IDLE_STREAM -> ModelConnectionState.DEGRADED
-                    else -> ModelConnectionState.DEGRADED
+                    ExecutionErrorCategory.RATE_LIMIT, ExecutionErrorCategory.TIMEOUT, ExecutionErrorCategory.IDLE_STREAM,
+                    ExecutionErrorCategory.INVALID_MODEL, ExecutionErrorCategory.QUOTA_EXHAUSTED -> ModelConnectionState.DEGRADED
+                    else -> ModelConnectionState.CONNECTED
                 }
                 current.copy(
                     healthState = state,
@@ -253,12 +264,32 @@ class AgentHealthMonitor(
                     consecutiveFailures = current.consecutiveFailures + 1,
                     recentProviderErrors = (current.recentProviderErrors + SecretSanitizer.sanitize(event.details)).takeLast(10),
                     rateLimitedUntilMs = rateLimitUntil,
-                    connectionAlive = event.errorCategory != ExecutionErrorCategory.NETWORK_ERROR,
+                    connectionAlive = !isActualModelOrProviderFailure,
                     connectionState = connState,
                 )
             }
         }
         records[event.agentId] = updated
+        return updated
+    }
+
+    fun markHealthy(agentId: String, providerId: String = "", modelId: String = "", nowMs: Long = System.currentTimeMillis()): AgentHealthRecord {
+        val current = records[agentId] ?: AgentHealthRecord(
+            agentId = agentId,
+            providerId = providerId,
+            modelId = modelId,
+        )
+        val updated = current.copy(
+            providerId = providerId.ifBlank { current.providerId },
+            modelId = modelId.ifBlank { current.modelId },
+            healthState = AgentHealthState.HEALTHY,
+            lastActivityAtMs = nowMs,
+            lastSuccessfulExecutionAtMs = nowMs,
+            consecutiveFailures = 0,
+            connectionAlive = true,
+            connectionState = ModelConnectionState.CONNECTED,
+        )
+        records[agentId] = updated
         return updated
     }
 

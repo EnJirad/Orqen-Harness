@@ -91,6 +91,7 @@ data class RecoveryLimitsConfig(
     val maxTotalTaskDurationMs: Long = 3_600_000L,
     val maxActiveExecutionBudgetMs: Long = 3_600_000L,
     val pauseOnDurationBudgetExceeded: Boolean = true,
+    val autoContinueAfterCheckpoint: Boolean = false,
 )
 
 enum class RecoveryStrategyKind {

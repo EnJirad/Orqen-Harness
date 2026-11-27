@@ -650,6 +650,104 @@ class OverhaulEfficiencyAndReliabilityTest {
         assertTrue("Active execution duration should be recorded", metrics.activeExecutionDurationMs >= 0L)
     }
 
+    // --- Test J: Non-Provider Step Failure Must NOT Show Disconnected; Chat Reply Resets SPV Health ---
+    @Test
+    fun testJ_NonProviderFailureKeepsConnectionConnectedAndMarkAgentConnectedResetsStaleHealth() {
+        val store = InMemoryOrqenTaskStore()
+        val collab = InMemoryCollaborationStore()
+        val (proj, _) = newProject(store, "test-j-health")
+        val engine = AutonomousSupervisorEngine(
+            taskStore = store,
+            collabStore = collab,
+            runtime = fakeRuntime { req -> RuntimeExecutionResponse(req.requestId, "p", "m", 0L, 1L, true, "ok") },
+            delayFn = {},
+        )
+        store.upsertTask(TaskEntity(taskId = "T-HLTH", projectId = proj.projectId, title = "Health", description = "Check"))
+
+        // Non-provider failure (e.g. verification failure / UNKNOWN) must NOT mark PROVIDER_ERROR or DISCONNECTED
+        val rec1 = engine.healthMonitor.recordEvent(
+            AgentProgressEvent(
+                taskId = "T-HLTH",
+                subtaskId = "S-1",
+                agentId = "agent-01",
+                executionId = "exec-1",
+                eventType = ProgressEventType.FAILED,
+                details = "Test verification rejected: no real TestExecutionEvidence",
+                providerId = "provider-spv",
+                modelId = "model-spv-primary",
+                errorCategory = ExecutionErrorCategory.UNKNOWN,
+            ),
+        )
+        assertEquals(AgentHealthState.RECOVERING, rec1.healthState)
+        assertEquals(ModelConnectionState.CONNECTED, rec1.connectionState)
+        assertTrue(rec1.connectionAlive)
+
+        // Actual network failure marks PROVIDER_ERROR / DISCONNECTED, and markAgentConnected() resets it back to HEALTHY
+        val rec2 = engine.healthMonitor.recordEvent(
+            AgentProgressEvent(
+                taskId = "T-HLTH",
+                subtaskId = "S-2",
+                agentId = "agent-01",
+                executionId = "exec-2",
+                eventType = ProgressEventType.FAILED,
+                details = "Connection reset",
+                providerId = "provider-spv",
+                modelId = "model-spv-primary",
+                errorCategory = ExecutionErrorCategory.NETWORK_ERROR,
+            ),
+        )
+        assertEquals(AgentHealthState.PROVIDER_ERROR, rec2.healthState)
+        assertEquals(ModelConnectionState.DISCONNECTED, rec2.connectionState)
+
+        engine.markAgentConnected("agent-01", "provider-spv", "model-spv-primary")
+        val recovered = engine.healthMonitor.snapshotAll()["agent-01"]
+        assertEquals(AgentHealthState.HEALTHY, recovered?.healthState)
+        assertEquals(ModelConnectionState.CONNECTED, recovered?.connectionState)
+        assertTrue(recovered?.connectionAlive == true)
+    }
+
+    // --- Test K: Continuous Rolling Execution Runs Past 3+ Hours Without Stopping via Auto-Checkpoint ---
+    @Test
+    fun testK_ContinuousRollingExecutionAutoCheckpointsPastThreeHoursWithoutStopping() = runBlocking {
+        val store = InMemoryOrqenTaskStore()
+        val collab = InMemoryCollaborationStore()
+        val (proj, wsDir) = newProject(store, "test-k-continuous")
+        val fakeClock = AtomicLong(1_000_000L)
+
+        val engine = AutonomousSupervisorEngine(
+            taskStore = store,
+            collabStore = collab,
+            limits = RecoveryLimitsConfig(
+                maxTotalTaskDurationMs = 3_600_000L,
+                maxActiveExecutionBudgetMs = 3_600_000L,
+                autoContinueAfterCheckpoint = true,
+            ),
+            nowProvider = { fakeClock.get() },
+            runtime = fakeRuntime { req ->
+                val aid = req.agent.config.slot.id
+                // Simulate 2 hours per step (> 4 hours total across Dev + SPV!)
+                fakeClock.addAndGet(7_200_000L)
+                if (aid == "agent-02") {
+                    File(wsDir, "src/Marathon.kt").apply { parentFile?.mkdirs(); writeText("val hours = 4") }
+                    RuntimeExecutionResponse(req.requestId, "provider-dev", "model-dev-primary", 0L, 10L, true, "Done", modifiedFiles = listOf("src/Marathon.kt"))
+                } else {
+                    val ev = realShellTestEvidence(wsDir, "test -s src/Marathon.kt")
+                    RuntimeExecutionResponse(req.requestId, "provider-spv", "model-spv-primary", 0L, 10L, true, "REVIEW_APPROVED\nTESTS_PASSED", testEvidence = listOf(ev))
+                }
+            },
+            delayFn = {},
+        )
+        val team = registerTwoAgentTeam(engine, proj.projectId)
+
+        val finished = engine.submitAndSupervise(proj.projectId, team, "Marathon build", requiredDeliverableFiles = listOf("src/Marathon.kt"))
+        assertNotNull(finished)
+        assertEquals("Continuous mode must run past 1h+ slices and finish COMPLETED (lastError=${finished!!.lastError})", PersistentTaskStatus.COMPLETED, finished.status)
+        assertTrue(
+            "Expected TASK_CHECKPOINT_ROLLOVER event(s) during multi-hour execution",
+            store.listTaskEvents(finished.taskId).any { it.eventType == "TASK_CHECKPOINT_ROLLOVER" },
+        )
+    }
+
     private fun locateRepoRoot(): File {
         var cur = File(System.getProperty("user.dir") ?: ".")
         repeat(4) {
