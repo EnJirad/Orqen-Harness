@@ -748,6 +748,52 @@ class OverhaulEfficiencyAndReliabilityTest {
         )
     }
 
+    // --- Test L: Read-Only Reviewer Can Execute Real Tests & Accepts Developer's Persisted Passing Tests ---
+    @Test
+    fun testL_ReadOnlyReviewerCanRunTestCommandsAndAcceptsPersistedDevTestEvidence() = runBlocking {
+        val store = InMemoryOrqenTaskStore()
+        val collab = InMemoryCollaborationStore()
+        val (proj, wsDir) = newProject(store, "test-l-reviewer-tests")
+
+        // 1. Read-only Reviewer executor with allowShellCommands=true CAN run real test commands,
+        //    while STILL blocking write_file/edit_file/delete_file!
+        val reviewerExec = WorkspaceToolExecutor(
+            workspaceDir = wsDir,
+            projectSlug = "test-l",
+            allowShellCommands = true,
+            readOnly = true,
+            commandRunner = { dir, _, cmd, _ ->
+                val ev = realShellTestEvidence(dir, cmd)
+                com.jarves.mh.runtime.CommandExecutionResult(cmd, ev.exitCode, ev.stdout, ev.stderr, ev.startedAtMs, ev.completedAtMs)
+            },
+        )
+        val (shellRes, testEv, _) = reviewerExec.executeTool("run_command", org.json.JSONObject().put("command", "echo pytest_passed").toString())
+        assertTrue("Read-only Reviewer must be able to execute test commands", shellRes.success && shellRes.exitCode == 0)
+        val (blockedWrite, _, _) = reviewerExec.executeTool("write_file", org.json.JSONObject().put("path", "src/Nope.kt").put("content", "x").toString())
+        assertFalse("Read-only Reviewer must still be blocked from writing files", blockedWrite.success)
+
+        // 2. When Developer runs real tests (exitCode=0) in Step 1 and SPV reviews & approves in Step 2,
+        //    the persisted passing test evidence satisfies verification cleanly!
+        val engine = AutonomousSupervisorEngine(
+            taskStore = store,
+            collabStore = collab,
+            runtime = fakeRuntime { req ->
+                val aid = req.agent.config.slot.id
+                if (aid == "agent-02") {
+                    File(wsDir, "src/BeeCalc.kt").apply { parentFile?.mkdirs(); writeText("fun sum(a: Int, b: Int) = a + b") }
+                    val ev = realShellTestEvidence(wsDir, "test -s src/BeeCalc.kt && echo UNIT_TESTS_OK")
+                    RuntimeExecutionResponse(req.requestId, "provider-dev", "model-dev-primary", 0L, 10L, true, "Implemented & tested BeeCalc.kt", modifiedFiles = listOf("src/BeeCalc.kt"), testEvidence = listOf(ev))
+                } else {
+                    RuntimeExecutionResponse(req.requestId, "provider-spv", "model-spv-primary", 0L, 10L, true, "REVIEW_APPROVED: Code and Dev test evidence verified.", testEvidence = emptyList())
+                }
+            },
+            delayFn = {},
+        )
+        val team = registerTwoAgentTeam(engine, proj.projectId)
+        val finished = engine.submitAndSupervise(proj.projectId, team, "Build BeeCalc", requiredDeliverableFiles = listOf("src/BeeCalc.kt"))
+        assertEquals(PersistentTaskStatus.COMPLETED, finished?.status)
+    }
+
     private fun locateRepoRoot(): File {
         var cur = File(System.getProperty("user.dir") ?: ".")
         repeat(4) {

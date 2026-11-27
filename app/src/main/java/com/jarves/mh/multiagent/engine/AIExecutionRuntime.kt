@@ -97,7 +97,7 @@ class TeamAgentRunnerRuntimeAdapter(
         val isAntigravity = request.agent.config.providerId == "preset-antigravity" ||
             request.providerConfig?.type == com.jarves.mh.provider.core.ProviderType.ANTIGRAVITY
         val effectiveSkipPerms = request.allowSkipPermissions ||
-            (allowSandboxedCliTools && isAntigravity && request.enableWorkspaceTools && !request.readOnlyTools)
+            (allowSandboxedCliTools && isAntigravity && request.enableWorkspaceTools)
         val effectiveAgentId = request.agentId ?: request.agent.config.slot.id
         val scopedMcpInvoker: (suspend (String, String) -> Pair<Boolean, String>)? =
             if (mcpToolInvoker != null && request.enableWorkspaceTools) {

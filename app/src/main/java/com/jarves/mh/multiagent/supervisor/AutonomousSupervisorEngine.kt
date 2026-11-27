@@ -1098,9 +1098,33 @@ class AutonomousSupervisorEngine(
 
                 val afterSnap = checkpointManager.snapshotWorkspace(workspaceDir)
                 val changedFiles = (output.modifiedFiles + checkpointManager.diffSnapshots(beforeSnap, afterSnap)).distinct().sorted()
-                val verificationOutcome = output.verificationSpec?.let { ResultVerifier.verify(workspaceDir, output.summary, it) }
-                val verificationFailed = output.success && verificationOutcome != null && !verificationOutcome.passed
                 persistStepVerificationEvidence(taskId, runningStep, output, changedFiles)
+                // P0 Fix: If Developer already executed and persisted real passing tests (exitCode=0)
+                // for this task, include that persisted evidence when verifying the Review/QA step!
+                val effectiveVerificationSpec = output.verificationSpec?.let { spec ->
+                    if (spec.mode == VerificationMode.TEST_VERIFICATION && spec.testEvidence.isEmpty()) {
+                        val persistedPassingTests = taskStore.listVerificationEvidenceForTask(taskId)
+                            .filter { it.evidenceType == "TEST" && it.exitCode == 0 }
+                            .map { ev ->
+                                com.jarves.mh.runtime.TestExecutionEvidence(
+                                    command = ev.command,
+                                    startedAtMs = ev.timestampMs,
+                                    completedAtMs = ev.timestampMs,
+                                    exitCode = ev.exitCode ?: 0,
+                                    stdout = ev.stdout,
+                                    stderr = ev.stderr,
+                                    outcome = com.jarves.mh.runtime.TestExecutionOutcome.TESTS_PASSED,
+                                    summary = "Persisted task test evidence (exitCode=0)",
+                                    workingDir = ev.workingDir,
+                                    passedCount = ev.passedCount,
+                                    failedCount = ev.failedCount,
+                                )
+                            }
+                        if (persistedPassingTests.isNotEmpty()) spec.copy(testEvidence = persistedPassingTests) else spec
+                    } else spec
+                }
+                val verificationOutcome = effectiveVerificationSpec?.let { ResultVerifier.verify(workspaceDir, output.summary, it) }
+                val verificationFailed = output.success && verificationOutcome != null && !verificationOutcome.passed
 
                 // P0 Fix: Explicit REVIEW_REJECTED must always route to the Developer fix + Re-Review
                 // cycle even if tests failed or were not yet passing (verificationFailed == true).
