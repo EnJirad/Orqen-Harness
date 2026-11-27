@@ -890,18 +890,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 workStatus = "Working",
                             )
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                            val isThai = isThaiUiLanguage()
                             if (slot != AgentSlot.AGENT_1) {
-                                updateAgentActivity(AgentSlot.AGENT_1, ActivityType.WAITING, "", "Monitoring $displayName")
+                                val monitorText = if (isThai) "กำลังติดตามงานของ $displayName" else "Monitoring $displayName"
+                                updateAgentActivity(AgentSlot.AGENT_1, ActivityType.WAITING, "", monitorText)
                             }
-                            updateAgentActivity(slot, act, upd.stepTitle, upd.detail)
                             val actLabel = when (act) {
-                                ActivityType.REVIEWING -> "กำลังตรวจสอบ/รีวิว"
-                                ActivityType.ANALYZING -> "กำลังวิเคราะห์"
-                                ActivityType.FIXING_BUG -> "กำลังแก้บั๊ก"
-                                else -> "กำลังเขียนโค้ด"
+                                ActivityType.REVIEWING -> if (isThai) "กำลังตรวจสอบ/รีวิว" else "Reviewing & QA"
+                                ActivityType.ANALYZING -> if (isThai) "กำลังวิเคราะห์" else "Analyzing"
+                                ActivityType.FIXING_BUG -> if (isThai) "กำลังแก้บั๊ก" else "Fixing bug"
+                                else -> if (isThai) "กำลังเขียนโค้ด" else "Writing code"
                             }
+                            updateAgentActivity(slot, act, upd.stepTitle, "$actLabel: ${upd.stepTitle.take(60)}")
                             val stepPrefix = if (upd.stepNumber > 0 && upd.totalSteps > 0) {
-                                "ขั้น ${upd.stepNumber}/${upd.totalSteps} · "
+                                if (isThai) "ขั้น ${upd.stepNumber}/${upd.totalSteps} · " else "Step ${upd.stepNumber}/${upd.totalSteps} · "
                             } else ""
                             updateTeamForegroundNotification(
                                 _state.value.activeTeamProject?.name ?: "ORQEN",
@@ -910,27 +912,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         "PROGRESS" -> {
                             if (upd.detail.isNotBlank()) {
-                                appendAgentLiveLog(slot, upd.detail)
+                                val isThai = isThaiUiLanguage()
+                                val (humanProgress, activeFile) = formatLiveProgressForUser(upd.detail, upd.stepTitle, isThai)
+                                appendAgentLiveLog(slot, humanProgress)
+                                val currentAct = _state.value.teamAgents
+                                    .firstOrNull { it.config.slot == slot }
+                                    ?.activityState?.activity
+                                    ?.takeIf { it != ActivityType.WAITING && it != ActivityType.COMPLETED }
+                                    ?: if (upd.stepTitle.contains("review", ignoreCase = true) || upd.stepTitle.contains("verify", ignoreCase = true)) {
+                                        ActivityType.REVIEWING
+                                    } else ActivityType.WRITING_CODE
+                                updateAgentActivity(slot, currentAct, upd.stepTitle, humanProgress, activeFile)
                                 val now = System.currentTimeMillis()
                                 if (now - lastNotifProgressUpdateMs >= 3_500L) {
                                     lastNotifProgressUpdateMs = now
                                     val stepPrefix = if (upd.stepNumber > 0 && upd.totalSteps > 0) {
-                                        "ขั้น ${upd.stepNumber}/${upd.totalSteps} · "
+                                        if (isThai) "ขั้น ${upd.stepNumber}/${upd.totalSteps} · " else "Step ${upd.stepNumber}/${upd.totalSteps} · "
                                     } else ""
                                     updateTeamForegroundNotification(
                                         _state.value.activeTeamProject?.name ?: "ORQEN",
-                                        "$stepPrefix$displayName: ${upd.detail.trim().take(70)}",
+                                        "$stepPrefix$displayName: ${humanProgress.take(75)}",
                                     )
                                 }
                             }
                         }
                         "COMPLETED" -> {
-                            updateAgentActivity(slot, ActivityType.COMPLETED, upd.stepTitle, "เสร็จสิ้น")
+                            val isThai = isThaiUiLanguage()
+                            updateAgentActivity(slot, ActivityType.COMPLETED, upd.stepTitle, if (isThai) "เสร็จสิ้น" else "Completed")
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
                             val supName = agentNameFor(AgentSlot.AGENT_1)
                             val stepPrefix = if (upd.stepNumber > 0 && upd.totalSteps > 0) {
-                                "เสร็จขั้น ${upd.stepNumber}/${upd.totalSteps} · "
-                            } else "เสร็จสิ้น · "
+                                if (isThai) "เสร็จขั้น ${upd.stepNumber}/${upd.totalSteps} · " else "Done Step ${upd.stepNumber}/${upd.totalSteps} · "
+                            } else {
+                                if (isThai) "เสร็จสิ้น · " else "Completed · "
+                            }
                             updateTeamForegroundNotification(
                                 _state.value.activeTeamProject?.name ?: "ORQEN",
                                 "$stepPrefix$displayName: ${upd.stepTitle.take(55)}",
@@ -4431,9 +4446,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val details = output.readTailText(MAX_PROCESS_OUTPUT_BYTES).trim()
                         check(exit == 0) { details.takeLast(600).ifBlank { str(R.string.vm_git_clone_failed_exit, exit) } }
                         val metadata = detectImportedProjectMetadata(workspace)
+                        // Name Git-cloned projects after their real repository name (e.g. GitHub repo name),
+                        // while keeping the storage directory keyed by a unique UUID (projectId) so duplicate
+                        // display names are safely allowed without workspace path collisions!
+                        val repoDisplayName = repositoryName?.substringAfterLast('/')?.trim()?.takeIf { it.isNotBlank() }
+                            ?: normalized.trimEnd('/').substringAfterLast('/').removeSuffix(".git").trim().takeIf { it.isNotBlank() }
+                            ?: identity.displayName
                         Project(
                             id = projectId,
-                            name = identity.displayName,
+                            name = repoDisplayName,
                             description = repositoryName?.let { "GitHub · $it" } ?: "Imported Git repository",
                             language = metadata.second,
                             slug = identity.slug,
@@ -7343,10 +7364,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             requiredDeliverableFiles = requiredDeliverableFiles,
                         )
                     } else {
+                        // Feed SPV's reorganized, synthesized engineering plan directly to the execution DAG
+                        // so Dev receives a clean structured plan rather than raw unorganized chat transcripts!
+                        val structuredObjective = if (!spvBriefingText.isNullOrBlank()) {
+                            "$cleanObjective\n\n--- SPV SYNTHESIZED PLAN ---\n${spvBriefingText.take(2_400)}"
+                        } else cleanObjective
                         autonomousSupervisorEngine.submitAndSupervise(
                             projectId = activeProj.id,
                             team = team,
-                            objective = cleanObjective,
+                            objective = structuredObjective,
                             requiredDeliverableFiles = requiredDeliverableFiles,
                             attachmentPaths = attachmentPaths,
                             onTaskCreated = { created ->
@@ -7599,9 +7625,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val taskSteps = existingTask?.let { t ->
             withContext(Dispatchers.IO) { orqenTaskStore.listStepsForTask(t.taskId) }
         }.orEmpty()
-        val recentChat = _state.value.teamGroupMessages.takeLast(6).joinToString("\n") { m ->
+        val recentChat = _state.value.teamGroupMessages.takeLast(20).joinToString("\n") { m ->
             val who = if (m.senderSlot == null) ownerName else m.senderName
-            "- $who: ${m.text.trim().take(200)}"
+            "- $who: ${m.text.trim().take(320)}"
         }
 
         val prompt = buildString {
@@ -7628,10 +7654,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLine("Recent discussion:\n$recentChat")
                 }
                 appendLine()
-                appendLine("Write a brief, natural message directly to $ownerName:")
-                appendLine("1. Briefly state what is already in the project / what work is still pending (if any).")
-                appendLine("2. Clearly summarize your concrete execution plan in your own words.")
-                appendLine("3. Confirm you are now delegating implementation to $devName and will independently test & verify once ready.")
+                appendLine("Write a clear, natural, well-structured message directly to $ownerName:")
+                appendLine("1. Briefly report what already exists in the workspace / what work is still pending (if any).")
+                appendLine("2. Synthesize and reorganize EVERYTHING discussed with $ownerName into a clean, actionable engineering plan (goals, features, files/architecture, verification criteria) — do NOT just echo raw chat lines.")
+                appendLine("3. Confirm you are now handing off this structured plan to $devName to implement and will independently test & verify afterward.")
                 appendLine("Do NOT ask the Owner for permission to start — execution is starting immediately.")
             } else {
                 appendLine("TASK: All work and verification for project '${project.name}' (objective: \"$objective\") has COMPLETED successfully with zero remaining blockers!")
@@ -7696,6 +7722,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } finally {
             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
         }
+    }
+
+    /**
+     * Converts raw tool/stream progress strings into concise, human-readable localized status text
+     * (and extracts the active file path when applicable) for both the in-app status strip and
+     * Android top status bar notifications.
+     */
+    private fun formatLiveProgressForUser(
+        rawProgress: String,
+        stepTitle: String,
+        isThai: Boolean,
+    ): Pair<String, String> {
+        val trimmed = rawProgress.trim()
+        if (trimmed.startsWith("TOOL_STARTED:")) {
+            val parts = trimmed.removePrefix("TOOL_STARTED:").split(":", limit = 2)
+            val tool = parts[0].trim().lowercase()
+            val detail = parts.getOrElse(1) { "" }.trim()
+            val shortFile = detail.substringAfterLast('/').take(48)
+            return when (tool) {
+                "write_file" -> (if (isThai) "กำลังสร้าง/เขียนไฟล์ $shortFile" else "Writing file $shortFile") to detail
+                "edit_file" -> (if (isThai) "กำลังแก้ไขไฟล์ $shortFile" else "Editing file $shortFile") to detail
+                "delete_file" -> (if (isThai) "กำลังลบไฟล์ $shortFile" else "Deleting file $shortFile") to detail
+                "read_file" -> (if (isThai) "กำลังอ่านและตรวจสอบไฟล์ $shortFile" else "Reading & inspecting $shortFile") to detail
+                "search_files" -> (if (isThai) "กำลังค้นหาโค้ดในโปรเจกต์ (${detail.take(32)})" else "Searching codebase (${detail.take(32)})") to ""
+                "list_dir" -> (if (isThai) "กำลังสำรวจโครงสร้างโฟลเดอร์โปรเจกต์" else "Inspecting project directory structure") to ""
+                "run_command" -> (if (isThai) "กำลังรันคำสั่งทดสอบ/บิลด์ (${detail.take(40)})" else "Running command (${detail.take(40)})") to ""
+                "verify_apk" -> (if (isThai) "กำลังตรวจสอบไฟล์ APK ที่บิลด์เสร็จ" else "Verifying built APK artifact") to ""
+                else -> (if (isThai) "กำลังใช้เครื่องมือ $tool ${detail.take(36)}".trim() else "Running $tool ${detail.take(36)}".trim()) to ""
+            }
+        }
+        if (trimmed.startsWith("TOOL_COMPLETED:")) {
+            val tool = trimmed.removePrefix("TOOL_COMPLETED:").trim()
+            return (if (isThai) "ดำเนินการ $tool เสร็จแล้ว กำลังประมวลผลต่อ..." else "Completed $tool, continuing...") to ""
+        }
+        if (trimmed.startsWith("Updating workspace files", ignoreCase = true)) {
+            return (if (isThai) "กำลังอัปเดตและบันทึกไฟล์โค้ดในโปรเจกต์..." else "Updating project workspace files...") to ""
+        }
+        if (trimmed.startsWith("Calling ", ignoreCase = true)) {
+            return (if (isThai) "กำลังคิดและประมวลผลแผน/โค้ด..." else trimmed) to ""
+        }
+        return trimmed.take(90) to ""
     }
 
     private fun notifyTeamTaskCompleted(projectName: String, summary: String) {
@@ -8599,9 +8666,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 val chatPrompt = buildString {
                     appendLine("You are ${responder.config.name} (${responder.config.role.title}) on this AI Team.")
-                    appendLine("INTERACTION MODE: CHAT_CONSULTATION (read-only project inspection & consultation).")
-                    appendLine("You CAN use read-only tools (list_dir, read_file, search_files) to inspect the real project workspace and answer the Owner accurately.")
-                    appendLine("You MUST NOT modify, create, or delete files in Chat Mode; actual implementation begins when the Owner switches to Task Mode or clicks Start.")
+                    appendLine("INTERACTION MODE: CHAT_CONSULTATION (full read-only inspection & diagnostics).")
+                    appendLine("You CAN use ALL inspection and diagnostic tools (list_dir, read_file, search_files, run_command for read-only checks/tests/diagnostics) to thoroughly inspect the project and answer the Owner accurately.")
+                    appendLine("The ONLY restriction in Chat Mode is that you MUST NOT create, edit, or delete source files; code modifications begin when the Owner switches to Task Mode or clicks Start.")
                     appendLine("Owner's name (address the user as): $ownerName")
                     appendLine("Your employee personality & tone: ${responder.config.effectivePersonality()}")
                     appendLine("STRICT RULES IN CHAT MODE:")
