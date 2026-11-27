@@ -822,15 +822,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     when (upd.phase) {
                         "PLANNED" -> {
                             val supName = agentNameFor(AgentSlot.AGENT_1)
-                            // P0 Fix: Post plan synchronously without artificial delay(250L) so it can NEVER
-                            // race with and overwrite the immediate Step 1 "STARTED" handoff back to PLANNING.
-                            appendProjectTeamMessage(
-                                projectId = upd.projectId,
-                                senderSlot = AgentSlot.AGENT_1,
-                                senderName = supName,
-                                text = upd.detail,
-                                messageType = GroupMessageType.TASK_ASSIGNMENT,
-                            )
+                            // If SPV already delivered a natural AI-authored planning briefing for this submission,
+                            // keep the structured DAG summary in internal live logs instead of posting a robotic duplicate bubble.
+                            if (spvAiBriefedCurrentSubmission) {
+                                appendAgentLiveLog(AgentSlot.AGENT_1, upd.detail)
+                                spvAiBriefedCurrentSubmission = false
+                            } else {
+                                appendProjectTeamMessage(
+                                    projectId = upd.projectId,
+                                    senderSlot = AgentSlot.AGENT_1,
+                                    senderName = supName,
+                                    text = upd.detail,
+                                    messageType = GroupMessageType.TASK_ASSIGNMENT,
+                                )
+                            }
                             _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
                             val anyWorkerExecuting = _state.value.teamAgents.any { agent ->
                                 agent.config.slot != AgentSlot.AGENT_1 && agent.activityState.activity in setOf(
@@ -978,6 +983,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
     private var activeSupervisedTaskId: String? = null
+    @Volatile private var spvAiBriefedCurrentSubmission: Boolean = false
     private var lastNotifProgressUpdateMs: Long = 0L
     private var supervisorSnapshotJob: kotlinx.coroutines.Job? = null
     private val multiSessionController by lazy {
@@ -7252,26 +7258,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }.onFailure { err ->
                     android.util.Log.w("OrqenMainViewModel", "Failed to schedule TaskRecoveryJobService", err)
                 }
-                val result = withContext(Dispatchers.IO) {
-                    val lowerObj = cleanObjective.lowercase()
-                    val isResumeDirective = listOf(
-                        "ทำงานต่อ", "ทำต่อ", "ต่อจากเดิม", "ต่อเลย", "ลุยต่อ",
-                        "continue", "resume", "keep going", "start building this based on our finalized discussion",
-                    ).any { lowerObj.contains(it) }
-                    val resumableTask = if (isResumeDirective) {
-                        orqenTaskStore.listTasksForProject(activeProj.id)
-                            .firstOrNull { t ->
-                                t.status in setOf(
-                                    com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PAUSED,
-                                    com.jarves.mh.multiagent.persistence.PersistentTaskStatus.BLOCKED,
-                                    com.jarves.mh.multiagent.persistence.PersistentTaskStatus.READY,
-                                    com.jarves.mh.multiagent.persistence.PersistentTaskStatus.QUEUED,
-                                ) && orqenTaskStore.listStepsForTask(t.taskId).isNotEmpty()
-                            }
-                    } else null
+                val wsDirForBrief = File(getApplication<Application>().filesDir, "team_workspaces/${activeProj.id}").apply { mkdirs() }
+                val existingTasksForBrief = withContext(Dispatchers.IO) {
+                    orqenTaskStore.listTasksForProject(activeProj.id)
+                }
+                val lowerObj = cleanObjective.lowercase()
+                val isResumeDirective = listOf(
+                    "ทำงานต่อ", "ทำต่อ", "ต่อจากเดิม", "ต่อเลย", "ลุยต่อ",
+                    "continue", "resume", "keep going", "start building this based on our finalized discussion",
+                ).any { lowerObj.contains(it) }
+                val resumableTask = if (isResumeDirective) {
+                    existingTasksForBrief.firstOrNull { t ->
+                        t.status in setOf(
+                            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PAUSED,
+                            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.BLOCKED,
+                            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.READY,
+                            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.QUEUED,
+                        ) && withContext(Dispatchers.IO) { orqenTaskStore.listStepsForTask(t.taskId).isNotEmpty() }
+                    }
+                } else null
 
+                // Real AI-authored SPV Workspace Inspection & Planning Briefing (never a robotic template!)
+                val spvBriefingText = generateSpvAiBriefing(
+                    project = activeProj,
+                    workspaceDir = wsDirForBrief,
+                    phase = "START_AND_PLAN",
+                    objective = cleanObjective,
+                    existingTask = resumableTask ?: existingTasksForBrief.firstOrNull(),
+                )
+                if (!spvBriefingText.isNullOrBlank()) {
+                    spvAiBriefedCurrentSubmission = true
+                    appendProjectTeamMessage(
+                        projectId = activeProj.id,
+                        senderSlot = AgentSlot.AGENT_1,
+                        senderName = agentNameFor(AgentSlot.AGENT_1),
+                        text = spvBriefingText,
+                        messageType = GroupMessageType.TASK_ASSIGNMENT,
+                        workStatus = "Working",
+                    )
+                }
+
+                val result = withContext(Dispatchers.IO) {
                     if (resumableTask != null) {
-                        // Resume existing task directly without creating a duplicate plan or repeating "วางแผนงานเสร็จแล้ว"!
+                        // Resume existing task directly without creating a duplicate plan!
                         orqenTaskStore.runInTransaction {
                             orqenTaskStore.listStepsForTask(resumableTask.taskId).forEach { st ->
                                 if (st.status == com.jarves.mh.multiagent.persistence.StepStatus.BLOCKED ||
@@ -7298,14 +7327,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         activeSupervisedTaskId = resumableTask.taskId
                         _state.update { it.copy(activeSupervisedTaskId = resumableTask.taskId) }
-                        appendProjectTeamMessage(
-                            projectId = activeProj.id,
-                            senderSlot = AgentSlot.AGENT_1,
-                            senderName = agentNameFor(AgentSlot.AGENT_1),
-                            text = "▶️ รับทราบครับ กำลังทำงานต่อจากจุดที่ค้างไว้ (${resumableTask.taskId}: ${resumableTask.title}) ทันทีโดยไม่วางแผนซ้ำครับ",
-                            messageType = GroupMessageType.PROGRESS_UPDATE,
-                            workStatus = "Working",
-                        )
+                        if (spvBriefingText.isNullOrBlank()) {
+                            appendProjectTeamMessage(
+                                projectId = activeProj.id,
+                                senderSlot = AgentSlot.AGENT_1,
+                                senderName = agentNameFor(AgentSlot.AGENT_1),
+                                text = "▶️ รับทราบครับ กำลังทำงานต่อจากจุดที่ค้างไว้ (${resumableTask.taskId}: ${resumableTask.title}) ทันทีครับ",
+                                messageType = GroupMessageType.PROGRESS_UPDATE,
+                                workStatus = "Working",
+                            )
+                        }
                         autonomousSupervisorEngine.superviseTask(
                             taskId = resumableTask.taskId,
                             team = team,
@@ -7325,6 +7356,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 }
+                spvAiBriefedCurrentSubmission = false
                 if (result != null) {
                     activeSupervisedTaskId = result.taskId
                     _state.update { it.copy(activeSupervisedTaskId = result.taskId) }
@@ -7353,7 +7385,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             .toList()
                     } else emptyList()
 
-                    val completionMsg = when {
+                    val aiFinalSummary = if (result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED) {
+                        generateSpvAiBriefing(
+                            project = activeProj,
+                            workspaceDir = wsDir,
+                            phase = "FINAL_DELIVERY",
+                            objective = result.title,
+                            existingTask = result,
+                            deliveredFiles = deliveredFiles,
+                            builtApkName = builtApk?.name,
+                            webEntryRel = webEntryRel,
+                        )
+                    } else null
+                    val completionMsg = aiFinalSummary ?: when {
                         result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && builtApk != null ->
                             "🎉 แอป '${activeProj.name}' สร้างและตรวจสอบเสร็จสมบูรณ์แล้วครับ! ไม่มีงานค้างเพิ่มเติม คุณสามารถกดปุ่มติดตั้ง APK ด้านล่างเพื่อลงเครื่องทดสอบได้ทันที (ไฟล์ถูกเก็บไว้ในแถบ Files: apk/${builtApk.name})"
                         result.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.COMPLETED && webEntryRel != null ->
@@ -7512,6 +7556,145 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .putExtra(RuntimeExecutionService.EXTRA_DETAIL, statusDetail)
                     .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, true),
             )
+        }
+    }
+
+    /**
+     * Asks SPV's real AI model to think and author a natural, project-aware briefing
+     * (either inspecting pending work + explaining the plan at Start, or summarizing verified
+     * deliverables on Final Delivery) instead of posting static hardcoded templates.
+     */
+    private suspend fun generateSpvAiBriefing(
+        project: Project,
+        workspaceDir: File,
+        phase: String,
+        objective: String,
+        existingTask: com.jarves.mh.multiagent.persistence.TaskEntity? = null,
+        deliveredFiles: List<String> = emptyList(),
+        builtApkName: String? = null,
+        webEntryRel: String? = null,
+    ): String? {
+        val enabledAgents = _state.value.teamAgents.filter { it.config.isEnabled }
+        val spv = com.jarves.mh.multiagent.collab.SpvConversationRouter.selectSoleOwnerFacingSupervisor(enabledAgents)
+            ?: return null
+        val devName = enabledAgents.firstOrNull { it.config.slot != spv.config.slot }?.config?.name ?: "Dev"
+        val ownerName = effectiveOwnerName()
+        val providerCfg = providerManager.configs.value.firstOrNull { it.id == spv.config.providerId }
+        val langHint = if (isThaiUiLanguage()) "Thai" else "English"
+
+        val workspaceFiles = withContext(Dispatchers.IO) {
+            workspaceDir.walkTopDown()
+                .maxDepth(4)
+                .filter { f ->
+                    f.isFile &&
+                        !f.path.contains("/.git/") &&
+                        !f.path.contains("/.gradle/") &&
+                        !f.path.contains("/build/") &&
+                        f.name != ".orqen_chat.json"
+                }
+                .take(25)
+                .mapNotNull { runCatching { it.relativeTo(workspaceDir).path }.getOrNull() }
+                .toList()
+        }
+        val taskSteps = existingTask?.let { t ->
+            withContext(Dispatchers.IO) { orqenTaskStore.listStepsForTask(t.taskId) }
+        }.orEmpty()
+        val recentChat = _state.value.teamGroupMessages.takeLast(6).joinToString("\n") { m ->
+            val who = if (m.senderSlot == null) ownerName else m.senderName
+            "- $who: ${m.text.trim().take(200)}"
+        }
+
+        val prompt = buildString {
+            appendLine("You are ${spv.config.name} (SPV — Supervisor, Planner & QA) leading this AI Team for project '${project.name}'.")
+            appendLine("Owner name: $ownerName | Developer teammate: $devName")
+            appendLine("Reply naturally, concisely, and thoughtfully in $langHint (NO robotic boilerplate templates, NO raw JSON/tool dumps).")
+            appendLine()
+            if (phase == "START_AND_PLAN") {
+                appendLine("TASK: The Owner just clicked Start / submitted a task directive: \"$objective\"")
+                if (workspaceFiles.isNotEmpty()) {
+                    appendLine("Existing files already in this project workspace (${workspaceFiles.size} shown): ${workspaceFiles.joinToString(", ")}")
+                } else {
+                    appendLine("Workspace is currently fresh (no source files yet).")
+                }
+                if (taskSteps.isNotEmpty()) {
+                    val done = taskSteps.filter { it.status == com.jarves.mh.multiagent.persistence.StepStatus.COMPLETED }
+                    val pending = taskSteps.filter { it.status != com.jarves.mh.multiagent.persistence.StepStatus.COMPLETED }
+                    appendLine("Previous task (${existingTask?.taskId}): ${done.size}/${taskSteps.size} steps done.")
+                    if (pending.isNotEmpty()) {
+                        appendLine("Unfinished/pending items: ${pending.joinToString("; ") { "${it.title} (${it.status})" }}")
+                    }
+                }
+                if (recentChat.isNotBlank()) {
+                    appendLine("Recent discussion:\n$recentChat")
+                }
+                appendLine()
+                appendLine("Write a brief, natural message directly to $ownerName:")
+                appendLine("1. Briefly state what is already in the project / what work is still pending (if any).")
+                appendLine("2. Clearly summarize your concrete execution plan in your own words.")
+                appendLine("3. Confirm you are now delegating implementation to $devName and will independently test & verify once ready.")
+                appendLine("Do NOT ask the Owner for permission to start — execution is starting immediately.")
+            } else {
+                appendLine("TASK: All work and verification for project '${project.name}' (objective: \"$objective\") has COMPLETED successfully with zero remaining blockers!")
+                if (deliveredFiles.isNotEmpty()) {
+                    appendLine("Verified deliverable files: ${deliveredFiles.joinToString(", ")}")
+                }
+                if (builtApkName != null) {
+                    appendLine("Android Debug APK built and ready to install right below this message: apk/$builtApkName")
+                }
+                if (webEntryRel != null) {
+                    appendLine("Web entry file ready for live Preview right below this message: $webEntryRel")
+                }
+                appendLine()
+                appendLine("Write a warm, clear, natural final delivery summary to $ownerName confirming:")
+                appendLine("1. Everything requested is complete, tested, and verified with no errors.")
+                appendLine("2. Highlight the key deliverables created.")
+                appendLine("3. Invite $ownerName to tap the APK install button / Web Preview button / Files tab below to try it out.")
+            }
+        }
+
+        _state.update {
+            it.copy(
+                teamTypingAgentName = spv.config.name,
+                teamTypingAgentSlot = spv.config.slot,
+            )
+        }
+        if (phase == "START_AND_PLAN") {
+            updateAgentActivity(AgentSlot.AGENT_1, ActivityType.ANALYZING, project.name, "กำลังวิเคราะห์โปรเจกต์และวางแผนงาน")
+        }
+        return try {
+            val useReadOnlyInspection = (phase == "START_AND_PLAN")
+            val res = kotlinx.coroutines.withTimeout(if (useReadOnlyInspection) 90_000L else 30_000L) {
+                teamAgentRunner.executeTurn(
+                    agent = spv,
+                    providerConfig = providerCfg,
+                    workspaceDir = workspaceDir,
+                    projectSlug = project.slug,
+                    prompt = prompt,
+                    useIsolatedAgyHome = useIsolatedAgyHomeFor(spv.config.slot),
+                    enableCache = false,
+                    knownAgyModels = _state.value.antigravityModels,
+                    enableWorkspaceTools = useReadOnlyInspection,
+                    readOnlyTools = true,
+                    onProgress = { chunk ->
+                        val cleaned = chunk.trim()
+                        if (cleaned.isNotBlank()) {
+                            appendAgentLiveLog(spv.config.slot, cleaned)
+                        }
+                    },
+                )
+            }
+            if (!res.isError && res.responseText.isNotBlank()) {
+                autonomousSupervisorEngine.markAgentConnected(
+                    agentId = spv.config.slot.id,
+                    providerId = spv.config.providerId,
+                    modelId = spv.config.modelId,
+                )
+                cleanChatSummary(res.responseText)
+            } else null
+        } catch (_: Throwable) {
+            null
+        } finally {
+            _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
         }
     }
 
@@ -8416,7 +8599,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 val chatPrompt = buildString {
                     appendLine("You are ${responder.config.name} (${responder.config.role.title}) on this AI Team.")
-                    appendLine("INTERACTION MODE: CHAT_CONSULTATION (strictly read-only technical consultation & design partner).")
+                    appendLine("INTERACTION MODE: CHAT_CONSULTATION (read-only project inspection & consultation).")
+                    appendLine("You CAN use read-only tools (list_dir, read_file, search_files) to inspect the real project workspace and answer the Owner accurately.")
+                    appendLine("You MUST NOT modify, create, or delete files in Chat Mode; actual implementation begins when the Owner switches to Task Mode or clicks Start.")
                     appendLine("Owner's name (address the user as): $ownerName")
                     appendLine("Your employee personality & tone: ${responder.config.effectivePersonality()}")
                     appendLine("STRICT RULES IN CHAT MODE:")
@@ -8448,7 +8633,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     useIsolatedAgyHome = useIsolatedAgyHomeFor(responder.config.slot),
                     enableCache = false,
                     knownAgyModels = _state.value.antigravityModels,
-                    enableWorkspaceTools = false,
+                    enableWorkspaceTools = true,
                     readOnlyTools = true,
                     onProgress = { chunk ->
                         // Keep internal background activity inside the agent's live log dropdown —

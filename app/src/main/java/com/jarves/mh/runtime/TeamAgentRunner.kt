@@ -581,11 +581,11 @@ class TeamAgentRunner(
             appendLine(agent.config.customPrompt.ifBlank { agent.config.role.systemInstructions })
             appendLine()
             if (enableWorkspaceTools) {
-                // P0 Fix: Allow shell/test commands for Reviewers/QA too (readOnly only blocks source writes,
-                // never real test execution!).
+                // In read-only consultation/analysis mode, allow file inspection (list_dir, read_file, search_files)
+                // while blocking file writes and shell commands. In Task Mode (readOnlyTools=false), allow ALL tools!
                 appendLine(
                     WorkspaceToolExecutor.toolPromptInstructions(
-                        allowShell = hasLinuxRuntime,
+                        allowShell = hasLinuxRuntime && !readOnlyTools,
                         readOnly = readOnlyTools,
                     ),
                 )
@@ -619,7 +619,7 @@ class TeamAgentRunner(
                     workspaceDir = workspaceDir,
                     projectSlug = projectSlug,
                     commandRunner = cmdRunner,
-                    allowShellCommands = hasLinuxRuntime,
+                    allowShellCommands = hasLinuxRuntime && !readOnlyTools,
                     readOnly = readOnlyTools,
                     agentId = agentId,
                     fileLockManager = fileLockManager,
