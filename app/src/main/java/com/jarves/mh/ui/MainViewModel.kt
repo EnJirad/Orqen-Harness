@@ -545,6 +545,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var githubAuthProcess: Process? = null
     private var githubAuthJob: kotlinx.coroutines.Job? = null
     private var teamCycleJob: kotlinx.coroutines.Job? = null
+    private val activeTeamChatJobs = java.util.concurrent.ConcurrentHashMap<AgentSlot, kotlinx.coroutines.Job>()
     private val pendingTeamDirectives = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private val teamProjectChats = mutableMapOf<String, MutableList<GroupChatMessage>>()
     private val teamProjectTerminals = mutableMapOf<String, String>()
@@ -8621,32 +8622,163 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return keywords.any { lower.contains(it) }
     }
 
+    private fun tryHandleLiveRoleHandover(
+        projectId: String,
+        userMessage: String,
+        targetSlot: AgentSlot?,
+        enabledAgents: List<AgentState>,
+    ): Boolean {
+        val handover = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.detectLiveHandoverRequest(
+            text = userMessage,
+            explicitTarget = targetSlot,
+            enabledAgents = enabledAgents,
+        ) ?: return false
+
+        val ownerName = effectiveOwnerName()
+        val takeover = handover.takeoverAgent
+        val relieved = handover.relievedAgent
+        viewModelScope.launch {
+            val reassignedSteps = withContext(Dispatchers.IO) {
+                com.jarves.mh.multiagent.collab.TeamGroupChatRouter.applyLiveRoleHandover(
+                    store = orqenTaskStore,
+                    projectId = projectId,
+                    takeoverAgentId = takeover.config.slot.id,
+                    relievedAgentId = relieved.config.slot.id,
+                )
+            }
+            // Free the relieved agent to chat with the Owner while the takeover agent steps in
+            val updatedAgents = _state.value.teamAgents.map { agent ->
+                when (agent.config.slot) {
+                    relieved.config.slot -> agent.copy(
+                        isWorking = false,
+                        activityState = agent.activityState.copy(
+                            activity = ActivityType.WAITING,
+                            lastAction = "ส่งต่องานให้ ${takeover.config.name} แล้ว — พร้อมคุยกับ $ownerName",
+                        ),
+                    )
+                    takeover.config.slot -> agent.copy(
+                        isWorking = true,
+                        activityState = agent.activityState.copy(
+                            activity = ActivityType.ANALYZING,
+                            lastAction = "รับช่วงต่อจาก ${relieved.config.name}: ${userMessage.take(60)}",
+                        ),
+                    )
+                    else -> agent
+                }
+            }
+            _state.update { it.copy(teamAgents = updatedAgents) }
+
+            val stepInfo = if (reassignedSteps > 0) " ($reassignedSteps ขั้นตอนที่ค้างอยู่ถูกโอนมาเรียบร้อย)" else ""
+            appendProjectTeamMessage(
+                projectId = projectId,
+                senderSlot = takeover.config.slot,
+                senderName = takeover.config.name,
+                text = "รับทราบครับ $ownerName! ผมรับช่วงต่อจาก ${relieved.config.name} ทันที$stepInfo จะลุยทำต่อจากจุดเดิมให้เลยครับ ให้ ${relieved.config.name} พักมาคุยกับ $ownerName ได้เต็มที่ครับ",
+                messageType = GroupMessageType.PROGRESS_UPDATE,
+            )
+            appendProjectTeamMessage(
+                projectId = projectId,
+                senderSlot = relieved.config.slot,
+                senderName = relieved.config.name,
+                text = "ส่งมอบงานต่อให้ ${takeover.config.name} เรียบร้อยครับ $ownerName ตอนนี้ผมว่างพร้อมคุยกับ $ownerName แล้วครับ มีเรื่องไหนให้ช่วยบอกได้เลย!",
+                messageType = GroupMessageType.NORMAL,
+            )
+            recordCollaborationEvent(
+                type = TeamEventType.TASK_ASSIGNED,
+                senderSlot = takeover.config.slot,
+                message = "Live Handover: ${relieved.config.name} -> ${takeover.config.name} ($reassignedSteps steps)",
+                priority = EventPriority.HIGH,
+            )
+
+            // Ensure execution continues seamlessly under the takeover agent!
+            val activeTasks = withContext(Dispatchers.IO) {
+                orqenTaskStore.listTasksForProject(projectId).filter {
+                    it.status in setOf(
+                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.RUNNING,
+                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PAUSED,
+                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.QUEUED,
+                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PLANNING,
+                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.READY,
+                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.RECOVERING,
+                        com.jarves.mh.multiagent.persistence.PersistentTaskStatus.BLOCKED,
+                    )
+                }
+            }
+            if (activeTasks.isNotEmpty()) {
+                resumeTeamWork()
+            } else if (userMessage.length > 10) {
+                // No active task yet — dispatch the takeover agent's task directly
+                submitAutonomousTeamObjective(
+                    "[Handover to ${takeover.config.name} (${takeover.config.slot.id})] $userMessage",
+                )
+            }
+        }
+        return true
+    }
+
     private fun handleIdleAgentChatReply(projectId: String, userMessage: String, targetSlot: AgentSlot?) {
         val project = _state.value.teamProjects.firstOrNull { it.id == projectId } ?: _state.value.activeTeamProject ?: return
         val enabledAgents = _state.value.teamAgents.filter { it.config.isEnabled }
         if (enabledAgents.isEmpty()) return
 
-        // P0 — Strict SPV-Centered Role Separation:
-        // SPV (AGENT_1) is the sole Owner-facing supervisor for general conversation.
-        // Only explicit @mention targets a specific agent directly; otherwise SPV ALWAYS owns the reply
-        // (never routing general Owner questions to Developer!).
-        val explicitMention = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.resolveMentionedSlot(userMessage, targetSlot, enabledAgents)
+        // 1. Dynamic Live Role Handover via @mention (e.g. "@QA ช่วยมาเทสระบบและบิ้ว apk แทน SPV หน่อย ...")
+        if (tryHandleLiveRoleHandover(projectId, userMessage, targetSlot, enabledAgents)) {
+            return
+        }
+
+        // 2. Resolve ALL explicit @mentions (supports concurrent multi-agent chat & AI-to-AI relay)
+        val allMentioned = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.resolveAllMentionedSlots(
+            userMessage,
+            targetSlot,
+            enabledAgents,
+        )
+        val explicitMention = allMentioned.firstOrNull()
         val responder = if (explicitMention != null) {
             enabledAgents.firstOrNull { it.config.slot == explicitMention }
         } else {
             com.jarves.mh.multiagent.collab.SpvConversationRouter.selectSoleOwnerFacingSupervisor(enabledAgents)
         } ?: return
-        val shouldInterruptAndResume = explicitMention != null && responder.isWorking && _state.value.teamIsRunning
 
+        // Secondary teammate for AI-to-AI chat relay (e.g. "@SPV ช่วยถาม @Dev หน่อย...")
+        val relayTeammate = allMentioned.drop(1)
+            .firstOrNull { it != responder.config.slot }
+            ?.let { slot -> enabledAgents.firstOrNull { it.config.slot == slot } }
+
+        // Launch responder concurrently in its own per-agent coroutine!
+        // Because Chat Mode is read-only (`readOnlyTools = true`), we NEVER cancel SPV or tear down
+        // a working agent's active coding step (`teamCycleJob`) — busy agents answer concurrently and keep working!
+        launchConcurrentAgentChatTurn(
+            project = project,
+            responder = responder,
+            enabledAgents = enabledAgents,
+            userMessage = userMessage,
+            relayContextFromAgent = null,
+            onReplyPosted = { spvReply ->
+                if (relayTeammate != null) {
+                    launchConcurrentAgentChatTurn(
+                        project = project,
+                        responder = relayTeammate,
+                        enabledAgents = enabledAgents,
+                        userMessage = userMessage,
+                        relayContextFromAgent = "${responder.config.name}: $spvReply",
+                        onReplyPosted = null,
+                    )
+                }
+            },
+        )
+    }
+
+    private fun launchConcurrentAgentChatTurn(
+        project: Project,
+        responder: AgentState,
+        enabledAgents: List<AgentState>,
+        userMessage: String,
+        relayContextFromAgent: String?,
+        onReplyPosted: ((String) -> Unit)?,
+    ) {
         val ownerName = effectiveOwnerName()
-        viewModelScope.launch {
-            var pausedForInterrupt = false
-            if (shouldInterruptAndResume) {
-                // Owner explicitly @mentioned a busy agent: cleanly pause active work first, answer Owner, then resume!
-                pauseTeamWork()
-                pausedForInterrupt = true
-                delay(150L)
-            }
+        val isBusyWorker = responder.isWorking && _state.value.teamIsRunning
+        val job = viewModelScope.launch {
             _state.update {
                 it.copy(
                     teamTypingAgentName = responder.config.name,
@@ -8675,8 +8807,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     appendLine("- DO NOT create tasks, DO NOT delegate work, DO NOT modify/create/delete any files, and DO NOT claim you started building.")
                     appendLine("- Act as an intelligent technical partner: understand the Owner's idea, ask useful clarifying questions, analyze requirements, suggest architecture, compare options, and help refine a complete specification.")
                     appendLine("- Remember and build upon the recent conversation context below.")
-                    if (pausedForInterrupt) {
-                        appendLine("NOTE: You temporarily paused your active task because $ownerName explicitly @mentioned you. Answer $ownerName clearly and concisely, and note that you will resume your work right after replying.")
+                    if (isBusyWorker) {
+                        appendLine("NOTE: You are currently working on an active background task (${responder.activityState.lastAction}). Answer $ownerName clearly and concisely while your active work continues uninterrupted.")
+                    }
+                    if (!relayContextFromAgent.isNullOrBlank()) {
+                        appendLine("NOTE: A teammate just responded to $ownerName and looped you in for your perspective:")
+                        appendLine(relayContextFromAgent.take(500))
+                        appendLine("Give your direct, concise technical input as ${responder.config.name} (${responder.config.role.title}) so both $ownerName and your teammate see your answer.")
                     }
                     if (recentDiscussion.isNotBlank()) {
                         appendLine("Recent discussion context:")
@@ -8703,8 +8840,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     enableWorkspaceTools = true,
                     readOnlyTools = true,
                     onProgress = { chunk ->
-                        // Keep internal background activity inside the agent's live log dropdown —
-                        // do NOT clutter the main Group Chat with raw background progress!
                         val cleanedChunk = chunk.trim()
                         if (cleanedChunk.isNotBlank() && !cleanedChunk.startsWith("Cache hit")) {
                             appendAgentLiveLog(responder.config.slot, cleanedChunk)
@@ -8712,8 +8847,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     },
                 )
                 val replyBody = if (res.isError) {
-                    if (pausedForInterrupt) {
-                        "รับทราบครับ $ownerName ตอนนี้ผมพักงานชั่วคราวเพื่อมาตอบคำถามครับ (โปรเจกต์ ${project.name}) เสร็จแล้วจะกลับไปทำต่อทันทีครับ"
+                    if (isBusyWorker) {
+                        "รับทราบครับ $ownerName ตอนนี้ผมกำลังลุยงาน (${responder.activityState.lastAction}) ในโปรเจกต์ ${project.name} อยู่ครับ และยังทำงานต่อให้ไม่สะดุดครับ"
                     } else {
                         "ตอนนี้ทีมกำลังดูแลโปรเจกต์ ${project.name} อยู่ครับ $ownerName (สถานะทีม: ${enabledAgents.count { it.isWorking }}/${enabledAgents.size} กำลังทำงาน)"
                     }
@@ -8726,7 +8861,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     cleanChatSummary(res.responseText)
                 }
                 val finalReply = replyBody
-                // Smooth, lightweight line-by-line progressive reveal (throttled to <= 10 ticks so zero lag / low CPU!)
                 val lines = finalReply.lines()
                 if (lines.size > 1) {
                     val step = (lines.size / 10).coerceAtLeast(1)
@@ -8745,11 +8879,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 _state.update {
-                    it.copy(
-                        teamStreamingAgentName = null,
-                        teamStreamingAgentSlot = null,
-                        teamStreamingText = "",
-                    )
+                    if (it.teamStreamingAgentSlot == responder.config.slot) {
+                        it.copy(
+                            teamStreamingAgentName = null,
+                            teamStreamingAgentSlot = null,
+                            teamStreamingText = "",
+                        )
+                    } else it
                 }
                 appendProjectTeamMessage(
                     projectId = project.id,
@@ -8759,23 +8895,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     messageType = GroupMessageType.NORMAL,
                     suggestedTaskPrompt = null,
                 )
+                onReplyPosted?.invoke(finalReply)
             } finally {
+                activeTeamChatJobs.remove(responder.config.slot)
                 _state.update {
+                    val clearTyping = it.teamTypingAgentSlot == responder.config.slot
+                    val clearStream = it.teamStreamingAgentSlot == responder.config.slot
                     it.copy(
-                        teamTypingAgentName = null,
-                        teamTypingAgentSlot = null,
-                        teamStreamingAgentName = null,
-                        teamStreamingAgentSlot = null,
-                        teamStreamingText = "",
+                        teamTypingAgentName = if (clearTyping) null else it.teamTypingAgentName,
+                        teamTypingAgentSlot = if (clearTyping) null else it.teamTypingAgentSlot,
+                        teamStreamingAgentName = if (clearStream) null else it.teamStreamingAgentName,
+                        teamStreamingAgentSlot = if (clearStream) null else it.teamStreamingAgentSlot,
+                        teamStreamingText = if (clearStream) "" else it.teamStreamingText,
                     )
                 }
             }
-            if (pausedForInterrupt) {
-                // Automatically resume paused work right where the agent left off!
-                delay(250L)
-                resumeTeamWork()
-            }
         }
+        activeTeamChatJobs[responder.config.slot] = job
     }
 
     fun postTeamChatMessage(text: String, type: GroupMessageType = GroupMessageType.NORMAL, targetSlot: AgentSlot? = null) {
@@ -8819,6 +8955,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Explicit new task cancels any pending Start confirmation prompt
         pendingStartConfirmation = null
         _state.update { it.copy(teamAwaitingStartConfirmation = false) }
+
+        // Dynamic Live Role Handover also works in Task Mode (e.g. "@QA ช่วยมาเทสระบบและบิ้ว apk แทน SPV หน่อย...")
+        if (projectId != null && com.jarves.mh.multiagent.collab.TeamGroupChatRouter.detectLiveHandoverRequest(text, targetSlot, enabledAgentsForRoute) != null) {
+            appendProjectTeamMessage(
+                projectId = projectId,
+                senderSlot = null,
+                senderName = ownerName,
+                text = text,
+                messageType = type,
+            )
+            clearTeamChatDraft(projectId)
+            tryHandleLiveRoleHandover(projectId, text, targetSlot, enabledAgentsForRoute)
+            return
+        }
 
         // TASK / BUG / REVIEW / PROGRESS mode: dispatch real work to the AI Team!
         appendProjectTeamMessage(

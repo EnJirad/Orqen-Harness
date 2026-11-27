@@ -17,6 +17,17 @@ class OpenAiCompatibleAdapter : ProviderAdapter {
     override val type: ProviderType = ProviderType.OPENAI_COMPATIBLE
     override val protocol: ApiProtocol = ApiProtocol.OPENAI_CHAT
 
+    private fun applyProviderHeaders(conn: HttpURLConnection, config: ProviderConfig, base: String) {
+        config.customHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+        val isOpenCode = base.contains("opencode", ignoreCase = true) ||
+            config.name.contains("opencode", ignoreCase = true)
+        val hasSessionHeader = config.customHeaders.keys.any { it.equals("x-opencode-session", ignoreCase = true) }
+        if (isOpenCode && !hasSessionHeader) {
+            val sessionId = "orqen-${config.id.ifBlank { java.util.UUID.randomUUID().toString() }}"
+            conn.setRequestProperty("x-opencode-session", sessionId)
+        }
+    }
+
     override suspend fun testConnection(config: ProviderConfig, apiKey: String): ConnectionTestResult = withContext(Dispatchers.IO) {
         val start = System.currentTimeMillis()
         try {
@@ -33,7 +44,7 @@ class OpenAiCompatibleAdapter : ProviderAdapter {
                 if (apiKey.isNotBlank()) {
                     setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
                 }
-                config.customHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+                applyProviderHeaders(this, config, base)
             }
 
             val model = config.selectedModelId.ifBlank { "gpt-4o-mini" }
@@ -91,7 +102,7 @@ class OpenAiCompatibleAdapter : ProviderAdapter {
                 if (apiKey.isNotBlank()) {
                     setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
                 }
-                config.customHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+                applyProviderHeaders(this, config, base)
             }
             if (conn.responseCode in 200..299) {
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
@@ -133,7 +144,7 @@ class OpenAiCompatibleAdapter : ProviderAdapter {
             if (apiKey.isNotBlank()) {
                 setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
             }
-            config.customHeaders.forEach { (k, v) -> setRequestProperty(k, v) }
+            applyProviderHeaders(this, config, base)
         }
 
         val isOpenRouter = base.contains("openrouter.ai", ignoreCase = true)
@@ -228,6 +239,7 @@ class OpenAiCompatibleAdapter : ProviderAdapter {
                 connectTimeout = 8_000
                 readTimeout = 8_000
                 if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer ${apiKey.trim()}")
+                applyProviderHeaders(this, config, base)
             }
             conn.responseCode
             val remainingReq = conn.getHeaderField("x-ratelimit-remaining-requests")

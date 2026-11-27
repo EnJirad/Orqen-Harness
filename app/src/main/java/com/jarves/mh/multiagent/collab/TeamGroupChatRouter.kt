@@ -25,32 +25,73 @@ object TeamGroupChatRouter {
         val shouldInterruptAndResume: Boolean,
     )
 
-    fun resolveMentionedSlot(
+    data class LiveHandoverRequest(
+        val takeoverAgent: AgentState,
+        val relievedAgent: AgentState,
+        val instruction: String,
+    )
+
+    private fun tokensForAgent(agent: AgentState): Set<String> {
+        val slot = agent.config.slot
+        val tokens = linkedSetOf(
+            agent.config.name.trim(),
+            slot.defaultName.trim(),
+            slot.id.trim(),
+            slot.name.trim(),
+            agent.config.role.title.trim(),
+            agent.config.role.type.name.trim(),
+        )
+        // Friendly short aliases so @SPV, @Dev, @QA always match regardless of custom display names
+        when (agent.config.role.type) {
+            com.jarves.mh.multiagent.model.AgentRoleType.TEAM_LEADER -> {
+                tokens += listOf("spv", "supervisor", "ceo", "lead", "architect")
+            }
+            com.jarves.mh.multiagent.model.AgentRoleType.SOFTWARE_ENGINEER,
+            com.jarves.mh.multiagent.model.AgentRoleType.FRONTEND_ENGINEER,
+            com.jarves.mh.multiagent.model.AgentRoleType.BACKEND_ENGINEER,
+            com.jarves.mh.multiagent.model.AgentRoleType.SPECIALIST,
+            -> {
+                tokens += listOf("dev", "developer", "coder", "engineer")
+            }
+            com.jarves.mh.multiagent.model.AgentRoleType.TESTER -> {
+                tokens += listOf("qa", "tester", "test", "reviewer")
+            }
+            com.jarves.mh.multiagent.model.AgentRoleType.DEVOPS_ENGINEER -> {
+                tokens += listOf("devops", "ops")
+            }
+            com.jarves.mh.multiagent.model.AgentRoleType.SECURITY_ENGINEER -> {
+                tokens += listOf("sec", "security")
+            }
+            com.jarves.mh.multiagent.model.AgentRoleType.CUSTOM -> Unit
+        }
+        if (slot == AgentSlot.AGENT_1) tokens += listOf("spv", "supervisor")
+        return tokens.filter { it.isNotBlank() }.map { it.lowercase() }.toSet()
+    }
+
+    /**
+     * Resolves ALL explicitly @mentioned agent slots in order of appearance (with [explicitTarget] first if provided).
+     * Used for concurrent multi-agent @mention chat and AI-to-AI consultation relay.
+     */
+    fun resolveAllMentionedSlots(
         text: String,
         explicitTarget: AgentSlot?,
         enabledAgents: List<AgentState>,
-    ): AgentSlot? {
-        if (enabledAgents.isEmpty()) return null
+    ): List<AgentSlot> {
+        if (enabledAgents.isEmpty()) return emptyList()
+        val found = linkedSetOf<AgentSlot>()
         if (explicitTarget != null && enabledAgents.any { it.config.slot == explicitTarget }) {
-            return explicitTarget
+            found.add(explicitTarget)
         }
         val trimmed = text.trim()
-        if (!trimmed.contains('@')) return null
+        if (!trimmed.contains('@')) return found.toList()
 
         val lowerText = trimmed.lowercase()
-        // Build candidate tokens per agent sorted longest-first so "@Agent 010" matches before "@Agent 01"
         val candidates = enabledAgents.flatMap { agent ->
-            val slot = agent.config.slot
-            val tokens = linkedSetOf(
-                agent.config.name.trim(),
-                slot.defaultName.trim(),
-                slot.id.trim(),
-                slot.name.trim(),
-                agent.config.role.title.trim(),
-            ).filter { it.isNotBlank() }
-            tokens.map { token -> token.lowercase() to slot }
+            tokensForAgent(agent).map { token -> token to agent.config.slot }
         }.sortedByDescending { it.first.length }
 
+        // Collect (startIndex, slot) matches sorted by earliest appearance in text
+        val matches = mutableListOf<Pair<Int, AgentSlot>>()
         for ((tokenLower, slot) in candidates) {
             val mention = "@$tokenLower"
             var idx = lowerText.indexOf(mention)
@@ -59,12 +100,126 @@ object TeamGroupChatRouter {
                 val validBoundaryBefore = idx == 0 || !lowerText[idx - 1].isLetterOrDigit()
                 val validBoundaryAfter = endIdx == lowerText.length || !lowerText[endIdx].isLetterOrDigit()
                 if (validBoundaryBefore && validBoundaryAfter) {
-                    return slot
+                    matches.add(idx to slot)
                 }
                 idx = lowerText.indexOf(mention, startIndex = idx + 1)
             }
         }
-        return null
+        matches.sortedBy { it.first }.forEach { (_, slot) -> found.add(slot) }
+        return found.toList()
+    }
+
+    fun resolveMentionedSlot(
+        text: String,
+        explicitTarget: AgentSlot?,
+        enabledAgents: List<AgentState>,
+    ): AgentSlot? = resolveAllMentionedSlots(text, explicitTarget, enabledAgents).firstOrNull()
+
+    /**
+     * Detects a dynamic live role-handover request from the Owner, e.g.:
+     * "@QA ช่วยมาเทสระบบและบิ้ว apk แทน SPV หน่อย ทำต่อจากที่ SPV ทำอยู่เลย เพราะฉันจะคุยกับ spv"
+     */
+    fun detectLiveHandoverRequest(
+        text: String,
+        explicitTarget: AgentSlot?,
+        enabledAgents: List<AgentState>,
+    ): LiveHandoverRequest? {
+        if (enabledAgents.size < 2) return null
+        val mentioned = resolveAllMentionedSlots(text, explicitTarget, enabledAgents)
+        val takeoverSlot = mentioned.firstOrNull() ?: return null
+        val takeoverAgent = enabledAgents.firstOrNull { it.config.slot == takeoverSlot } ?: return null
+
+        val lower = text.lowercase()
+        val handoverKeywords = listOf(
+            "แทน", "ทำต่อจาก", "มาทำแทน", "สลับให้", "รับช่วงต่อ", "ช่วยทำต่อแทน",
+            "take over", "takeover", "replace ", "handover", "hand over", "continue for",
+        )
+        if (handoverKeywords.none { lower.contains(it) }) return null
+
+        // Determine who is being relieved:
+        // 1) A second @mentioned agent if different from takeoverAgent
+        val secondMentioned = mentioned.firstOrNull { it != takeoverSlot }
+            ?.let { s -> enabledAgents.firstOrNull { it.config.slot == s } }
+        if (secondMentioned != null) {
+            return LiveHandoverRequest(takeoverAgent, secondMentioned, text)
+        }
+
+        // 2) An agent referenced by name/alias after "แทน" / "จาก" / "replace" / "for" / "from"
+        val otherAgents = enabledAgents.filter { it.config.slot != takeoverSlot }
+        val matchedByText = otherAgents.firstOrNull { candidate ->
+            tokensForAgent(candidate).any { token ->
+                token.length >= 2 && Regex("(?<![a-z0-9])${Regex.escape(token)}(?![a-z0-9])").containsMatchIn(lower)
+            }
+        }
+        val relieved = matchedByText
+            ?: otherAgents.firstOrNull { it.config.slot == AgentSlot.AGENT_1 }
+            ?: otherAgents.firstOrNull { it.isWorking }
+            ?: return null
+
+        return LiveHandoverRequest(takeoverAgent, relieved, text)
+    }
+
+    /**
+     * Reassigns active/pending steps in [store] for [projectId] from [relievedAgentId] to [takeoverAgentId],
+     * preserving all COMPLETED steps so the takeover agent continues right where the relieved agent left off.
+     */
+    fun applyLiveRoleHandover(
+        store: com.jarves.mh.multiagent.persistence.OrqenTaskStore,
+        projectId: String,
+        takeoverAgentId: String,
+        relievedAgentId: String,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Int {
+        val activeStatuses = setOf(
+            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.RUNNING,
+            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PAUSED,
+            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.QUEUED,
+            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PLANNING,
+            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.READY,
+            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.RECOVERING,
+            com.jarves.mh.multiagent.persistence.PersistentTaskStatus.BLOCKED,
+        )
+        val nonTerminalStepStatuses = setOf(
+            com.jarves.mh.multiagent.persistence.StepStatus.PENDING,
+            com.jarves.mh.multiagent.persistence.StepStatus.READY,
+            com.jarves.mh.multiagent.persistence.StepStatus.RUNNING,
+            com.jarves.mh.multiagent.persistence.StepStatus.WAITING_REVIEW,
+            com.jarves.mh.multiagent.persistence.StepStatus.FAILED,
+            com.jarves.mh.multiagent.persistence.StepStatus.BLOCKED,
+        )
+        var reassigned = 0
+        val tasks = store.listTasksForProject(projectId).filter { it.status in activeStatuses }
+        for (task in tasks) {
+            val steps = store.listStepsForTask(task.taskId)
+            for (step in steps) {
+                if (step.assignedAgentId == relievedAgentId && step.status in nonTerminalStepStatuses) {
+                    val nextStatus = if (step.status == com.jarves.mh.multiagent.persistence.StepStatus.RUNNING) {
+                        com.jarves.mh.multiagent.persistence.StepStatus.READY
+                    } else {
+                        step.status
+                    }
+                    store.upsertStep(
+                        step.copy(
+                            assignedAgentId = takeoverAgentId,
+                            status = nextStatus,
+                        ),
+                    )
+                    reassigned++
+                }
+            }
+            if (reassigned > 0) {
+                store.insertTaskEvent(
+                    com.jarves.mh.multiagent.persistence.TaskEventEntity(
+                        eventId = "evt-handover-${java.util.UUID.randomUUID().toString().take(8)}",
+                        taskId = task.taskId,
+                        eventType = "LIVE_ROLE_HANDOVER",
+                        eventPayload = "Handover: $relievedAgentId -> $takeoverAgentId ($reassigned steps reassigned)",
+                        timestamp = nowMs,
+                    ),
+                )
+            }
+        }
+        return reassigned
     }
 
     fun selectResponder(

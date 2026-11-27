@@ -3,6 +3,7 @@ package com.jarves.mh.multiagent
 import com.jarves.mh.multiagent.collab.*
 import com.jarves.mh.multiagent.engine.*
 import com.jarves.mh.multiagent.locks.FileLockManager
+import com.jarves.mh.multiagent.model.*
 import com.jarves.mh.multiagent.persistence.*
 import com.jarves.mh.multiagent.recovery.ExecutionLivenessMonitor
 import com.jarves.mh.multiagent.supervisor.*
@@ -907,6 +908,84 @@ class OverhaulEfficiencyAndReliabilityTest {
         assertEquals(PersistentTaskStatus.COMPLETED, finished2?.status)
         assertTrue("Expected auto-wait around earliest 10s reset (< 60s), got ${waitedMs.get()}ms", waitedMs.get() in 10_000L..60_000L)
         assertEquals("Should resume automatically on earliest-resetting model", "model-dev-flash", resumedModels.last())
+    }
+
+    // --- Test O: OpenCode x-opencode-session Header, Eye-Icon Toggle, Multi-@mention & Live Role Handover ---
+    @Test
+    fun testO_OpenCodeSessionHeaderProviderEyeToggleAndLiveRoleHandover() {
+        val repoRoot = locateRepoRoot()
+
+        // 1. OpenAiCompatibleAdapter must inject x-opencode-session automatically for OpenCode endpoints
+        val adapterSrc = File(repoRoot, "app/src/main/java/com/jarves/mh/provider/adapters/OpenAiCompatibleAdapter.kt").readText()
+        assertTrue("OpenAiCompatibleAdapter must inject x-opencode-session header", adapterSrc.contains("x-opencode-session"))
+
+        // 2. ProviderManagementScreen must have Visibility / VisibilityOff eye-icon toggle & OpenCode Go preset
+        val providerUiSrc = File(repoRoot, "app/src/main/java/com/jarves/mh/multiagent/ui/ProviderManagementScreen.kt").readText()
+        assertTrue("ProviderManagementScreen must include VisibilityOff toggle", providerUiSrc.contains("Icons.Default.VisibilityOff"))
+        assertTrue("ProviderManagementScreen must include OpenCode Go quick preset", providerUiSrc.contains("https://opencode.ai/zen/go/v1"))
+
+        // 3. Multi-@mention resolution & Dynamic Live Role Handover (@QA takes over from SPV)
+        val spv = AgentState(
+            config = AgentConfig(
+                slot = AgentSlot.AGENT_1,
+                name = "Agent 01",
+                role = AgentRole(AgentRoleType.TEAM_LEADER, "Supervisor", "", emptyList()),
+                isEnabled = true,
+            ),
+        )
+        val dev = AgentState(
+            config = AgentConfig(
+                slot = AgentSlot.AGENT_2,
+                name = "Agent 02",
+                role = AgentRole(AgentRoleType.SOFTWARE_ENGINEER, "Developer", "", emptyList()),
+                isEnabled = true,
+            ),
+        )
+        val qa = AgentState(
+            config = AgentConfig(
+                slot = AgentSlot.AGENT_3,
+                name = "Agent 03",
+                role = AgentRole(AgentRoleType.TESTER, "QA Engineer", "", emptyList()),
+                isEnabled = true,
+            ),
+        )
+        val enabled = listOf(spv, dev, qa)
+
+        // Multi-@mention relay: "@SPV ช่วยถาม @Dev หน่อย" -> [AGENT_1, AGENT_2]
+        val mentions = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.resolveAllMentionedSlots(
+            "@SPV ช่วยถาม @Dev หน่อยเรื่อง architecture",
+            null,
+            enabled,
+        )
+        assertEquals(listOf(AgentSlot.AGENT_1, AgentSlot.AGENT_2), mentions)
+
+        // Live Role Handover detection & step reassignment in OrqenTaskStore
+        val handoverPrompt = "@QA ช่วยมาเทสระบบและบิ้ว apk แทน SPV หน่อย ทำต่อจากที่ SPV ทำอยู่เลย เพราะฉันจะคุยกับ spv"
+        val req = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.detectLiveHandoverRequest(handoverPrompt, null, enabled)
+        assertNotNull("Expected live handover request to be detected", req)
+        assertEquals(AgentSlot.AGENT_3, req!!.takeoverAgent.config.slot)
+        assertEquals(AgentSlot.AGENT_1, req.relievedAgent.config.slot)
+
+        val store = InMemoryOrqenTaskStore()
+        val (proj, _) = newProject(store, "test-o-handover")
+        store.upsertTask(TaskEntity(taskId = "T-HO", projectId = proj.projectId, title = "Build App", description = "Test", status = PersistentTaskStatus.RUNNING))
+        // Step 1 (Dev) already COMPLETED — must NOT be touched!
+        store.upsertStep(TaskStepEntity("S-1", "T-HO", 0, "Implement", "code", "agent-02", StepStatus.COMPLETED))
+        // Step 2 (SPV) currently RUNNING — must be reassigned to QA (agent-03) and reset to READY!
+        store.upsertStep(TaskStepEntity("S-2", "T-HO", 1, "Test & Build APK", "verify", "agent-01", StepStatus.RUNNING))
+
+        val count = com.jarves.mh.multiagent.collab.TeamGroupChatRouter.applyLiveRoleHandover(
+            store = store,
+            projectId = proj.projectId,
+            takeoverAgentId = "agent-03",
+            relievedAgentId = "agent-01",
+        )
+        assertEquals(1, count)
+        val stepsAfter = store.listStepsForTask("T-HO").associateBy { it.stepId }
+        assertEquals(StepStatus.COMPLETED, stepsAfter["S-1"]?.status)
+        assertEquals("agent-02", stepsAfter["S-1"]?.assignedAgentId)
+        assertEquals("agent-03", stepsAfter["S-2"]?.assignedAgentId)
+        assertEquals(StepStatus.READY, stepsAfter["S-2"]?.status)
     }
 
     private fun locateRepoRoot(): File {

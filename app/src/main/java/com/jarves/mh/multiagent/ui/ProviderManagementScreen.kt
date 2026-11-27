@@ -18,6 +18,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.R
@@ -483,6 +487,7 @@ private fun EditProviderKeyDialog(
     var name by remember(config) { mutableStateOf(config.name) }
     var baseUrl by remember(config) { mutableStateOf(config.baseUrl) }
     var apiKey by remember(config, initialKey) { mutableStateOf(initialKey) }
+    var showApiKey by remember(config) { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -507,7 +512,15 @@ private fun EditProviderKeyDialog(
                     value = apiKey,
                     onValueChange = { apiKey = it },
                     label = { Text("API Key") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showApiKey = !showApiKey }) {
+                            Icon(
+                                imageVector = if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (showApiKey) "Hide API Key" else "Show API Key",
+                            )
+                        }
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -543,14 +556,48 @@ fun AddProviderDialog(
     var typeMenuExpanded by remember { mutableStateOf(false) }
     var baseUrl by remember { mutableStateOf("https://api.openai.com/v1") }
     var apiKey by remember { mutableStateOf("") }
+    var showApiKey by remember { mutableStateOf(false) }
     var selectedProtocol by remember { mutableStateOf(ApiProtocol.OPENAI_CHAT) }
     var modelId by remember { mutableStateOf("") }
+
+    val quickPresets = remember {
+        listOf(
+            Triple("OpenCode Go", ProviderType.OPENAI_COMPATIBLE, "https://opencode.ai/zen/go/v1"),
+            Triple("OpenAI", ProviderType.OPENAI_COMPATIBLE, "https://api.openai.com/v1"),
+            Triple("OpenRouter", ProviderType.OPENROUTER, "https://openrouter.ai/api/v1"),
+            Triple("DeepSeek", ProviderType.DEEPSEEK, "https://api.deepseek.com/v1"),
+            Triple("Gemini", ProviderType.GEMINI, "https://generativelanguage.googleapis.com"),
+            Triple("Anthropic", ProviderType.ANTHROPIC, "https://api.anthropic.com"),
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.provider_add_new)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Quick Presets", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(quickPresets) { (presetLabel, presetType, presetUrl) ->
+                        FilterChip(
+                            selected = baseUrl.equals(presetUrl, ignoreCase = true),
+                            onClick = {
+                                name = presetLabel
+                                selectedType = presetType
+                                baseUrl = presetUrl
+                                selectedProtocol = when (presetType) {
+                                    ProviderType.ANTHROPIC -> ApiProtocol.ANTHROPIC_MESSAGES
+                                    ProviderType.GEMINI -> ApiProtocol.GEMINI_DEV_API
+                                    else -> ApiProtocol.OPENAI_CHAT
+                                }
+                            },
+                            label = { Text(presetLabel, fontSize = 11.sp) },
+                        )
+                    }
+                }
                 // Provider Type Selector
                 Box(Modifier.fillMaxWidth()) {
                     OutlinedTextField(
@@ -628,7 +675,15 @@ fun AddProviderDialog(
                     value = apiKey,
                     onValueChange = { apiKey = it },
                     label = { Text("API Key") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showApiKey = !showApiKey }) {
+                            Icon(
+                                imageVector = if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (showApiKey) "Hide API Key" else "Show API Key",
+                            )
+                        }
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
