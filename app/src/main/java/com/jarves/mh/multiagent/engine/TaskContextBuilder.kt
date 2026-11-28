@@ -27,6 +27,7 @@ object TaskContextBuilder {
         recentMessages: List<AgentMessageEntity> = emptyList(),
         reviewFeedback: List<AgentReviewEntity> = emptyList(),
         maxChars: Int = 16_000,
+        memoryManager: com.jarves.mh.multiagent.session.HierarchicalMemoryManager? = null,
     ): String {
         require(task.projectId == project.projectId) {
             "Cross-project context violation: task ${task.taskId} belongs to ${task.projectId}, not ${project.projectId}"
@@ -90,6 +91,17 @@ object TaskContextBuilder {
             if (project.projectMemory.isNotBlank()) {
                 appendLine("## Project Memory (${project.projectName})")
                 appendLine(project.projectMemory.take(800))
+                appendLine()
+            }
+            val relevantMemBlock = memoryManager?.buildRelevantMemoryPromptBlock(
+                projectId = project.projectId,
+                query = "${step.title} ${step.description.take(300)} ${step.targetFiles.joinToString(" ")}",
+                requestingAgentId = step.assignedAgentId,
+                isManagerOrLead = step.assignedAgentId == "agent-01",
+                limit = 5,
+            ).orEmpty()
+            if (relevantMemBlock.isNotBlank()) {
+                appendLine(relevantMemBlock)
                 appendLine()
             }
             if (allSteps.size > 1) {
@@ -177,6 +189,7 @@ object TaskContextBuilder {
         communicationManager: AgentCommunicationManager,
         reviewFeedback: List<AgentReviewEntity> = emptyList(),
         maxChars: Int = 16_000,
+        memoryManager: com.jarves.mh.multiagent.session.HierarchicalMemoryManager? = null,
     ): String {
         val isolatedMessages = communicationManager.getIsolatedContextMessages(
             projectId = project.projectId,
@@ -192,6 +205,7 @@ object TaskContextBuilder {
             recentMessages = isolatedMessages,
             reviewFeedback = reviewFeedback,
             maxChars = maxChars,
+            memoryManager = memoryManager,
         )
     }
 }

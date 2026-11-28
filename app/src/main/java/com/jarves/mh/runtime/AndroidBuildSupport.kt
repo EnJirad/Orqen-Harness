@@ -81,15 +81,72 @@ data class AndroidBuildRecord(
     val recentDurationsMillis: List<Long> = emptyList(),
 )
 
-internal fun androidGradleCommand(root: File, task: String): String {
+internal fun resolveDebugAssembleTask(projectRoot: File): String {
+    val appGradleKts = File(projectRoot, "app/build.gradle.kts")
+    val appGradle = File(projectRoot, "app/build.gradle")
+    val scriptText = runCatching {
+        when {
+            appGradleKts.isFile -> appGradleKts.readText()
+            appGradle.isFile -> appGradle.readText()
+            else -> ""
+        }
+    }.getOrDefault("")
+    val hasOnlineFlavor = scriptText.contains("productFlavors") &&
+        (scriptText.contains("\"online\"") || scriptText.contains("'online'"))
+    return if (hasOnlineFlavor) "assembleOnlineDebug" else "assembleDebug"
+}
+
+internal fun isMissingCachedDependencyError(output: String): Boolean {
+    val lower = output.lowercase()
+    return ("offline mode" in lower || "no cached version" in lower || "could not resolve" in lower || "could not get resource" in lower) &&
+        "outofmemory" !in lower &&
+        "no space left" !in lower
+}
+
+internal fun androidGradleCommand(root: File, task: String, offline: Boolean = false): String {
     val launcher = File(root, "gradlew").takeIf(File::isFile)?.let { "bash ./gradlew" } ?: "gradle"
-    return "$launcher -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 " +
+    val resolvedTask = if (task == "assembleDebug") resolveDebugAssembleTask(root) else task
+    val offlineFlag = if (offline) "--offline " else ""
+    return "$launcher -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 $offlineFlag" +
         "--init-script /root/.gradle/init.d/pocketdev-android.gradle " +
         "-Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 " +
         // Gradle daemons can remain attached to deleted PRoot paths after an
         // interrupted build. A bounded, no-daemon invocation is more reliable
         // on Android and avoids leaving a second busy daemon behind.
-        "$task --console=plain --stacktrace"
+        "$resolvedTask --console=plain --stacktrace"
+}
+
+/**
+ * Full PocketDev shell command used by Solo Mode, AI Team Mode, and Terminal Build APK buttons:
+ * 1. Runs the idempotent ARM64 NDK/CMake shim script so x86_64 NDK/CMake binaries work natively on ARM64.
+ * 2. Uses pre-installed `gradle` directly (avoiding gradlew network downloads in offline mode).
+ * 3. Applies memory-safe `--no-daemon --max-workers=2`, local Maven init-script, ARM64 aapt2 override,
+ *    and flavor-aware `assembleOnlineDebug` vs `assembleDebug`.
+ */
+internal fun androidGradleShellCommand(
+    root: File,
+    task: String,
+    offline: Boolean = false,
+    timeoutMinutes: Int = if (offline) 8 else 15,
+): String {
+    val resolvedTask = if (task == "assembleDebug") resolveDebugAssembleTask(root) else task
+    val offlineFlag = if (offline) "--offline " else ""
+    val shimPrefix = "[ -x /root/.gradle/init.d/pocketdev-arm64-ndk-shim.sh ] && /root/.gradle/init.d/pocketdev-arm64-ndk-shim.sh; "
+    return "${shimPrefix}timeout ${timeoutMinutes}m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 $offlineFlag" +
+        "--init-script /root/.gradle/init.d/pocketdev-android.gradle " +
+        "-Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 " +
+        "$resolvedTask --console=plain --stacktrace"
+}
+
+internal fun publishCanonicalDebugApk(projectRoot: File, builtApk: File): File {
+    val canonicalDir = File(projectRoot, "app/build/outputs/apk/debug").apply { mkdirs() }
+    val canonicalApk = File(canonicalDir, "app-debug.apk")
+    return runCatching {
+        if (builtApk.canonicalFile != canonicalApk.canonicalFile) {
+            builtApk.copyTo(canonicalApk, overwrite = true)
+        }
+        canonicalApk.takeIf { it.isFile && it.length() > 0L } ?: builtApk
+    }.getOrDefault(builtApk)
 }
 
 internal fun findAndroidProjectRoot(workspace: File): File? {
@@ -119,7 +176,12 @@ internal fun findDebugApk(projectRoot: File): File? {
         }.getOrNull()?.let { return it }
     }
     return projectRoot.walkTopDown().maxDepth(10)
-        .filter { it.isFile && it.extension.equals("apk", true) && "/outputs/apk/debug/" in it.invariantSeparatorsPath }
+        .filter {
+            it.isFile &&
+                it.extension.equals("apk", true) &&
+                "/outputs/apk/" in it.invariantSeparatorsPath &&
+                "/debug/" in it.invariantSeparatorsPath
+        }
         .maxByOrNull(File::lastModified)
 }
 
@@ -185,6 +247,7 @@ internal fun parseAndroidBuildIssues(output: String, projectRoot: File, exitCode
         "could not resolve" in lower || "could not get resource" in lower -> "Check the network connection or use a cached dependency version."
         "manifest merger failed" in lower -> "Review duplicate or conflicting manifest declarations."
         "aapt2" in lower || "resource linking failed" in lower -> "Review resource names and XML diagnostics in the build output."
+        "cmake" in lower || "ndk" in lower || "exec format error" in lower -> "Ensure ARM64 clang/lld/cmake/ninja are installed and run /root/.gradle/init.d/pocketdev-arm64-ndk-shim.sh before Gradle."
         "outofmemory" in lower || "heap space" in lower -> "Close other apps and retry."
         else -> "Open the build details for the complete Gradle output."
     }
@@ -199,6 +262,8 @@ internal fun diagnoseAndroidBuildFailure(output: String, exitCode: Int): String 
         "could not resolve" in text || "could not get resource" in text -> "A project dependency is unavailable. Connect to the internet or use an offline-cached version."
         "manifest merger failed" in text -> "Android manifest merge failed. Open the build log for the conflicting declaration."
         "aapt2" in text || "android resource linking failed" in text -> "Android resources could not be compiled. Open the build log for the file and line."
+        "exec format error" in text || ("cmake" in text && "failed" in text) || ("ndk" in text && "not configured" in text) ->
+            "Native CMake/NDK build failed on ARM64. Verify ARM64 cmake, ninja, and clang-18 shims in /root/android-sdk."
         "compilation error" in text || "compilation failed" in text || "unresolved reference" in text -> "Kotlin or Java compilation failed. Open the build log for source errors."
         "minimum supported gradle version" in text || "maximum supported gradle" in text -> "This project's Gradle and Android plugin versions are incompatible."
         else -> "Gradle build failed (exit code $exitCode)."

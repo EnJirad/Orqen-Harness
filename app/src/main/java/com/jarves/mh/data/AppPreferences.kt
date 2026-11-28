@@ -154,6 +154,16 @@ class AppPreferences(private val context: Context) {
             preferences.edit().putString("selected_dev_stacks", arr.toString()).apply()
         }
 
+    /** When enabled, AI automatically installs missing dev stacks in the background without prompting. */
+    var autoInstallMissingTools: Boolean
+        get() = preferences.getBoolean("auto_install_missing_tools", false)
+        set(value) { preferences.edit().putBoolean("auto_install_missing_tools", value).apply() }
+
+    /** When enabled, keeps a lightweight foreground keep-alive notification so Android never kills/restarts ORQEN in background. */
+    var keepAliveInBackground: Boolean
+        get() = preferences.getBoolean("keep_alive_in_background", true)
+        set(value) { preferences.edit().putBoolean("keep_alive_in_background", value).apply() }
+
 
     /** Every portable setting, typed, for backups. Device-only state stays out. */
     fun exportAll(): JSONObject {

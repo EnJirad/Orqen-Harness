@@ -105,6 +105,7 @@ fun TeamDashboardScreen(
     onRemoveAgent: (AgentSlot) -> Unit = {},
     onUpdateContinuousConfig: (ContinuousExecutionConfig) -> Unit = {},
     onStartTeam: () -> Unit,
+    isTeamPaused: Boolean = false,
     onPauseTeam: () -> Unit,
     onResumeTeam: () -> Unit,
     onStopTeam: () -> Unit,
@@ -553,19 +554,32 @@ fun TeamDashboardScreen(
 
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (isTeamRunning && !isLockedByOtherProject) {
+                    if ((isTeamRunning || isTeamPaused) && !isLockedByOtherProject) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            OutlinedButton(
-                                onClick = onPauseTeam,
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp),
-                            ) {
-                                Icon(Icons.Default.Pause, contentDescription = null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(stringResource(R.string.team_pause))
+                            if (isTeamPaused && !isTeamRunning) {
+                                Button(
+                                    onClick = onResumeTeam,
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(stringResource(R.string.team_pause) + " · Resume")
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = onPauseTeam,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp),
+                                ) {
+                                    Icon(Icons.Default.Pause, contentDescription = null, Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(stringResource(R.string.team_pause))
+                                }
                             }
                             Button(
                                 onClick = onStopTeam,

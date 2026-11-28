@@ -59,6 +59,7 @@ fun DevStack.labelRes(): Int = when (this) {
     DevStack.WEB -> R.string.md_stack_web_label
     DevStack.PYTHON -> R.string.md_stack_python_label
     DevStack.ANDROID -> R.string.md_stack_android_label
+    DevStack.ANDROID_NDK -> R.string.md_stack_android_ndk_label
     DevStack.CPP -> R.string.md_stack_cpp_label
     DevStack.PHP -> R.string.md_stack_php_label
 }
@@ -68,6 +69,7 @@ fun DevStack.descriptionRes(): Int = when (this) {
     DevStack.WEB -> R.string.md_stack_web_description
     DevStack.PYTHON -> R.string.md_stack_python_description
     DevStack.ANDROID -> R.string.md_stack_android_description
+    DevStack.ANDROID_NDK -> R.string.md_stack_android_ndk_description
     DevStack.CPP -> R.string.md_stack_cpp_description
     DevStack.PHP -> R.string.md_stack_php_description
 }
@@ -77,6 +79,7 @@ fun DevStack.installsSummaryRes(): Int = when (this) {
     DevStack.WEB -> R.string.md_stack_web_installs
     DevStack.PYTHON -> R.string.md_stack_python_installs
     DevStack.ANDROID -> R.string.md_stack_android_installs
+    DevStack.ANDROID_NDK -> R.string.md_stack_android_ndk_installs
     DevStack.CPP -> R.string.md_stack_cpp_installs
     DevStack.PHP -> R.string.md_stack_php_installs
 }

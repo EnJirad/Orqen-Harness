@@ -65,6 +65,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        window?.decorView?.post {
+            runCatching {
+                com.jarves.mh.runtime.RuntimeExecutionService.ensureKeepAliveIfEnabled(applicationContext)
+            }
+        }
+    }
+
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)

@@ -133,6 +133,7 @@ class AutonomousSupervisorEngine(
     val healthMonitor = AgentHealthMonitor(taskStore)
     val watchdog = TaskWatchdog(healthMonitor, timeoutPolicy)
     val assignmentLedger = AssignmentResultLedger()
+    val memoryManager = com.jarves.mh.multiagent.session.HierarchicalMemoryManager(taskStore)
     val recoveryEngine = AutonomousRecoveryEngine(
         taskStore = taskStore,
         healthMonitor = healthMonitor,
@@ -152,6 +153,71 @@ class AutonomousSupervisorEngine(
     private val devConnectionStates = ConcurrentHashMap<String, ModelConnectionState>()
 
     fun snapshotFor(taskId: String): SupervisorUiSnapshot? = _snapshots.value[taskId]
+
+    /**
+     * Agent-Swarm-inspired Heartbeat Recovery Sweep:
+     * Detects stalled/orphaned RUNNING tasks and steps whose lease expired (e.g. after worker crash
+     * or Android process death), releases stale file locks, preserves all COMPLETED steps and valid
+     * checkpoints, and transitions unfinished steps back to READY so [superviseProjectQueue] can
+     * autonomously resume without duplicating completed work.
+     */
+    fun sweepStalledAndOrphanedTasks(
+        projectId: String,
+        staleThresholdMs: Long = 120_000L,
+    ): Int {
+        val now = nowProvider()
+        val stalledTasks = taskStore.listTasksForProject(projectId).filter { t ->
+            t.status == PersistentTaskStatus.RUNNING &&
+                !t.ownerStopRequested &&
+                !t.pauseRequested &&
+                t.taskId !in activeSupervisedTasks &&
+                (now - t.lastHeartbeatAt) >= staleThresholdMs
+        }
+        var recoveredCount = 0
+        stalledTasks.forEach { task ->
+            val steps = taskStore.listStepsForTask(task.taskId)
+            val staleSteps = steps.filter { it.status == StepStatus.RUNNING }
+            taskStore.runInTransaction {
+                staleSteps.forEach { st ->
+                    st.targetFiles.forEach { path ->
+                        fileLockManager.releaseByAgentId(path, st.assignedAgentId)
+                    }
+                    livenessMonitor.releaseLease(task.taskId, st.stepId, st.assignedAgentId)
+                    taskStore.upsertStep(
+                        st.copy(
+                            status = StepStatus.READY,
+                            retryCount = st.retryCount + 1,
+                        ),
+                    )
+                }
+                taskStore.upsertTask(
+                    task.copy(
+                        status = PersistentTaskStatus.RECOVERING,
+                        executionLeaseOwner = null,
+                        lastHeartbeatAt = now,
+                        updatedAt = now,
+                    ),
+                )
+                taskStore.insertTaskEvent(
+                    TaskEventEntity(
+                        taskId = task.taskId,
+                        eventType = "STALLED_TASK_RECOVERED",
+                        eventPayload = "Heartbeat sweep recovered ${staleSteps.size} stalled step(s) while preserving ${steps.count { it.status == StepStatus.COMPLETED }} completed step(s).",
+                    ),
+                )
+            }
+            memoryManager.distillFromDecision(
+                projectId = projectId,
+                taskId = task.taskId,
+                decisionTitle = "Heartbeat Stall Recovery",
+                reason = "Detected orphaned RUNNING task (${task.taskId}) after ${staleThresholdMs}ms without heartbeat",
+                actionTaken = "Released ${staleSteps.size} stale lock(s)/lease(s) and re-queued unfinished steps",
+                result = "RECOVERING",
+            )
+            recoveredCount++
+        }
+        return recoveredCount
+    }
 
     fun efficiencyMetricsFor(taskId: String): TaskEfficiencyMetrics =
         efficiencyMetricsByTask[taskId] ?: TaskEfficiencyMetrics()
@@ -736,6 +802,7 @@ class AutonomousSupervisorEngine(
                                         latestCheckpoint = taskStore.getLatestCheckpoint(taskId),
                                         communicationManager = communicationManager,
                                         reviewFeedback = collabStore.listReviewsForTask(taskId),
+                                        memoryManager = memoryManager,
                                     )
                                     val pAdapter = RuntimeStepExecutionAdapter(
                                         runtime = runtime,
@@ -798,6 +865,13 @@ class AutonomousSupervisorEngine(
                                             idempotency = IdempotencyRecordEntity(runStep.idempotencyKey, taskId, runStep.stepId, "STEP_EXECUTION", out.summary.take(500)),
                                         )
                                         healthMonitor.markHealthy(prof.agentId, prof.providerId, prof.modelId, nowProvider())
+                                        memoryManager.distillFromCompletedStep(
+                                            projectId = project.projectId,
+                                            taskId = taskId,
+                                            step = runStep,
+                                            modifiedFiles = changed,
+                                            summary = out.summary,
+                                        )
                                         onStepLifecycleUpdate(
                                             StepLifecycleUpdate(
                                                 projectId = project.projectId,
@@ -856,6 +930,14 @@ class AutonomousSupervisorEngine(
                                     actionTaken = "Transition task to COMPLETED",
                                     result = "COMPLETED",
                                 ),
+                            )
+                            memoryManager.distillFromDecision(
+                                projectId = project.projectId,
+                                taskId = taskId,
+                                decisionTitle = "Task Completed: ${task.title.take(64)}",
+                                reason = "All ${allSteps.size} steps, reviews, and tests passed verification",
+                                actionTaken = "Marked task COMPLETED and persisted learnings",
+                                result = "COMPLETED",
                             )
                             updateSnapshot(taskId, SupervisorOperationalStatus.COMPLETED, "Verified complete")
                             return completed
@@ -1060,6 +1142,7 @@ class AutonomousSupervisorEngine(
                     latestCheckpoint = latestCheckpoint,
                     communicationManager = communicationManager,
                     reviewFeedback = collabStore.listReviewsForTask(taskId),
+                    memoryManager = memoryManager,
                 )
 
                 val adapter = RuntimeStepExecutionAdapter(

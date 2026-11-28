@@ -290,6 +290,11 @@ enum class DevStack(
         "Build Android app projects and install them directly on this phone.",
         "JDK 17, ARM64 Android SDK 36, Build Tools 35, Gradle 8.14.3, and an offline Maven cache",
     ),
+    ANDROID_NDK(
+        "Android NDK & CMake (Native C/C++)",
+        "Build Android apps with native C/C++ libraries (CMake, JNI, PRoot, game engines).",
+        "Android NDK r28c, ARM64 CMake 3.22.1, Ninja, and Clang/LLD 18 shims",
+    ),
     CPP(
         "C / C++",
         "Fast compiled programs, algorithms, and systems code.",

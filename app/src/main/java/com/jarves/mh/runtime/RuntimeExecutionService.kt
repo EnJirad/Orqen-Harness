@@ -55,7 +55,7 @@ class RuntimeExecutionService : Service() {
                 RUNNING_NOTIFICATION_ID,
                 runningNotification(detail, includeStop = canStop),
             )
-            mainHandler.postDelayed(this, 1_000L)
+            mainHandler.postDelayed(this, 5_000L)
         }
     }
 
@@ -73,7 +73,7 @@ class RuntimeExecutionService : Service() {
 
     private fun startLiveTimer() {
         mainHandler.removeCallbacks(liveTimerRunnable)
-        mainHandler.postDelayed(liveTimerRunnable, 1_000L)
+        mainHandler.postDelayed(liveTimerRunnable, 5_000L)
     }
 
     private fun stopLiveTimer() {
@@ -86,10 +86,15 @@ class RuntimeExecutionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        intent?.getStringExtra(EXTRA_PROJECT_NAME)?.takeIf(String::isNotBlank)?.let { projectNameOverride = it }
-        intent?.getStringExtra(EXTRA_TITLE)?.takeIf(String::isNotBlank)?.let { notificationTitleOverride = it }
-        if (intent?.hasExtra(EXTRA_CAN_STOP) == true) canStop = intent.getBooleanExtra(EXTRA_CAN_STOP, true)
-        when (intent?.action ?: ACTION_START) {
+        if (intent == null) {
+            // Never attempt to call startForeground() on a null-intent OS restart from background.
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        intent.getStringExtra(EXTRA_PROJECT_NAME)?.takeIf(String::isNotBlank)?.let { projectNameOverride = it }
+        intent.getStringExtra(EXTRA_TITLE)?.takeIf(String::isNotBlank)?.let { notificationTitleOverride = it }
+        if (intent.hasExtra(EXTRA_CAN_STOP)) canStop = intent.getBooleanExtra(EXTRA_CAN_STOP, true)
+        when (intent.action ?: ACTION_START) {
             ACTION_STOP -> {
                 stopLiveTimer()
                 RuntimeTaskController.requestStop()
@@ -159,28 +164,85 @@ class RuntimeExecutionService : Service() {
                 detail = intent?.getStringExtra(EXTRA_DETAIL) ?: AppStrings.get(this, R.string.rt_exec_could_not_finish),
                 failed = true,
             )
+            ACTION_STANDBY -> {
+                if (!taskRunning) {
+                    stopLiveTimer()
+                    releaseWakeLock()
+                    safeStartForeground(RUNNING_NOTIFICATION_ID, standbyNotification())
+                } else {
+                    val detail = currentDetailText.ifBlank { AppStrings.get(this, R.string.rt_exec_working_in, projectName) }
+                    safeStartForeground(RUNNING_NOTIFICATION_ID, runningNotification(detail, includeStop = canStop))
+                }
+                return START_NOT_STICKY
+            }
+            ACTION_STOP_STANDBY -> {
+                if (!taskRunning) {
+                    stopLiveTimer()
+                    releaseWakeLock()
+                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                    stopSelf()
+                }
+                return START_NOT_STICKY
+            }
             ACTION_CANCELLED -> {
                 taskRunning = false
                 stopLiveTimer()
                 releaseWakeLock()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                enterStandbyOrStop()
             }
             else -> {
                 taskRunning = true
                 startedAtElapsedMs = SystemClock.elapsedRealtime()
-                val detail = intent?.getStringExtra(EXTRA_DETAIL)?.takeIf(String::isNotBlank)
+                val detail = intent.getStringExtra(EXTRA_DETAIL)?.takeIf(String::isNotBlank)
                     ?: AppStrings.get(this, R.string.rt_exec_working_in, projectName)
                 currentDetailText = detail
-                startForeground(
-                    RUNNING_NOTIFICATION_ID,
-                    runningNotification(detail, includeStop = canStop),
-                )
-                acquireWakeLock()
-                startLiveTimer()
+                if (safeStartForeground(RUNNING_NOTIFICATION_ID, runningNotification(detail, includeStop = canStop))) {
+                    acquireWakeLock()
+                    startLiveTimer()
+                }
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun safeStartForeground(id: Int, notification: android.app.Notification): Boolean {
+        return runCatching {
+            startForeground(id, notification)
+            true
+        }.getOrElse { err ->
+            android.util.Log.w("RuntimeExecutionService", "Unable to start foreground service safely", err)
+            taskRunning = false
+            stopLiveTimer()
+            releaseWakeLock()
+            stopSelf()
+            false
+        }
+    }
+
+    private fun enterStandbyOrStop() {
+        if (com.jarves.mh.data.AppPreferences(this).keepAliveInBackground) {
+            safeStartForeground(RUNNING_NOTIFICATION_ID, standbyNotification())
+        } else {
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            stopSelf()
+        }
+    }
+
+    private fun standbyNotification(): android.app.Notification {
+        val prefs = com.jarves.mh.data.AppPreferences(this)
+        val isThai = prefs.languageCode.equals("th", ignoreCase = true) ||
+            ((prefs.languageCode.isBlank() || prefs.languageCode == "system") && java.util.Locale.getDefault().language.equals("th", ignoreCase = true))
+        val text = if (isThai) "พร้อมทำงานในพื้นหลัง (ป้องกันแอปรีสตาร์ต)" else "Active in background (prevents app restart)"
+        return NotificationCompat.Builder(this, RUNNING_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(AppStrings.get(this, R.string.app_name))
+            .setContentText(text)
+            .setContentIntent(openAppIntent())
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
     }
 
     private fun runningNotification(
@@ -236,7 +298,6 @@ class RuntimeExecutionService : Service() {
         taskRunning = false
         stopLiveTimer()
         releaseWakeLock()
-        stopForeground(STOP_FOREGROUND_REMOVE)
         val notification = NotificationCompat.Builder(this, RESULT_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
@@ -248,7 +309,7 @@ class RuntimeExecutionService : Service() {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
         getSystemService(NotificationManager::class.java).notify(RESULT_NOTIFICATION_ID, notification)
-        stopSelf()
+        enterStandbyOrStop()
     }
 
     private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
@@ -290,7 +351,28 @@ class RuntimeExecutionService : Service() {
         const val ACTION_NOTIFY_RESULT = "com.jarves.mh.NOTIFY_RESULT_RUNTIME"
         const val ACTION_FAILED = "com.jarves.mh.FAIL_RUNTIME"
         const val ACTION_CANCELLED = "com.jarves.mh.CANCEL_RUNTIME"
+        const val ACTION_STANDBY = "com.jarves.mh.STANDBY_RUNTIME"
+        const val ACTION_STOP_STANDBY = "com.jarves.mh.STOP_STANDBY_RUNTIME"
         const val EXTRA_PROJECT_NAME = "project_name"
+
+        fun ensureKeepAliveIfEnabled(context: android.content.Context) {
+            val app = context.applicationContext
+            if (!com.jarves.mh.data.AppPreferences(app).keepAliveInBackground) return
+            runCatching {
+                app.startService(
+                    Intent(app, RuntimeExecutionService::class.java).setAction(ACTION_STANDBY),
+                )
+            }
+        }
+
+        fun stopKeepAlive(context: android.content.Context) {
+            val app = context.applicationContext
+            runCatching {
+                app.startService(
+                    Intent(app, RuntimeExecutionService::class.java).setAction(ACTION_STOP_STANDBY),
+                )
+            }
+        }
         const val EXTRA_DETAIL = "detail"
         const val EXTRA_TITLE = "title"
         const val EXTRA_CAN_STOP = "can_stop"

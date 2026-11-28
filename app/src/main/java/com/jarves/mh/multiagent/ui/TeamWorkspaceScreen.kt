@@ -180,6 +180,7 @@ fun TeamWorkspaceScreen(
     onRemoveAgent: (AgentSlot) -> Unit,
     onUpdateContinuousConfig: (ContinuousExecutionConfig) -> Unit,
     onStartTeam: () -> Unit,
+    isTeamPaused: Boolean = false,
     onPauseTeam: () -> Unit,
     onResumeTeam: () -> Unit,
     onStopTeam: () -> Unit,
@@ -452,6 +453,7 @@ fun TeamWorkspaceScreen(
                     onRemoveAgent = onRemoveAgent,
                     onUpdateContinuousConfig = onUpdateContinuousConfig,
                     onStartTeam = onStartTeam,
+                    isTeamPaused = isTeamPaused,
                     onPauseTeam = onPauseTeam,
                     onResumeTeam = onResumeTeam,
                     onStopTeam = onStopTeam,
@@ -1842,7 +1844,18 @@ private fun TeamDualPreviewTab(
                                 }
 
                                 Button(
-                                    onClick = { onRunInTerminal("gradle assembleDebug --no-daemon") },
+                                    onClick = {
+                                        onRunInTerminal(
+                                            "[ -x /root/.gradle/init.d/pocketdev-arm64-ndk-shim.sh ] && /root/.gradle/init.d/pocketdev-arm64-ndk-shim.sh; " +
+                                                "TASK=assembleDebug; " +
+                                                "grep -qE 'productFlavors' app/build.gradle.kts app/build.gradle 2>/dev/null && grep -qE '\"online\"|'\''online'\''' app/build.gradle.kts app/build.gradle 2>/dev/null && TASK=assembleOnlineDebug; " +
+                                                "timeout 15m gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 " +
+                                                "--init-script /root/.gradle/init.d/pocketdev-android.gradle " +
+                                                "-Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 " +
+                                                "\$TASK --console=plain --stacktrace && " +
+                                                "( [ -f app/build/outputs/apk/online/debug/app-online-debug.apk ] && mkdir -p app/build/outputs/apk/debug && cp -f app/build/outputs/apk/online/debug/app-online-debug.apk app/build/outputs/apk/debug/app-debug.apk || true )",
+                                        )
+                                    },
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(10.dp),
                                 ) {

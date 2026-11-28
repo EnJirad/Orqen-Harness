@@ -63,6 +63,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -133,6 +134,8 @@ fun SettingsScreen(
     onRemoveApiKey: (ProviderKind, String) -> List<ApiKeyInfo>,
     onInstallDevStack: (DevStack) -> Unit = {},
     onRemoveDevStack: (DevStack) -> Unit = {},
+    onSetAutoInstallMissingTools: (Boolean) -> Unit = {},
+    onSetKeepAliveInBackground: (Boolean) -> Unit = {},
     onInstallAgent: (AgentKind) -> Unit = {},
     onCheckAgentUpdates: () -> Unit = {},
     onUpdateAgent: (AgentKind) -> Unit = {},
@@ -526,6 +529,58 @@ fun SettingsScreen(
                 ) {
                     Text(stringResource(R.string.st_tools_included_note), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(8.dp))
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = if (state.languageCode == "th" || ((state.languageCode.isBlank() || state.languageCode == "system") && java.util.Locale.getDefault().language == "th")) {
+                                        "ติดตั้งเครื่องมือที่ขาดอัตโนมัติ (AI)"
+                                    } else {
+                                        "Auto-install missing tools for AI"
+                                    },
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                )
+                                Text(
+                                    text = if (state.languageCode == "th" || ((state.languageCode.isBlank() || state.languageCode == "system") && java.util.Locale.getDefault().language == "th")) {
+                                        "เมื่อเปิด AI จะติดตั้งเครื่องมือที่ขาดในพื้นหลังให้อัตโนมัติ (หากปิดจะส่งแจ้งเตือน Android ขออนุญาตก่อน)"
+                                    } else {
+                                        "When ON, AI installs missing toolchains in the background automatically (when OFF, asks via Android notification)."
+                                    },
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = state.autoInstallMissingTools,
+                                onCheckedChange = onSetAutoInstallMissingTools,
+                            )
+                        }
+                    }
+                    if (state.devStackInstalling == null && !state.devStackMessage.isNullOrBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        ) {
+                            Text(
+                                text = state.devStackMessage,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
                     DevStack.entries.forEachIndexed { index, stack ->
                         val installed = stack in state.installedDevStacks
                         val installing = state.devStackInstalling == stack
@@ -610,6 +665,65 @@ fun SettingsScreen(
                 ) {
                     RuntimeInfoRow(stringResource(R.string.runtime_architecture), "ARM64 (aarch64)")
                     RuntimeInfoRow(stringResource(R.string.runtime_environment), "Ubuntu 20.04 PRoot")
+                    Spacer(Modifier.height(6.dp))
+                    val isThaiRuntime = state.languageCode == "th" ||
+                        ((state.languageCode.isBlank() || state.languageCode == "system") && java.util.Locale.getDefault().language == "th")
+                    val powerManager = context.getSystemService(android.os.PowerManager::class.java)
+                    val ignoringBatteryOpt = runCatching { powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true }.getOrDefault(false)
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (isThaiRuntime) "ทำงานในพื้นหลังตลอด (ป้องกันแอปรีสตาร์ต)" else "Keep ORQEN alive in background",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp,
+                                    )
+                                    Text(
+                                        text = if (isThaiRuntime) "คงกระบวนการของแอปไว้เมื่อสลับแอป เพื่อให้ AI ไม่หยุดทำงานกลางคัน" else "Keeps a lightweight foreground service active so Android does not kill or restart ORQEN.",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Switch(
+                                    checked = state.keepAliveInBackground,
+                                    onCheckedChange = onSetKeepAliveInBackground,
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    runCatching {
+                                        val intent = android.content.Intent(
+                                            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                            android.net.Uri.parse("package:${context.packageName}"),
+                                        )
+                                        context.startActivity(intent)
+                                    }.onFailure {
+                                        runCatching {
+                                            context.startActivity(android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Text(
+                                    text = when {
+                                        ignoringBatteryOpt && isThaiRuntime -> "ปิดการจำกัดแบตเตอรี่แล้ว (พร้อมทำงานพื้นหลัง)"
+                                        ignoringBatteryOpt -> "Battery optimization disabled (Ready)"
+                                        isThaiRuntime -> "ปิดการจำกัดแบตเตอรี่ (แนะนำ — ป้องกัน Android ปิดแอป)"
+                                        else -> "Disable Battery Optimization (Recommended)"
+                                    },
+                                    fontSize = 12.sp,
+                                )
+                            }
+                        }
+                    }
                     RuntimeInfoRow(
                         stringResource(R.string.runtime_active_agent),
                         state.agentKind.localizedTitle() + if (state.installedAgentVersions.containsKey(state.agentKind)) "" else " · " + stringResource(R.string.st_not_installed),

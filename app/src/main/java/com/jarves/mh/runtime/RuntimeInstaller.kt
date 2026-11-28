@@ -752,7 +752,7 @@ class RuntimeInstaller(private val context: Context) {
         // Android's installer also repairs executable bits, Gradle configuration,
         // and compatibility links. Let it run when the bundle is already present;
         // installAndroidToolchain avoids downloading complete artifacts again.
-        if (isStackInstalled(stack) && stack != DevStack.ANDROID) return
+        if (isStackInstalled(stack) && stack != DevStack.ANDROID && stack != DevStack.ANDROID_NDK) return
         applyStack(runtime.proot, stack, 0.05f, 0.95f, onProgress)
         onProgress(RuntimeInstallProgress(str(R.string.rt_install_stack_ready, stack.localizedLabel(context)), 1f))
     }
@@ -775,6 +775,7 @@ class RuntimeInstaller(private val context: Context) {
             DevStack.WEB -> Unit
             DevStack.PYTHON -> removePythonStack()
             DevStack.ANDROID -> removeAndroidStack()
+            DevStack.ANDROID_NDK -> removeAndroidNdkStack()
             DevStack.CPP -> aptRemove(
                 runtime.proot,
                 listOf("build-essential", "gcc", "g++", "gcc-10", "g++-10", "make", "cmake", "gdb"),
@@ -839,6 +840,44 @@ class RuntimeInstaller(private val context: Context) {
         removeAndroidGradleProperty()
     }
 
+    /**
+     * Frees temporary downloads, APT package archives/lists, and stale PRoot temp files
+     * to keep phone storage lean. Returns total bytes reclaimed.
+     */
+    fun cleanCachesAndTempFiles(): Long {
+        var freed = 0L
+        fun deleteTree(file: File, keepDir: Boolean = false) {
+            if (!file.exists() && !java.nio.file.Files.isSymbolicLink(file.toPath())) return
+            if (file.isDirectory && !java.nio.file.Files.isSymbolicLink(file.toPath())) {
+                file.listFiles().orEmpty().forEach { deleteTree(it, keepDir = false) }
+                if (!keepDir) file.delete()
+            } else {
+                freed += runCatching { file.length() }.getOrDefault(0L)
+                file.delete()
+            }
+        }
+        val activeInstall = DevStackInstallController.snapshot.value.activeStack != null
+        if (!activeInstall) {
+            deleteTree(File(rootfs, "root/android-sdk/.tmp"), keepDir = true)
+            deleteTree(File(context.cacheDir, "runtime-bundles"), keepDir = true)
+        }
+        deleteTree(File(rootfs, "var/cache/apt/archives"), keepDir = true)
+        deleteTree(File(rootfs, "var/lib/apt/lists"), keepDir = true)
+        deleteTree(File(rootfs, "tmp"), keepDir = true)
+        deleteTree(File(context.cacheDir, "proot-tmp"), keepDir = true)
+        context.cacheDir.listFiles { f -> f.isFile && (f.name.startsWith("team-apk-build-") || f.name.endsWith(".tmp")) }
+            .orEmpty()
+            .forEach { deleteTree(it) }
+        return freed
+    }
+
+    private fun removeAndroidNdkStack() {
+        listOf(
+            "root/android-sdk/ndk",
+            "root/android-sdk/cmake",
+        ).forEach { removePath(File(rootfs, it)) }
+    }
+
     private fun removeAndroidGradleProperty() {
         val properties = File(rootfs, "root/.gradle/gradle.properties")
         if (!properties.isFile) return
@@ -887,6 +926,9 @@ class RuntimeInstaller(private val context: Context) {
             }
             DevStack.ANDROID -> {
                 installAndroidToolchain(proot, from, to, onProgress)
+            }
+            DevStack.ANDROID_NDK -> {
+                installAndroidNdkToolchain(proot, from, to, onProgress)
             }
             DevStack.CPP -> {
                 aptInstall(
@@ -1178,12 +1220,177 @@ class RuntimeInstaller(private val context: Context) {
         )
     }
 
+    /**
+     * Installs an idempotent ARM64 NDK & CMake shim script inside PRoot so that Android
+     * projects using `externalNativeBuild` (CMake + NDK) build cleanly on ARM64 devices even
+     * when Google's SDK Manager downloads x86_64 NDK/CMake binaries into `linux-x86_64`.
+     */
+    fun ensureArm64NdkAndCmakeShims(runtimeRootfs: File = rootfs) {
+        runCatching { writeArm64NdkCmakeShimScript(runtimeRootfs) }
+    }
+
+    private fun writeArm64NdkCmakeShimScript(runtimeRootfs: File) {
+        val script = File(runtimeRootfs, "root/.gradle/init.d/pocketdev-arm64-ndk-shim.sh")
+        script.parentFile?.mkdirs()
+        // Use @@ as a placeholder for literal bash $ so Kotlin string interpolation never touches it.
+        // Universal Dual-Arch Shim: supports BOTH aarch64 (ARM64) and x86_64 automatically at runtime.
+        val body = """
+            #!/usr/bin/env bash
+            # PocketDev / ORQEN Universal Dual-Arch (ARM64 + x86_64) NDK & CMake Auto-Shim
+            # Preserves original x86_64 NDK binaries in .x86_64-orig/ and installs arch-detecting
+            # wrappers so BOTH aarch64 and x86_64 hosts select the exact right compiler at runtime.
+            set -u
+            ARCH="@@(uname -m 2>/dev/null || echo aarch64)"
+
+            is_elf_arch() {
+                local f="@@1"
+                local want="@@2" # 3e00 = x86_64, b700 = aarch64
+                [ -f "@@f" ] && [ ! -L "@@f" ] || return 1
+                local magic
+                magic="@@(od -An -tx1 -N20 "@@f" 2>/dev/null | tr -d ' \n')"
+                [ "@@{magic:0:8}" = "7f454c46" ] && [ "@@{magic:36:4}" = "@@want" ]
+            }
+
+            SDK="/root/android-sdk"
+
+            # 1. CMake & Ninja arch-aware shims
+            HOST_CMAKE="@@(command -v /usr/local/bin/cmake 2>/dev/null || command -v /usr/bin/cmake 2>/dev/null || true)"
+            HOST_NINJA="@@(command -v /usr/local/bin/ninja 2>/dev/null || command -v /usr/bin/ninja 2>/dev/null || true)"
+            if [ -n "@@HOST_CMAKE" ] && [ -n "@@HOST_NINJA" ]; then
+                for cmake_dir in "@@SDK"/cmake/*; do
+                    [ -d "@@cmake_dir/bin" ] || continue
+                    if [ "@@ARCH" = "aarch64" ]; then
+                        if [ ! -e "@@cmake_dir/bin/cmake" ] || is_elf_arch "@@cmake_dir/bin/cmake" "3e00"; then
+                            ln -sf "@@HOST_CMAKE" "@@cmake_dir/bin/cmake"
+                        fi
+                        if [ ! -e "@@cmake_dir/bin/ninja" ] || is_elf_arch "@@cmake_dir/bin/ninja" "3e00"; then
+                            cp -f "@@HOST_NINJA" "@@cmake_dir/bin/ninja" 2>/dev/null || ln -sf "@@HOST_NINJA" "@@cmake_dir/bin/ninja"
+                            chmod 755 "@@cmake_dir/bin/ninja" 2>/dev/null || true
+                            ln -sf ninja "@@cmake_dir/bin/ninja-build"
+                        fi
+                    elif [ "@@ARCH" = "x86_64" ]; then
+                        if [ ! -e "@@cmake_dir/bin/cmake" ] || is_elf_arch "@@cmake_dir/bin/cmake" "b700"; then
+                            ln -sf "@@HOST_CMAKE" "@@cmake_dir/bin/cmake"
+                        fi
+                        if [ ! -e "@@cmake_dir/bin/ninja" ] || is_elf_arch "@@cmake_dir/bin/ninja" "b700"; then
+                            cp -f "@@HOST_NINJA" "@@cmake_dir/bin/ninja" 2>/dev/null || ln -sf "@@HOST_NINJA" "@@cmake_dir/bin/ninja"
+                            chmod 755 "@@cmake_dir/bin/ninja" 2>/dev/null || true
+                            ln -sf ninja "@@cmake_dir/bin/ninja-build"
+                        fi
+                    fi
+                done
+            fi
+
+            # 2. Detect native host LLVM toolchain (used on aarch64 or as fallback on x86_64)
+            HOST_CLANG=""
+            HOST_CLANGXX=""
+            LLVM_VER=""
+            for v in 18 19 17 ""; do
+                suf="@@{v:+-@@v}"
+                if [ -x "/usr/bin/clang@@suf" ] && [ -x "/usr/bin/clang++@@suf" ]; then
+                    HOST_CLANG="/usr/bin/clang@@suf"
+                    HOST_CLANGXX="/usr/bin/clang++@@suf"
+                    LLVM_VER="@@v"
+                    break
+                fi
+            done
+            SUF="@@{LLVM_VER:+-@@LLVM_VER}"
+            HOST_LLD="lld@@SUF"
+            [ -x "/usr/bin/ld.@@HOST_LLD" ] || HOST_LLD="lld"
+
+            # 3. NDK Dual-Arch Wrappers (works identically on linux-x86_64 and linux-aarch64 paths)
+            for ndk_dir in "@@SDK"/ndk/*; do
+                PREBUILT_BASE="@@ndk_dir/toolchains/llvm/prebuilt"
+                PREBUILT="@@PREBUILT_BASE/linux-x86_64"
+                BIN="@@PREBUILT/bin"
+                [ -d "@@BIN" ] || continue
+
+                # Expose linux-aarch64 -> linux-x86_64 so tools checking either arch path succeed
+                if [ ! -e "@@PREBUILT_BASE/linux-aarch64" ]; then
+                    ln -s linux-x86_64 "@@PREBUILT_BASE/linux-aarch64" 2>/dev/null || true
+                fi
+
+                ORIG_DIR="@@BIN/.x86_64-orig"
+                mkdir -p "@@ORIG_DIR"
+
+                # Preserve real x86_64 NDK binaries before installing dual-arch wrappers
+                for orig_tool in clang clang++ clang-18 clang-19 clang++-18 clang++-19 ld.lld lld llvm-ar llvm-as llvm-nm llvm-objcopy llvm-objdump llvm-ranlib llvm-readelf llvm-readobj llvm-strings llvm-strip; do
+                    if [ -f "@@BIN/@@orig_tool" ] && is_elf_arch "@@BIN/@@orig_tool" "3e00"; then
+                        [ -e "@@ORIG_DIR/@@orig_tool" ] || mv -f "@@BIN/@@orig_tool" "@@ORIG_DIR/@@orig_tool"
+                    fi
+                done
+
+                RES_DIR="@@(ls -1d "@@PREBUILT"/lib/clang/* 2>/dev/null | sort -V | tail -n 1 || true)"
+                RES_ARG=""
+                if [ -n "@@RES_DIR" ]; then
+                    RES_VER="@@(basename "@@RES_DIR")"
+                    RES_ARG='-resource-dir "@@NDK_ROOT/lib/clang/'"@@RES_VER"'"'
+                fi
+
+                if [ -n "@@HOST_CLANG" ]; then
+                    for c_name in clang clang-18 clang-19; do
+                        cat > "@@BIN/@@c_name" <<EOF
+            #!/usr/bin/env bash
+            NDK_BIN="\@@(cd "\@@(dirname "\@@0")" && pwd)"
+            NDK_ROOT="\@@(cd "\@@NDK_BIN/.." && pwd)"
+            if [ "\@@(uname -m 2>/dev/null)" = "x86_64" ] && [ -x "\@@NDK_BIN/.x86_64-orig/@@c_name" ]; then
+                exec "\@@NDK_BIN/.x86_64-orig/@@c_name" "\@@@"
+            fi
+            exec @@HOST_CLANG @@RES_ARG -rtlib=compiler-rt -fuse-ld=@@HOST_LLD "\@@@"
+            EOF
+                        chmod 755 "@@BIN/@@c_name"
+                    done
+
+                    for cxx_name in clang++ clang++-18 clang++-19; do
+                        cat > "@@BIN/@@cxx_name" <<EOF
+            #!/usr/bin/env bash
+            NDK_BIN="\@@(cd "\@@(dirname "\@@0")" && pwd)"
+            NDK_ROOT="\@@(cd "\@@NDK_BIN/.." && pwd)"
+            if [ "\@@(uname -m 2>/dev/null)" = "x86_64" ] && [ -x "\@@NDK_BIN/.x86_64-orig/@@cxx_name" ]; then
+                exec "\@@NDK_BIN/.x86_64-orig/@@cxx_name" "\@@@"
+            fi
+            exec @@HOST_CLANGXX @@RES_ARG -rtlib=compiler-rt -fuse-ld=@@HOST_LLD "\@@@"
+            EOF
+                        chmod 755 "@@BIN/@@cxx_name"
+                    done
+                fi
+
+                # Dual-arch wrappers for lld & llvm-* binutils
+                for tool in ld.lld lld llvm-ar llvm-as llvm-nm llvm-objcopy llvm-objdump llvm-ranlib llvm-readelf llvm-readobj llvm-strings llvm-strip; do
+                    HOST_BIN=""
+                    if [ "@@tool" = "ld.lld" ] || [ "@@tool" = "lld" ]; then
+                        [ -x "/usr/bin/ld.@@HOST_LLD" ] && HOST_BIN="/usr/bin/ld.@@HOST_LLD"
+                    elif [ -x "/usr/bin/@@tool@@SUF" ]; then
+                        HOST_BIN="/usr/bin/@@tool@@SUF"
+                    elif [ -x "/usr/bin/@@tool" ]; then
+                        HOST_BIN="/usr/bin/@@tool"
+                    fi
+                    [ -n "@@HOST_BIN" ] || continue
+                    rm -f "@@BIN/@@tool"
+                    cat > "@@BIN/@@tool" <<EOF
+            #!/usr/bin/env bash
+            NDK_BIN="\@@(cd "\@@(dirname "\@@0")" && pwd)"
+            if [ "\@@(uname -m 2>/dev/null)" = "x86_64" ] && [ -x "\@@NDK_BIN/.x86_64-orig/@@tool" ]; then
+                exec "\@@NDK_BIN/.x86_64-orig/@@tool" "\@@@"
+            fi
+            exec @@HOST_BIN "\@@@"
+            EOF
+                    chmod 755 "@@BIN/@@tool"
+                done
+            done
+            exit 0
+        """.trimIndent().replace("@@", "$") + "\n"
+        script.writeText(body)
+        runCatching { Os.chmod(script.absolutePath, 0b111101101) }
+    }
+
     @Synchronized
     private fun writeAndroidGradleConfiguration(runtimeRootfs: File) {
         val aapt2 = File(runtimeRootfs, ANDROID_AAPT2_HOST_PATH)
         if (!aapt2.isFile) return
 
         writeAndroidGradleInitScript(runtimeRootfs)
+        writeArm64NdkCmakeShimScript(runtimeRootfs)
         val gradleDir = File(runtimeRootfs, "root/.gradle").apply { mkdirs() }
         val properties = File(gradleDir, "gradle.properties")
         val existingLines = properties.readTextOrNull()?.lineSequence()?.toList().orEmpty()
@@ -1211,23 +1418,181 @@ class RuntimeInstaller(private val context: Context) {
      * One-time upgrade path from the old single-bundle layout: devices that already
      * installed every tool keep all stacks without re-downloading anything.
      */
+    private suspend fun installAndroidNdkToolchain(
+        proot: File,
+        from: Float,
+        to: Float,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val span = (to - from).coerceAtLeast(0.1f)
+        if (!isStackInstalled(DevStack.ANDROID)) {
+            installAndroidToolchain(proot, from, from + span * 0.20f, onProgress)
+            writeDevStackState(readDevStackState().apply { put(DevStack.ANDROID.name, true) })
+        }
+
+        // Step 1: Install native ARM64 LLVM-18 + Ninja + unzip ONLY if not already present
+        val hasHostClang = File(rootfs, "usr/bin/clang-18").canExecute() || File(rootfs, "usr/bin/clang").canExecute()
+        val hasHostLld = File(rootfs, "usr/bin/ld.lld-18").canExecute() || File(rootfs, "usr/bin/ld.lld").canExecute()
+        val hasHostNinja = File(rootfs, "usr/bin/ninja").canExecute() || File(rootfs, "usr/local/bin/ninja").canExecute()
+        val hasUnzip = File(rootfs, "usr/bin/unzip").canExecute()
+        if (!hasHostClang || !hasHostLld || !hasHostNinja || !hasUnzip) {
+            aptInstall(
+                proot = proot,
+                packages = listOf("clang-18", "lld-18", "llvm-18", "ninja-build", "unzip", "ca-certificates"),
+                message = "Installing ARM64 Clang 18, LLD 18, and Ninja...",
+                fraction = from + span * 0.25f,
+                onProgress = onProgress,
+            )
+        }
+
+        val tmpDir = File(rootfs, "root/android-sdk/.tmp").apply { mkdirs() }
+        val isX86Host = android.os.Build.SUPPORTED_ABIS.firstOrNull().orEmpty().contains("x86_64", ignoreCase = true) ||
+            System.getProperty("os.arch").orEmpty().contains("x86_64", ignoreCase = true)
+
+        // Step 2: Download & install native CMake 3.22.1 matching device arch (ARM64 or x86_64)
+        val cmakeBinHost = File(rootfs, "root/android-sdk/cmake/3.22.1/bin/cmake")
+        if (!cmakeBinHost.isFile && !java.nio.file.Files.isSymbolicLink(cmakeBinHost.toPath())) {
+            val cmakeArch = if (isX86Host) "x86_64" else "aarch64"
+            val cmakeArchive = File(tmpDir, "cmake-3.22.1-$cmakeArch.tar.gz")
+            downloadToFile(
+                url = "https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1-linux-$cmakeArch.tar.gz",
+                destination = cmakeArchive,
+            ) { downloaded, total ->
+                val ratio = if (total > 0L) (downloaded.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0.5f
+                onProgress(
+                    RuntimeInstallProgress(
+                        message = "Downloading CMake 3.22.1 ($cmakeArch)...",
+                        fraction = from + span * (0.30f + 0.12f * ratio),
+                        downloadedBytes = downloaded,
+                        totalBytes = total.takeIf { it > 0L },
+                    ),
+                )
+            }
+            onProgress(RuntimeInstallProgress("Extracting CMake 3.22.1 ($cmakeArch)...", from + span * 0.44f, indeterminate = true))
+            val extractCmakeCmd = """
+                set -e
+                CMAKE_DIR="/root/android-sdk/cmake/3.22.1"
+                rm -rf "${'$'}CMAKE_DIR"
+                mkdir -p "${'$'}CMAKE_DIR"
+                tar -xzf /root/android-sdk/.tmp/cmake-3.22.1-$cmakeArch.tar.gz --strip-components=1 -C "${'$'}CMAKE_DIR"
+                rm -f /root/android-sdk/.tmp/cmake-3.22.1-$cmakeArch.tar.gz
+            """.trimIndent()
+            runGuestCommand(
+                proot = proot,
+                command = extractCmakeCmd,
+                displayCommand = "Extracting CMake 3.22.1 ($cmakeArch)",
+                fraction = from + span * 0.45f,
+                timeoutMs = 10 * 60 * 1_000L,
+                onProgress = onProgress,
+                failureMessage = "Failed to extract CMake 3.22.1 ($cmakeArch)",
+            )
+        }
+
+        // Ensure real ARM64 ninja binary & source.properties exist inside CMake 3.22.1
+        val finalizeCmakeCmd = """
+            set -e
+            CMAKE_DIR="/root/android-sdk/cmake/3.22.1"
+            mkdir -p "${'$'}CMAKE_DIR/bin"
+            NINJA_BIN="${'$'}(command -v /usr/bin/ninja || command -v /usr/local/bin/ninja)"
+            if [ -n "${'$'}NINJA_BIN" ]; then
+                cp -f "${'$'}NINJA_BIN" "${'$'}CMAKE_DIR/bin/ninja"
+                chmod 755 "${'$'}CMAKE_DIR/bin/ninja"
+                ln -sf ninja "${'$'}CMAKE_DIR/bin/ninja-build"
+            fi
+            printf "Pkg.Desc = CMake\nPkg.Revision = 3.22.1\n" > "${'$'}CMAKE_DIR/source.properties"
+        """.trimIndent()
+        runGuestCommand(
+            proot = proot,
+            command = finalizeCmakeCmd,
+            displayCommand = "Configuring ARM64 CMake 3.22.1 & Ninja",
+            fraction = from + span * 0.48f,
+            timeoutMs = 2 * 60 * 1_000L,
+            onProgress = onProgress,
+            failureMessage = "Failed to configure ARM64 CMake & Ninja",
+        )
+
+        // Step 3: Download & extract Android NDK r28c (28.2.13676358) via Android's native HTTPS downloader
+        // Verify BOTH source.properties AND sysroot headers so partial/corrupted NDK folders are repaired!
+        val ndkPropsHost = File(rootfs, "root/android-sdk/ndk/28.2.13676358/source.properties")
+        val ndkSysrootHeader = File(rootfs, "root/android-sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/android/api-level.h")
+        if (!ndkPropsHost.isFile || !ndkSysrootHeader.isFile) {
+            val ndkArchive = File(tmpDir, "android-ndk-r28c-linux.zip")
+            downloadToFile(
+                url = "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip",
+                destination = ndkArchive,
+            ) { downloaded, total ->
+                val ratio = if (total > 0L) (downloaded.toFloat() / total.toFloat()).coerceIn(0f, 1f) else 0.5f
+                onProgress(
+                    RuntimeInstallProgress(
+                        message = "Downloading Android NDK r28c (28.2.13676358)...",
+                        fraction = from + span * (0.50f + 0.30f * ratio),
+                        downloadedBytes = downloaded,
+                        totalBytes = total.takeIf { it > 0L },
+                    ),
+                )
+            }
+            onProgress(RuntimeInstallProgress("Extracting Android NDK r28c (this takes ~2 minutes)...", from + span * 0.82f, indeterminate = true))
+            val extractNdkCmd = """
+                set -e
+                NDK_DIR="/root/android-sdk/ndk/28.2.13676358"
+                mkdir -p /root/android-sdk/ndk
+                rm -rf /root/android-sdk/.tmp/ndk-extract "${'$'}NDK_DIR"
+                mkdir -p /root/android-sdk/.tmp/ndk-extract
+                unzip -q /root/android-sdk/.tmp/android-ndk-r28c-linux.zip -d /root/android-sdk/.tmp/ndk-extract
+                mv /root/android-sdk/.tmp/ndk-extract/android-ndk-r28c "${'$'}NDK_DIR"
+                rm -rf /root/android-sdk/.tmp/android-ndk-r28c-linux.zip /root/android-sdk/.tmp/ndk-extract
+            """.trimIndent()
+            runGuestCommand(
+                proot = proot,
+                command = extractNdkCmd,
+                displayCommand = "Extracting Android NDK r28c",
+                fraction = from + span * 0.84f,
+                timeoutMs = 20 * 60 * 1_000L,
+                onProgress = onProgress,
+                failureMessage = "Failed to extract Android NDK r28c",
+            )
+        }
+
+        // Step 4: Write & execute ARM64 NDK/CMake Auto-Shim
+        onProgress(RuntimeInstallProgress("Configuring ARM64 NDK & CMake shims...", from + span * 0.90f, indeterminate = true))
+        writeArm64NdkCmakeShimScript(rootfs)
+        runGuestCommand(
+            proot = proot,
+            command = "/root/.gradle/init.d/pocketdev-arm64-ndk-shim.sh",
+            displayCommand = "Applying ARM64 NDK/CMake shims",
+            fraction = from + span * 0.92f,
+            timeoutMs = 2 * 60 * 1_000L,
+            onProgress = onProgress,
+            failureMessage = "Failed to configure ARM64 NDK/CMake shims",
+        )
+
+        // Step 5: Verify native ARM64 execution of CMake, Ninja, and shimmed NDK clang
+        verifyGuest(
+            proot = proot,
+            command = "/root/android-sdk/cmake/3.22.1/bin/cmake --version && " +
+                "/root/android-sdk/cmake/3.22.1/bin/ninja --version && " +
+                "/root/android-sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --version",
+            failureMessage = "Android NDK & CMake ARM64 verification failed",
+        )
+    }
+
     fun migrateLegacyToolMarkers() {
         if (!File(rootfs, "usr/bin/bash").isFile) return
         if (languageToolsMarker.readTextOrNull() != LANGUAGE_TOOLS_VERSION) return
         if (coreToolsMarker.readTextOrNull() != CORE_TOOLS_VERSION) coreToolsMarker.writeText(CORE_TOOLS_VERSION)
         val state = readDevStackState()
-        DevStack.entries.forEach { stack -> if (!state.containsKey(stack.name)) state[stack.name] = true }
+        DevStack.entries.forEach { stack ->
+            if (stack != DevStack.ANDROID_NDK && !state.containsKey(stack.name)) state[stack.name] = true
+        }
         writeDevStackState(state)
     }
 
-    fun installedStacks(): Set<DevStack> = readDevStackState()
-        .filterValues { it }
-        .keys
-        .mapNotNull { name -> runCatching { DevStack.valueOf(name) }.getOrNull() }
+    fun installedStacks(): Set<DevStack> = DevStack.entries
         .filter(::isStackInstalled)
         .toSet()
 
     fun isStackInstalled(stack: DevStack): Boolean {
+        if (stack == DevStack.ANDROID_NDK) return hasAndroidNdkToolchain(rootfs)
         if (readDevStackState()[stack.name] != true) return false
         // Older C/C++ installs lack GCC 10 and Python, which native npm packages need.
         if (stack == DevStack.CPP) return hasNativeAddonToolchain(rootfs)
@@ -1238,6 +1603,20 @@ class RuntimeInstaller(private val context: Context) {
             File(rootfs, "opt/gradle/gradle-8.14.3/bin/gradle").isFile &&
             File(rootfs, "root/maven/localMvnRepository").let { it.isDirectory && !it.list().isNullOrEmpty() } &&
             File(rootfs, "root/.gradle/init.d/pocketdev-android.gradle").isFile
+    }
+
+    private fun hasAndroidNdkToolchain(targetRootfs: File): Boolean {
+        fun existsOrSymlink(rel: String): Boolean {
+            val f = File(targetRootfs, rel)
+            return f.isFile || java.nio.file.Files.isSymbolicLink(f.toPath())
+        }
+        return File(targetRootfs, "root/android-sdk/ndk/28.2.13676358/source.properties").isFile &&
+            File(targetRootfs, "root/android-sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/android/api-level.h").isFile &&
+            existsOrSymlink("root/android-sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang") &&
+            existsOrSymlink("root/android-sdk/cmake/3.22.1/bin/cmake") &&
+            existsOrSymlink("root/android-sdk/cmake/3.22.1/bin/ninja") &&
+            (File(targetRootfs, "usr/bin/clang-18").canExecute() || File(targetRootfs, "usr/bin/clang").canExecute()) &&
+            File(targetRootfs, "root/.gradle/init.d/pocketdev-arm64-ndk-shim.sh").isFile
     }
 
     private fun hasNativeAddonToolchain(targetRootfs: File): Boolean =
@@ -1430,6 +1809,7 @@ class RuntimeInstaller(private val context: Context) {
             withTimeout(timeoutMs) {
                 var offset = 0L
                 var pending = ""
+                var lastProgressEmitMs = 0L
                 while (running.isAlive || (native?.outputFile?.length() ?: 0L) > offset) {
                     coroutineContext.ensureActive()
                     val file = native?.outputFile
@@ -1444,24 +1824,30 @@ class RuntimeInstaller(private val context: Context) {
                         }
                         val parts = pending.split('\n')
                         pending = parts.last()
+                        var latestLine: String? = null
                         for (raw in parts.dropLast(1)) {
                             val line = sanitizeTerminalLine(raw)
                             if (line.isNotBlank()) {
                                 collected.appendLine(line)
                                 if (collected.length > MAX_COLLECTED_OUTPUT) collected.delete(0, collected.length - MAX_COLLECTED_OUTPUT)
-                                onProgress(
-                                    RuntimeInstallProgress(
-                                        message = line,
-                                        fraction = fraction,
-                                        terminalLine = line,
-                                        indeterminate = true,
-                                        event = RuntimeInstallEvent.OUTPUT,
-                                    ),
-                                )
+                                latestLine = line
                             }
                         }
+                        val now = System.currentTimeMillis()
+                        if (latestLine != null && now - lastProgressEmitMs >= 150L) {
+                            lastProgressEmitMs = now
+                            onProgress(
+                                RuntimeInstallProgress(
+                                    message = latestLine,
+                                    fraction = fraction,
+                                    terminalLine = latestLine,
+                                    indeterminate = true,
+                                    event = RuntimeInstallEvent.OUTPUT,
+                                ),
+                            )
+                        }
                     } else {
-                        delay(80)
+                        delay(100)
                     }
                 }
                 sanitizeTerminalLine(pending).takeIf(String::isNotBlank)?.let { line ->
@@ -1906,6 +2292,81 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         val parentPath = (file.parentFile ?: root).canonicalFile.toPath()
         require(parentPath.startsWith(rootPath)) { "Archive path escapes runtime" }
         return file
+    }
+
+    private suspend fun downloadToFile(
+        url: String,
+        destination: File,
+        onBytes: suspend (downloaded: Long, total: Long) -> Unit,
+    ) {
+        destination.parentFile?.mkdirs()
+        if (destination.isFile && destination.length() > 0L) {
+            onBytes(destination.length(), destination.length())
+            return
+        }
+        val temporary = File(destination.parentFile, "${destination.name}.part")
+        var existing = temporary.takeIf(File::isFile)?.length() ?: 0L
+        var currentUrl = url
+        var connection: HttpURLConnection? = null
+        for (hop in 0..5) {
+            val conn = URL(currentUrl).openConnection() as HttpURLConnection
+            conn.connectTimeout = 25_000
+            conn.readTimeout = 120_000
+            conn.instanceFollowRedirects = false
+            if (existing > 0L) conn.setRequestProperty("Range", "bytes=$existing-")
+            val code = conn.responseCode
+            if (code in setOf(301, 302, 303, 307, 308)) {
+                val location = conn.getHeaderField("Location")
+                conn.disconnect()
+                check(!location.isNullOrBlank()) { "Redirect missing Location header (HTTP $code)" }
+                currentUrl = URL(URL(currentUrl), location).toString()
+                continue
+            }
+            connection = conn
+            break
+        }
+        val active = connection ?: error("Too many redirects while downloading ${destination.name}")
+        try {
+            val code = active.responseCode
+            if (code == 416 && existing > 0L) {
+                // Range not satisfiable -> restart cleanly
+                temporary.delete()
+                existing = 0L
+                active.disconnect()
+                downloadToFile(url, destination, onBytes)
+                return
+            }
+            check(code in 200..299) { str(R.string.rt_install_download_failed_http, code) }
+            val resumed = code == HttpURLConnection.HTTP_PARTIAL && existing > 0L
+            if (!resumed) {
+                temporary.delete()
+                existing = 0L
+            }
+            val total = active.contentLengthLong.takeIf { it >= 0L }?.plus(existing) ?: -1L
+            active.inputStream.use { input ->
+                FileOutputStream(temporary, resumed).use { output ->
+                    val buffer = ByteArray(128 * 1024)
+                    var downloaded = existing
+                    var lastReportAt = 0L
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        downloaded += count
+                        val now = System.currentTimeMillis()
+                        if (now - lastReportAt >= 200L || (total > 0L && downloaded >= total)) {
+                            lastReportAt = now
+                            onBytes(downloaded, total)
+                        }
+                    }
+                }
+            }
+        } finally {
+            active.disconnect()
+        }
+        destination.delete()
+        check(temporary.renameTo(destination)) { "Could not finish download for ${destination.name}" }
     }
 
     private suspend fun downloadVerified(

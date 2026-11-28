@@ -71,7 +71,9 @@ import com.jarves.mh.runtime.NativeSpawnProcess
 import com.jarves.mh.runtime.RuntimeInstallProgress
 import com.jarves.mh.runtime.RuntimeInstaller
 import com.jarves.mh.runtime.RuntimeSetupController
+import com.jarves.mh.runtime.DevStackInstallController
 import com.jarves.mh.runtime.RuntimeSetupService
+import com.jarves.mh.runtime.ToolInstallPermissionReceiver
 import com.jarves.mh.runtime.RuntimeSetupSnapshot
 import com.jarves.mh.runtime.RuntimeSetupStatus
 import com.jarves.mh.runtime.readHeadBytes
@@ -94,6 +96,10 @@ import com.jarves.mh.runtime.AndroidProjectTemplateGenerator
 import com.jarves.mh.runtime.RuntimeExecutionService
 import com.jarves.mh.runtime.RuntimeTaskController
 import com.jarves.mh.runtime.androidGradleCommand
+import com.jarves.mh.runtime.androidGradleShellCommand
+import com.jarves.mh.runtime.isMissingCachedDependencyError
+import com.jarves.mh.runtime.publishCanonicalDebugApk
+import com.jarves.mh.runtime.resolveDebugAssembleTask
 import com.jarves.mh.runtime.diagnoseAndroidBuildFailure
 import com.jarves.mh.runtime.findAndroidProjectRoot
 import com.jarves.mh.runtime.findDebugApk
@@ -400,6 +406,8 @@ data class AppUiState(
     val devStackProgress: Float = 0f,
     val devStackBytes: Pair<Long, Long>? = null,
     val devStackBytesPerSecond: Long? = null,
+    val autoInstallMissingTools: Boolean = false,
+    val keepAliveInBackground: Boolean = true,
     val agentKind: AgentKind = AgentKind.CLAUDE_CODE,
     val primaryAgentKind: AgentKind = AgentKind.CLAUDE_CODE,
     val installedAgentVersions: Map<AgentKind, String> = emptyMap(),
@@ -460,6 +468,7 @@ data class AppUiState(
     val teamEstimatedUsage: EstimatedUsage? = null,
     val teamLocalUsage: LocalUsage = LocalUsage(),
     val teamIsRunning: Boolean = false,
+    val teamIsPaused: Boolean = false,
     val teamGroupMessages: List<GroupChatMessage> = emptyList(),
     val providerConfigs: List<ProviderConfig> = emptyList(),
     val activePrivateSlot: AgentSlot? = null,
@@ -1098,6 +1107,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             selectedDevStacks = preferences.selectedDevStacks.mapNotNull { name ->
                 runCatching { DevStack.valueOf(name) }.getOrNull()
             }.toSet() + DevStack.WEB,
+            autoInstallMissingTools = preferences.autoInstallMissingTools,
+            keepAliveInBackground = preferences.keepAliveInBackground,
             // Only people updating from an earlier version get the dialog; a new install has nothing "new".
             showWhatsNew = preferences.onboardingComplete && preferences.whatsNewSeenVersionCode < BuildConfig.VERSION_CODE,
             backupFeatureSeen = preferences.backupFeatureSeen,
@@ -1119,6 +1130,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch { initMultiAgentTeam() }
+        viewModelScope.launch {
+            var lastCompletedCounter = DevStackInstallController.snapshot.value.completedCounter
+            DevStackInstallController.snapshot.collect { snap ->
+                val justFinished = snap.completedCounter != lastCompletedCounter
+                if (justFinished) lastCompletedCounter = snap.completedCounter
+                val refreshedStacks = if (justFinished) {
+                    runCatching { withContext(Dispatchers.IO) { installer.installedStacks() } }.getOrNull()
+                } else null
+                _state.update { current ->
+                    current.copy(
+                        devStackInstalling = snap.activeStack,
+                        devStackRemoving = snap.removing,
+                        devStackProgress = snap.progress,
+                        devStackMessage = snap.message ?: snap.lastOutcomeMessage ?: current.devStackMessage,
+                        devStackBytes = if (snap.downloadedBytes != null && snap.totalBytes != null) {
+                            snap.downloadedBytes to snap.totalBytes
+                        } else null,
+                        devStackBytesPerSecond = snap.bytesPerSecond,
+                        installedDevStacks = refreshedStacks ?: current.installedDevStacks,
+                        toastMessage = if (justFinished && !snap.lastOutcomeMessage.isNullOrBlank()) {
+                            snap.lastOutcomeMessage
+                        } else current.toastMessage,
+                        androidHealthRunning = if (justFinished && pendingAndroidHealthRefreshAfterStack) false else current.androidHealthRunning,
+                    )
+                }
+                if (justFinished && pendingAndroidHealthRefreshAfterStack) {
+                    pendingAndroidHealthRefreshAfterStack = false
+                    refreshAndroidHealth()
+                }
+            }
+        }
         viewModelScope.launch {
             AndroidAppInstaller.events.collect { event ->
                 if (event.operationId != pendingAndroidInstallId) return@collect
@@ -1543,11 +1585,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
+            var freedBytes = 0L
             getApplication<Application>().cacheDir.listFiles().orEmpty()
                 .filter { it.isFile && it.name.startsWith("runtime-output-") }
-                .forEach { runCatching { it.delete() } }
+                .forEach { file ->
+                    freedBytes += runCatching { file.length() }.getOrDefault(0L)
+                    runCatching { file.delete() }
+                }
+            freedBytes += runCatching { installer.cleanCachesAndTempFiles() }.getOrDefault(0L)
+            val freedMb = freedBytes / (1024.0 * 1024.0)
+            val toast = if (freedMb >= 0.5) {
+                "${str(R.string.diagnostics_cache_cleared)} (${"%.1f".format(freedMb)} MB)"
+            } else {
+                str(R.string.diagnostics_cache_cleared)
+            }
             withContext(Dispatchers.Main) {
-                _state.update { it.copy(toastMessage = str(R.string.diagnostics_cache_cleared)) }
+                _state.update { it.copy(toastMessage = toast) }
                 lastDiagnosticsRefreshAtElapsedMillis = 0L
                 refreshDeveloperDiagnostics()
             }
@@ -1997,8 +2050,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val project = _state.value.activeProject ?: return
         if (_state.value.androidBuildRunning) return
         if (!installer.isStackInstalled(DevStack.ANDROID)) {
+            val autoStarted = ToolInstallPermissionReceiver.requestOrAutoInstallTool(
+                context = getApplication(),
+                stack = DevStack.ANDROID,
+            )
             _state.update {
-                it.copy(toastMessage = str(R.string.vm_android_tools_missing))
+                it.copy(
+                    toastMessage = if (autoStarted) {
+                        "Installing Android toolchain in background..."
+                    } else {
+                        str(R.string.vm_android_tools_missing)
+                    },
+                )
             }
             return
         }
@@ -2036,53 +2099,124 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var finalExitCode = -1
             runCatching {
                 val installed = installer.installedRuntime()
+                installer.ensureArm64NdkAndCmakeShims(installed.rootfs)
                 val workspace = findAndroidProjectRoot(projectWorkspaceRoot(project))
                     ?: error(str(R.string.vm_no_android_project))
                 buildWorkspace = workspace
-                val command = androidGradleCommand(workspace, task)
-                _state.update {
-                    it.copy(
-                        androidBuildPhase = AndroidBuildPhase.BUILDING,
-                        androidBuildStage = AndroidBuildStage.RESOLVING,
-                        androidBuildMessage = if (task == "clean") str(R.string.an_cleaning_project) else str(R.string.an_running_assemble),
-                        androidBuildLog = "$ $command\n",
+                if (task != "clean" &&
+                    ToolInstallPermissionReceiver.projectNeedsNativeNdk(workspace) &&
+                    !installer.isStackInstalled(DevStack.ANDROID_NDK)
+                ) {
+                    val autoStarted = ToolInstallPermissionReceiver.requestOrAutoInstallTool(
+                        context = getApplication(),
+                        stack = DevStack.ANDROID_NDK,
+                    )
+                    error(
+                        if (autoStarted) {
+                            "Android NDK & CMake is installing in the background. Retry build once ready."
+                        } else {
+                            "Project requires Android NDK & CMake. Tap Allow on the Android notification to install in background."
+                        },
                     )
                 }
-                val process = installer.process(
-                    installed.proot, installed.rootfs, workspace, emptyMap(),
-                    listOf("/usr/bin/bash", "-lc", command),
-                    projectGuestRoot(project),
-                )
-                androidBuildProcess = process
-                RuntimeTaskController.stopAction = ::cancelAndroidBuild
-                val native = process as? NativeSpawnProcess ?: error(str(R.string.an_unsupported_build_process))
-                var offset = 0L
-                while (process.isAlive || native.outputFile.length() > offset) {
-                    val available = native.outputFile.length() - offset
-                    if (available <= 0L) {
-                        Thread.sleep(75)
-                        continue
+                val resolvedTask = if (task == "assembleDebug") resolveDebugAssembleTask(workspace) else task
+                val tryOfflineFirst = task != "clean" && findDebugApk(workspace) != null
+
+                suspend fun runSingleGradleAttempt(offline: Boolean): Pair<Int, String> {
+                    val command = androidGradleShellCommand(
+                        root = workspace,
+                        task = resolvedTask,
+                        offline = offline,
+                        timeoutMinutes = if (offline) 8 else 15,
+                    )
+                    _state.update { current ->
+                        val header = if (offline || current.androidBuildLog.isBlank()) {
+                            "$ $command\n"
+                        } else {
+                            "${current.androidBuildLog}\n--- Offline cache miss, retrying online ---\n$ $command\n"
+                        }
+                        current.copy(
+                            androidBuildPhase = AndroidBuildPhase.BUILDING,
+                            androidBuildStage = AndroidBuildStage.RESOLVING,
+                            androidBuildMessage = if (task == "clean") str(R.string.an_cleaning_project) else str(R.string.an_running_assemble),
+                            androidBuildLog = header.takeLast(MAX_ANDROID_BUILD_LOG),
+                        )
                     }
-                    val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
-                    val count = RandomAccessFile(native.outputFile, "r").use { file ->
-                        file.seek(offset)
-                        file.read(bytes)
+                    val process = installer.process(
+                        installed.proot, installed.rootfs, workspace, emptyMap(),
+                        listOf("/usr/bin/bash", "-lc", command),
+                        projectGuestRoot(project),
+                    )
+                    androidBuildProcess = process
+                    RuntimeTaskController.stopAction = ::cancelAndroidBuild
+                    val native = process as? NativeSpawnProcess ?: error(str(R.string.an_unsupported_build_process))
+                    var offset = 0L
+                    var pendingChunk = StringBuilder()
+                    var lastUiFlushMs = 0L
+                    while (process.isAlive || native.outputFile.length() > offset) {
+                        val available = native.outputFile.length() - offset
+                        if (available <= 0L) {
+                            if (pendingChunk.isNotEmpty()) {
+                                val flushText = pendingChunk.toString()
+                                pendingChunk.setLength(0)
+                                _state.update { current ->
+                                    val nextStage = inferAndroidBuildStage(flushText, current.androidBuildStage)
+                                    current.copy(
+                                        androidBuildLog = (current.androidBuildLog + flushText).takeLast(MAX_ANDROID_BUILD_LOG),
+                                        androidBuildStage = nextStage,
+                                        androidBuildMessage = androidStageMessage(nextStage),
+                                    )
+                                }
+                            }
+                            Thread.sleep(100)
+                            continue
+                        }
+                        val bytes = ByteArray(minOf(available, 16L * 1024).toInt())
+                        val count = RandomAccessFile(native.outputFile, "r").use { file ->
+                            file.seek(offset)
+                            file.read(bytes)
+                        }
+                        if (count > 0) {
+                            offset += count
+                            pendingChunk.append(sanitizeTerminalOutput(bytes.decodeToString(0, count)))
+                            val now = System.currentTimeMillis()
+                            if (now - lastUiFlushMs >= 150L) {
+                                lastUiFlushMs = now
+                                val flushText = pendingChunk.toString()
+                                pendingChunk.setLength(0)
+                                _state.update { current ->
+                                    val nextStage = inferAndroidBuildStage(flushText, current.androidBuildStage)
+                                    current.copy(
+                                        androidBuildLog = (current.androidBuildLog + flushText).takeLast(MAX_ANDROID_BUILD_LOG),
+                                        androidBuildStage = nextStage,
+                                        androidBuildMessage = androidStageMessage(nextStage),
+                                    )
+                                }
+                            }
+                        }
                     }
-                    if (count > 0) {
-                        offset += count
-                        val chunk = sanitizeTerminalOutput(bytes.decodeToString(0, count))
+                    if (pendingChunk.isNotEmpty()) {
+                        val flushText = pendingChunk.toString()
                         _state.update { current ->
-                            val nextStage = inferAndroidBuildStage(chunk, current.androidBuildStage)
+                            val nextStage = inferAndroidBuildStage(flushText, current.androidBuildStage)
                             current.copy(
-                                androidBuildLog = (current.androidBuildLog + chunk).takeLast(MAX_ANDROID_BUILD_LOG),
+                                androidBuildLog = (current.androidBuildLog + flushText).takeLast(MAX_ANDROID_BUILD_LOG),
                                 androidBuildStage = nextStage,
                                 androidBuildMessage = androidStageMessage(nextStage),
                             )
                         }
                     }
+                    val code = process.waitFor()
+                    val output = sanitizeTerminalOutput(native.outputFile.readTailText(MAX_PROCESS_OUTPUT_BYTES))
+                    return code to output
                 }
-                val exitCode = process.waitFor()
-                val buildOutput = sanitizeTerminalOutput(native.outputFile.readTailText(MAX_PROCESS_OUTPUT_BYTES))
+
+                var (exitCode, buildOutput) = runSingleGradleAttempt(offline = tryOfflineFirst)
+                if (exitCode != 0 && !androidBuildStopRequested && tryOfflineFirst && isMissingCachedDependencyError(buildOutput)) {
+                    val retryResult = runSingleGradleAttempt(offline = false)
+                    exitCode = retryResult.first
+                    buildOutput = retryResult.second
+                }
                 finalExitCode = exitCode
                 finalOutput = buildOutput
                 if (androidBuildStopRequested) throw java.util.concurrent.CancellationException("Build cancelled")
@@ -2091,7 +2225,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (task == "clean") null else {
                     _state.update { it.copy(androidBuildStage = AndroidBuildStage.FINDING_APK, androidBuildMessage = str(R.string.an_finding_apk)) }
-                    findDebugApk(workspace) ?: error(str(R.string.an_no_debug_apk_found))
+                    val builtApk = findDebugApk(workspace) ?: error(str(R.string.an_no_debug_apk_found))
+                    publishCanonicalDebugApk(workspace, builtApk)
                 }
             }.onSuccess { apk ->
                 val shouldInstallAndRun = apk != null && action == AndroidAction.BUILD_AND_RUN
@@ -3371,86 +3506,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(selectedDevStacks = updated) }
     }
 
-    /** Installs one development stack on demand (Settings) with live progress. */
+    private var pendingAndroidHealthRefreshAfterStack: Boolean = false
+
+    fun setAutoInstallMissingTools(enabled: Boolean) {
+        preferences.autoInstallMissingTools = enabled
+        _state.update { it.copy(autoInstallMissingTools = enabled) }
+    }
+
+    fun setKeepAliveInBackground(enabled: Boolean) {
+        preferences.keepAliveInBackground = enabled
+        _state.update { it.copy(keepAliveInBackground = enabled) }
+        if (enabled) {
+            RuntimeExecutionService.ensureKeepAliveIfEnabled(getApplication())
+        } else {
+            RuntimeExecutionService.stopKeepAlive(getApplication())
+        }
+    }
+
+    /** Installs one development stack on demand in a background Foreground Service (survives leaving the app). */
     fun installDevStack(stack: DevStack, refreshAndroidHealthAfter: Boolean = false) {
-        if (_state.value.devStackInstalling != null) return
+        if (_state.value.devStackInstalling != null || DevStackInstallController.snapshot.value.activeStack != null) return
+        pendingAndroidHealthRefreshAfterStack = refreshAndroidHealthAfter
         _state.update {
             it.copy(
                 devStackInstalling = stack,
                 devStackRemoving = false,
                 devStackMessage = str(R.string.vm_preparing_named, stack.localizedLabel(getApplication())),
-                devStackProgress = 0f,
+                devStackProgress = 0.01f,
                 devStackBytes = null,
                 devStackBytesPerSecond = null,
             )
         }
-        viewModelScope.launch {
-            var sampleBytes = 0L
-            var sampleTime = android.os.SystemClock.elapsedRealtime()
-            var latestSpeed: Long? = null
-            val result = runCatching {
-                withContext(Dispatchers.IO) {
-                    installer.ensureStackInstalled(stack) { progress ->
-                        val transfer = progress.totalBytes?.let { total ->
-                            (progress.downloadedBytes ?: 0L) to total
-                        }
-                        if (transfer != null) {
-                            val now = android.os.SystemClock.elapsedRealtime()
-                            val elapsed = now - sampleTime
-                            val delta = transfer.first - sampleBytes
-                            if (delta < 0L) {
-                                sampleBytes = transfer.first
-                                sampleTime = now
-                                latestSpeed = null
-                            } else if (elapsed >= 500L) {
-                                latestSpeed = (delta * 1_000L / elapsed).coerceAtLeast(0L)
-                                sampleBytes = transfer.first
-                                sampleTime = now
-                            }
-                        } else {
-                            sampleBytes = 0L
-                            sampleTime = android.os.SystemClock.elapsedRealtime()
-                            latestSpeed = null
-                        }
-                        _state.update { current ->
-                            current.copy(
-                                devStackMessage = progress.message,
-                                devStackProgress = progress.fraction.coerceIn(0f, 1f),
-                                devStackBytes = transfer,
-                                devStackBytesPerSecond = latestSpeed,
-                            )
-                        }
-                    }
-                }
-            }
-            _state.update { current ->
-                current.copy(
-                    devStackInstalling = null,
-                    devStackRemoving = false,
-                    installedDevStacks = if (result.isSuccess) current.installedDevStacks + stack else current.installedDevStacks,
-                    devStackProgress = 0f,
-                    devStackBytes = null,
-                    devStackBytesPerSecond = null,
-                    devStackMessage = result.fold(
-                        onSuccess = { str(R.string.vm_stack_tools_ready, stack.localizedLabel(getApplication())) },
-                        onFailure = { _ -> result.exceptionOrNull()?.message?.take(200) ?: str(R.string.vm_install_failed_named, stack.localizedLabel(getApplication())) },
-                    ),
-                    androidHealthRunning = if (refreshAndroidHealthAfter) false else current.androidHealthRunning,
-                )
-            }
-            if (refreshAndroidHealthAfter) refreshAndroidHealth()
-        }
+        RuntimeSetupService.startInstallStack(getApplication(), stack)
     }
 
-    /** Removes an optional toolchain after the Settings confirmation dialog. */
+    /** Removes an optional toolchain in a background Foreground Service after the Settings confirmation dialog. */
     fun removeDevStack(stack: DevStack) {
-        if (_state.value.devStackInstalling != null || stack == DevStack.WEB) return
+        if (_state.value.devStackInstalling != null || DevStackInstallController.snapshot.value.activeStack != null || stack == DevStack.WEB) return
         if (_state.value.isRunning || _state.value.projectTerminalRunning) {
             _state.update { it.copy(toastMessage = str(R.string.vm_stop_before_removing_tools)) }
             return
         }
+        pendingAndroidHealthRefreshAfterStack = false
+        val selected = _state.value.selectedDevStacks - stack
+        preferences.selectedDevStacks = selected.map { it.name }.toSet()
         _state.update {
             it.copy(
+                selectedDevStacks = selected,
                 devStackInstalling = stack,
                 devStackRemoving = true,
                 devStackMessage = str(R.string.vm_removing_named, stack.localizedLabel(getApplication())),
@@ -3459,41 +3561,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 devStackBytesPerSecond = null,
             )
         }
-        viewModelScope.launch {
-            val result = runCatching {
-                withContext(Dispatchers.IO) {
-                    installer.removeStack(stack) { progress ->
-                        _state.update { current ->
-                            current.copy(
-                                devStackMessage = progress.message,
-                                devStackProgress = progress.fraction.coerceIn(0f, 1f),
-                            )
-                        }
-                    }
-                }
-            }
-            if (result.isSuccess) {
-                val selected = _state.value.selectedDevStacks - stack
-                preferences.selectedDevStacks = selected.map { it.name }.toSet()
-            }
-            _state.update { current ->
-                current.copy(
-                    selectedDevStacks = if (result.isSuccess) current.selectedDevStacks - stack else current.selectedDevStacks,
-                    installedDevStacks = if (result.isSuccess) current.installedDevStacks - stack else current.installedDevStacks,
-                    devStackInstalling = null,
-                    devStackRemoving = false,
-                    devStackProgress = 0f,
-                    devStackMessage = result.fold(
-                        onSuccess = { str(R.string.vm_removed_named, stack.localizedLabel(getApplication())) },
-                        onFailure = { result.exceptionOrNull()?.message?.take(200) ?: str(R.string.vm_remove_failed_named, stack.localizedLabel(getApplication())) },
-                    ),
-                    toastMessage = result.fold(
-                        onSuccess = { str(R.string.vm_removed_named, stack.localizedLabel(getApplication())) },
-                        onFailure = { str(R.string.vm_remove_failed_named, stack.localizedLabel(getApplication())) },
-                    ),
-                )
-            }
-        }
+        RuntimeSetupService.startRemoveStack(getApplication(), stack)
     }
 
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
@@ -7100,16 +7168,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
-        _state.update { it.copy(teamIsRunning = false, teamAwaitingStartConfirmation = false) }
+        _state.update { it.copy(teamIsRunning = false, teamIsPaused = true, teamAwaitingStartConfirmation = false) }
         continuousSupervisor.pauseContinuous("User paused team")
         stopTeamForegroundService()
         updateAgentActivities(ActivityType.PAUSED)
     }
 
     fun resumeTeamWork() {
-        val tid = activeSupervisedTaskId
         val activeProj = _state.value.activeTeamProject
+        val tid = activeSupervisedTaskId ?: activeProj?.let { proj ->
+            orqenTaskStore.listTasksForProject(proj.id)
+                .firstOrNull { it.status == com.jarves.mh.multiagent.persistence.PersistentTaskStatus.PAUSED && !it.ownerStopRequested }
+                ?.taskId
+        }
         if (tid != null && activeProj != null) {
+            activeSupervisedTaskId = tid
             teamCycleJob?.cancel()
             teamCycleJob = viewModelScope.launch {
                 var serviceStarted = false
@@ -7126,13 +7199,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             )
                             syncTeamProfilesForProject(activeProj)
                         }
-                        _state.update { it.copy(teamIsRunning = true, runningTeamProjectId = activeProj.id) }
+                        _state.update { it.copy(teamIsRunning = true, teamIsPaused = false, runningTeamProjectId = activeProj.id) }
                         startTeamForegroundService(activeProj.name, "Resuming autonomous task $tid")
                         serviceStarted = true
                         withContext(Dispatchers.IO) {
                             autonomousSupervisorEngine.superviseTask(tid, team)
                         }
                     } else {
+                        _state.update { it.copy(teamIsPaused = false) }
                         startTeamWork()
                     }
                 } catch (cancel: kotlinx.coroutines.CancellationException) {
@@ -7157,6 +7231,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
+        _state.update { it.copy(teamIsPaused = false) }
         startTeamWork()
     }
 
@@ -7191,6 +7266,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 teamIsRunning = false,
+                teamIsPaused = false,
                 teamAwaitingStartConfirmation = false,
                 runningTeamProjectId = null,
                 teamPriorityDirectivesCount = 0,
@@ -7614,9 +7690,103 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(teamGroupMessages = emptyList()) }
     }
 
+    @Volatile
+    private var teamForegroundServiceActive: Boolean = false
+
+    private fun buildCombinedTeamNotificationStatus(overrideDetail: String? = null): String {
+        val state = _state.value
+        val isThai = isThaiUiLanguage()
+        val lines = mutableListOf<String>()
+
+        // 1. Agents currently replying in normal Team Chat
+        val typingNames = state.teamTypingAgents.values.distinct()
+        if (typingNames.isNotEmpty()) {
+            val joined = typingNames.joinToString(", ")
+            lines += if (isThai) "$joined กำลังตอบแชท..." else "$joined replying in chat..."
+        }
+
+        // 2. Agents currently coding / reviewing / building in Team Task Mode
+        if (state.teamIsRunning) {
+            val workingAgents = state.teamAgents.filter { ag ->
+                ag.config.isEnabled &&
+                    ag.activityState.activity != ActivityType.WAITING &&
+                    ag.activityState.activity != ActivityType.COMPLETED &&
+                    ag.activityState.activity != ActivityType.ERROR
+            }
+            workingAgents.forEach { ag ->
+                val actLabel = when (ag.activityState.activity) {
+                    ActivityType.WRITING_CODE -> if (isThai) "กำลังเขียนโค้ด" else "Writing code"
+                    ActivityType.REVIEWING -> if (isThai) "กำลังตรวจโค้ด/QA" else "Reviewing/QA"
+                    ActivityType.BUILDING_APK -> if (isThai) "กำลังบิลด์ APK" else "Building APK"
+                    ActivityType.FIXING_BUG -> if (isThai) "กำลังแก้บั๊ก" else "Fixing bug"
+                    ActivityType.ANALYZING -> if (isThai) "กำลังวิเคราะห์" else "Analyzing"
+                    ActivityType.PLANNING -> if (isThai) "กำลังวางแผน" else "Planning"
+                    ActivityType.TESTING -> if (isThai) "กำลังทดสอบ" else "Testing"
+                    else -> if (isThai) "กำลังทำงาน" else "Working"
+                }
+                val taskHint = ag.activityState.currentTask.ifBlank { ag.activityState.lastAction }.take(55)
+                lines += if (taskHint.isNotBlank()) {
+                    "${ag.config.name} ($actLabel): $taskHint"
+                } else {
+                    "${ag.config.name}: $actLabel"
+                }
+            }
+        }
+
+        if (!overrideDetail.isNullOrBlank()) {
+            val trimmed = overrideDetail.trim()
+            if (lines.none { it.contains(trimmed.take(28), ignoreCase = true) }) {
+                lines += trimmed
+            }
+        }
+        return lines.distinct().take(4).joinToString("\n").ifBlank {
+            if (isThai) "ORQEN AI กำลังทำงานในพื้นหลัง..." else "ORQEN AI working in background..."
+        }
+    }
+
+    private fun syncTeamForegroundNotification(projectName: String? = null, overrideDetail: String? = null) {
+        val state = _state.value
+        val hasActiveChat = state.teamTypingAgents.isNotEmpty() || activeTeamChatJobs.isNotEmpty()
+        val hasActiveWork = state.teamIsRunning
+        val projName = projectName ?: state.activeTeamProject?.name ?: "ORQEN"
+        if (!hasActiveChat && !hasActiveWork) {
+            if (teamForegroundServiceActive) {
+                teamForegroundServiceActive = false
+                val app = getApplication<Application>()
+                runCatching {
+                    app.startService(
+                        Intent(app, RuntimeExecutionService::class.java)
+                            .setAction(RuntimeExecutionService.ACTION_CANCELLED),
+                    )
+                }
+            }
+            return
+        }
+        val detail = buildCombinedTeamNotificationStatus(overrideDetail)
+        if (!teamForegroundServiceActive) {
+            startTeamForegroundService(projName, detail)
+        } else {
+            val app = getApplication<Application>()
+            runCatching {
+                app.startService(
+                    Intent(app, RuntimeExecutionService::class.java)
+                        .setAction(RuntimeExecutionService.ACTION_PROGRESS)
+                        .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projName)
+                        .putExtra(RuntimeExecutionService.EXTRA_TITLE, str(R.string.app_name))
+                        .putExtra(RuntimeExecutionService.EXTRA_DETAIL, detail)
+                        .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, true),
+                )
+            }
+        }
+    }
+
     private fun startTeamForegroundService(projectName: String, statusDetail: String) {
         val app = getApplication<Application>()
-        com.jarves.mh.runtime.RuntimeTaskController.stopAction = { stopTeamWork() }
+        teamForegroundServiceActive = true
+        com.jarves.mh.runtime.RuntimeTaskController.stopAction = {
+            activeTeamChatJobs.keys.toList().forEach { cancelTeamChatAgent(it) }
+            if (_state.value.teamIsRunning) stopTeamWork()
+        }
         com.jarves.mh.runtime.RuntimeTaskController.pauseAction = { pauseTeamWork() }
         com.jarves.mh.runtime.RuntimeTaskController.resumeAction = { resumeTeamWork() }
         runCatching {
@@ -7630,23 +7800,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, true),
             )
         }.onFailure { err ->
+            teamForegroundServiceActive = false
             android.util.Log.e("OrqenMainViewModel", "Failed to start RuntimeExecutionService foreground service", err)
         }
     }
 
     private fun updateTeamForegroundNotification(projectName: String, statusDetail: String) {
-        if (!_state.value.teamIsRunning) return
-        val app = getApplication<Application>()
-        runCatching {
-            app.startService(
-                Intent(app, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_PROGRESS)
-                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
-                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, str(R.string.app_name))
-                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, statusDetail)
-                    .putExtra(RuntimeExecutionService.EXTRA_CAN_STOP, true),
-            )
-        }
+        syncTeamForegroundNotification(projectName, overrideDetail = statusDetail)
     }
 
     /**
@@ -7903,6 +8063,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun stopTeamForegroundService() {
+        // Keep the foreground service alive if a normal Team Chat reply is still running!
+        if (_state.value.teamTypingAgents.isNotEmpty() || activeTeamChatJobs.isNotEmpty()) {
+            syncTeamForegroundNotification()
+            return
+        }
+        teamForegroundServiceActive = false
         val app = getApplication<Application>()
         runCatching {
             app.startService(
@@ -8566,27 +8732,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             updateTeamForegroundNotification(project.name, buildStatusText)
         }
 
-        val gradleScriptText = runCatching {
-            when {
-                appGradleKts.isFile -> appGradleKts.readText()
-                appGradle.isFile -> appGradle.readText()
-                else -> ""
-            }
-        }.getOrDefault("")
-        val hasOnlineFlavor = gradleScriptText.contains("productFlavors") &&
-            (gradleScriptText.contains("\"online\"") || gradleScriptText.contains("'online'"))
-        val assembleTask = if (hasOnlineFlavor) "assembleOnlineDebug" else "assembleDebug"
+        if (!installer.isStackInstalled(DevStack.ANDROID)) {
+            val autoStarted = ToolInstallPermissionReceiver.requestOrAutoInstallTool(
+                context = getApplication(),
+                stack = DevStack.ANDROID,
+            )
+            return@withContext TeamApkBuildResult(
+                buildError = if (autoStarted) {
+                    "Android SDK is installing in the background. Retry build once complete."
+                } else {
+                    "Android SDK is missing. Tap Allow on the Android notification to install in background."
+                },
+            )
+        }
+        if (ToolInstallPermissionReceiver.projectNeedsNativeNdk(workspace) && !installer.isStackInstalled(DevStack.ANDROID_NDK)) {
+            val autoStarted = ToolInstallPermissionReceiver.requestOrAutoInstallTool(
+                context = getApplication(),
+                stack = DevStack.ANDROID_NDK,
+            )
+            return@withContext TeamApkBuildResult(
+                buildError = if (autoStarted) {
+                    "Android NDK & CMake is installing in the background. Retry build once complete."
+                } else {
+                    "Project requires Android NDK & CMake. Tap Allow on the Android notification to install in background."
+                },
+            )
+        }
+
+        val assembleTask = resolveDebugAssembleTask(workspace)
 
         val safeSlug = project.slug.lowercase().replace(Regex("[^a-z0-9-]"), "-").trim('-').ifBlank { "team-project" }
         var lastBuildError: String? = null
 
         suspend fun runGradleApkBuild(offline: Boolean): Boolean {
-            val timeoutArg = if (offline) "8m" else "15m"
-            val offlineFlag = if (offline) "--offline" else ""
-            val buildCmd = "timeout $timeoutArg gradle -Dorg.gradle.jvmargs= --no-daemon --max-workers=2 $offlineFlag --init-script /root/.gradle/init.d/pocketdev-android.gradle -Pandroid.aapt2FromMavenOverride=/root/android-sdk/build-tools/35.0.0/aapt2 $assembleTask --console=plain --stacktrace"
+            val buildCmd = androidGradleShellCommand(
+                root = workspace,
+                task = assembleTask,
+                offline = offline,
+                timeoutMinutes = if (offline) 8 else 15,
+            )
             val outFile = File(getApplication<Application>().cacheDir, "team-apk-build-${System.nanoTime()}.log")
             return runCatching {
                 val installed = installer.installedRuntime()
+                installer.ensureArm64NdkAndCmakeShims(installed.rootfs)
                 val proc = installer.process(
                     proot = installed.proot,
                     rootfs = installed.rootfs,
@@ -8961,6 +9149,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 teamStreamingText = if (clearStream) "" else cur.teamStreamingText,
             )
         }
+        syncTeamForegroundNotification()
     }
 
     private fun launchConcurrentAgentChatTurn(
@@ -8982,6 +9171,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     teamTypingAgents = updatedTyping,
                 )
             }
+            syncTeamForegroundNotification(project.name)
             try {
                 val workspaceDir = File(getApplication<Application>().filesDir, "team_workspaces/${project.id}").apply { mkdirs() }
                 val teamStatusSummary = enabledAgents.joinToString("\n") { a ->
@@ -9147,6 +9337,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         teamStreamingText = if (clearStream) "" else it.teamStreamingText,
                     )
                 }
+                syncTeamForegroundNotification(project.name)
             }
         }
         activeTeamChatJobs[responder.config.slot] = job

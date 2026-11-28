@@ -1131,6 +1131,11 @@ private fun getDevStackVisuals(stack: DevStack): DevStackVisuals = when (stack) 
         accentColor = Color(0xFF4ADE80),
         tag = "OpenJDK build tools",
     )
+    DevStack.ANDROID_NDK -> DevStackVisuals(
+        icon = Icons.Default.Build,
+        accentColor = Color(0xFF22D3EE),
+        tag = "NDK r28c + CMake 3.22 + Clang 18",
+    )
     DevStack.CPP -> DevStackVisuals(
         icon = Icons.Default.Memory,
         accentColor = Color(0xFFA78BFA),
@@ -1572,6 +1577,10 @@ private fun setupTimeEstimate(selected: Set<DevStack>): String {
         minimumMinutes += 7
         maximumMinutes += 10
     }
+    if (DevStack.ANDROID_NDK in selected) {
+        minimumMinutes += 6
+        maximumMinutes += 12
+    }
     if (DevStack.CPP in selected) {
         minimumMinutes += 3
         maximumMinutes += 5
@@ -1589,6 +1598,7 @@ private fun stackDownloadLabel(stack: DevStack): String = when {
     BuildConfig.OFFLINE_RUNTIME_BUNDLES && stack in setOf(DevStack.PYTHON, DevStack.ANDROID) -> " · " + stringResource(R.string.ws_stack_included)
     !BuildConfig.OFFLINE_RUNTIME_BUNDLES && stack == DevStack.PYTHON -> " · 55 MB"
     !BuildConfig.OFFLINE_RUNTIME_BUNDLES && stack == DevStack.ANDROID -> " · 570 MB"
+    stack == DevStack.ANDROID_NDK -> " · ~750 MB"
     else -> ""
 }
 
@@ -1603,7 +1613,7 @@ private fun toolchainDownloadSummary(selected: Set<DevStack>, agent: AgentKind):
         } +
         (if (DevStack.PYTHON in selected) PYTHON_RUNTIME_DOWNLOAD_MB else 0) +
         (if (DevStack.ANDROID in selected) ANDROID_RUNTIME_DOWNLOAD_MB else 0)
-    val laterPackages = selected.intersect(setOf(DevStack.CPP, DevStack.PHP))
+    val laterPackages = selected.intersect(setOf(DevStack.ANDROID_NDK, DevStack.CPP, DevStack.PHP))
     val downloadText = stringResource(R.string.ws_download_total_mb, total)
     val laterText = stringResource(R.string.ws_download_c_php_later)
     val wifiText = stringResource(R.string.ws_download_wifi_recommended)
@@ -1626,6 +1636,7 @@ private fun DevStackChoiceRow(
         DevStack.WEB -> stringResource(R.string.ws_stack_desc_web)
         DevStack.PYTHON -> stringResource(R.string.ws_stack_desc_python)
         DevStack.ANDROID -> stringResource(R.string.ws_stack_desc_android)
+        DevStack.ANDROID_NDK -> stack.localizedDescription()
         DevStack.CPP -> stringResource(R.string.ws_stack_desc_cpp)
         DevStack.PHP -> stringResource(R.string.ws_stack_desc_php)
     }
@@ -2758,6 +2769,7 @@ private fun RootScreenHost(
                                 onRemoveAgent = viewModel::removeTeamAgent,
                                 onUpdateContinuousConfig = viewModel::updateTeamContinuousConfig,
                                 onStartTeam = viewModel::startTeamWork,
+                                isTeamPaused = state.teamIsPaused,
                                 onPauseTeam = viewModel::pauseTeamWork,
                                 onResumeTeam = viewModel::resumeTeamWork,
                                 onStopTeam = viewModel::stopTeamWork,
@@ -3112,6 +3124,8 @@ private fun RootScreenHost(
                             onRemoveApiKey = viewModel::removeApiKey,
                             onInstallDevStack = viewModel::installDevStack,
                             onRemoveDevStack = viewModel::removeDevStack,
+                            onSetAutoInstallMissingTools = viewModel::setAutoInstallMissingTools,
+                            onSetKeepAliveInBackground = viewModel::setKeepAliveInBackground,
                             onInstallAgent = viewModel::installAgent,
                             onCheckAgentUpdates = viewModel::checkAgentUpdates,
                             onUpdateAgent = viewModel::updateAgent,

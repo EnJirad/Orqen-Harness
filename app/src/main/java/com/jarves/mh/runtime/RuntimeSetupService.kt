@@ -14,6 +14,7 @@ import com.jarves.mh.R
 import com.jarves.mh.data.AppPreferences
 import com.jarves.mh.model.DevStack
 import com.jarves.mh.ui.AppStrings
+import com.jarves.mh.ui.localizedLabel
 import java.io.File
 import java.net.UnknownHostException
 import kotlinx.coroutines.CancellationException
@@ -233,10 +234,77 @@ object RuntimeSetupController {
     private fun logFile(context: Context) = File(context.filesDir, "setup/runtime-setup.log")
     private fun JSONObject.optLongOrNull(name: String): Long? = if (has(name) && !isNull(name)) optLong(name) else null
 
-    private const val MAX_LOG_LINES = 400
-    private const val MAX_LOG_BYTES = 1_000_000L
+    private const val MAX_LOG_LINES = 200
+    private const val MAX_LOG_BYTES = 512_000L
     private const val MB = 1_048_576.0
     private const val DOWNLOAD_PREFIX = "Downloading:"
+}
+
+data class DevStackInstallSnapshot(
+    val activeStack: DevStack? = null,
+    val removing: Boolean = false,
+    val progress: Float = 0f,
+    val message: String? = null,
+    val downloadedBytes: Long? = null,
+    val totalBytes: Long? = null,
+    val bytesPerSecond: Long? = null,
+    val lastOutcomeMessage: String? = null,
+    val lastOutcomeSuccess: Boolean? = null,
+    val completedCounter: Int = 0,
+)
+
+object DevStackInstallController {
+    private val mutableSnapshot = MutableStateFlow(DevStackInstallSnapshot())
+    val snapshot: StateFlow<DevStackInstallSnapshot> = mutableSnapshot.asStateFlow()
+
+    @Synchronized
+    fun begin(stack: DevStack, removing: Boolean, message: String) {
+        val prev = mutableSnapshot.value
+        mutableSnapshot.value = prev.copy(
+            activeStack = stack,
+            removing = removing,
+            progress = if (removing) 0.1f else 0.01f,
+            message = message,
+            downloadedBytes = null,
+            totalBytes = null,
+            bytesPerSecond = null,
+        )
+    }
+
+    @Synchronized
+    fun update(
+        progress: Float,
+        message: String,
+        downloadedBytes: Long? = null,
+        totalBytes: Long? = null,
+        bytesPerSecond: Long? = null,
+    ) {
+        val prev = mutableSnapshot.value
+        mutableSnapshot.value = prev.copy(
+            progress = progress.coerceIn(0f, 1f),
+            message = message,
+            downloadedBytes = downloadedBytes,
+            totalBytes = totalBytes,
+            bytesPerSecond = bytesPerSecond,
+        )
+    }
+
+    @Synchronized
+    fun finish(success: Boolean, outcomeMessage: String) {
+        val prev = mutableSnapshot.value
+        mutableSnapshot.value = DevStackInstallSnapshot(
+            activeStack = null,
+            removing = false,
+            progress = 0f,
+            message = null,
+            downloadedBytes = null,
+            totalBytes = null,
+            bytesPerSecond = null,
+            lastOutcomeMessage = outcomeMessage,
+            lastOutcomeSuccess = success,
+            completedCounter = prev.completedCounter + 1,
+        )
+    }
 }
 
 class RuntimeSetupService : Service() {
@@ -256,10 +324,113 @@ class RuntimeSetupService : Service() {
         if (intent?.action == ACTION_STOP) {
             installJob?.cancel(CancellationException("Stopped by user"))
             RuntimeSetupController.cancelled(this)
+            if (DevStackInstallController.snapshot.value.activeStack != null) {
+                DevStackInstallController.finish(success = false, outcomeMessage = "Installation cancelled")
+            }
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
+
+        if (intent?.action == ACTION_INSTALL_STACK || intent?.action == ACTION_REMOVE_STACK) {
+            val stackName = intent.getStringExtra(EXTRA_STACK)
+            val stack = stackName?.let { runCatching { DevStack.valueOf(it) }.getOrNull() }
+            if (stack == null) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            val removing = intent.action == ACTION_REMOVE_STACK
+            val label = stack.localizedLabel(this)
+            val initialMsg = if (removing) {
+                AppStrings.get(this, R.string.vm_removing_named, label)
+            } else {
+                AppStrings.get(this, R.string.vm_preparing_named, label)
+            }
+            DevStackInstallController.begin(stack, removing, initialMsg)
+            startForeground(NOTIFICATION_ID, stackNotification(label, initialMsg, if (removing) 0.1f else 0.01f, indeterminate = true))
+            acquireWakeLock()
+            if (installJob?.isActive != true) {
+                installJob = scope.launch {
+                    var sampleBytes = 0L
+                    var sampleTime = android.os.SystemClock.elapsedRealtime()
+                    var latestSpeed: Long? = null
+                    try {
+                        val installer = RuntimeInstaller(this@RuntimeSetupService)
+                        val progressCallback: suspend (RuntimeInstallProgress) -> Unit = { progress ->
+                            val downloaded = progress.downloadedBytes
+                            val total = progress.totalBytes
+                            if (downloaded != null && total != null && total > 0L) {
+                                val now = android.os.SystemClock.elapsedRealtime()
+                                val elapsed = now - sampleTime
+                                val delta = downloaded - sampleBytes
+                                if (delta < 0L) {
+                                    sampleBytes = downloaded
+                                    sampleTime = now
+                                    latestSpeed = null
+                                } else if (elapsed >= 500L) {
+                                    latestSpeed = (delta * 1_000L / elapsed).coerceAtLeast(0L)
+                                    sampleBytes = downloaded
+                                    sampleTime = now
+                                }
+                            } else {
+                                sampleBytes = 0L
+                                sampleTime = android.os.SystemClock.elapsedRealtime()
+                                latestSpeed = null
+                            }
+                            DevStackInstallController.update(
+                                progress = progress.fraction,
+                                message = progress.message,
+                                downloadedBytes = downloaded,
+                                totalBytes = total,
+                                bytesPerSecond = latestSpeed,
+                            )
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (now - lastNotificationAt >= NOTIFICATION_THROTTLE_MS || progress.event == RuntimeInstallEvent.COMMAND_COMPLETED) {
+                                lastNotificationAt = now
+                                val detail = if (downloaded != null && total != null && total > 0L) {
+                                    "%.1f / %.1f MB · %s".format(downloaded / 1_048_576.0, total / 1_048_576.0, progress.message)
+                                } else {
+                                    progress.message
+                                }
+                                getSystemService(NotificationManager::class.java).notify(
+                                    NOTIFICATION_ID,
+                                    stackNotification(label, detail, progress.fraction, progress.indeterminate),
+                                )
+                            }
+                        }
+                        if (removing) {
+                            installer.removeStack(stack, progressCallback)
+                        } else {
+                            installer.ensureStackInstalled(stack, progressCallback)
+                        }
+                        runCatching { installer.cleanCachesAndTempFiles() }
+                        val doneMsg = if (removing) {
+                            AppStrings.get(this@RuntimeSetupService, R.string.vm_removed_named, label)
+                        } else {
+                            AppStrings.get(this@RuntimeSetupService, R.string.vm_stack_tools_ready, label)
+                        }
+                        DevStackInstallController.finish(success = true, outcomeMessage = doneMsg)
+                        showStackFinishedNotification(title = label, detail = doneMsg, success = true)
+                    } catch (_: CancellationException) {
+                        DevStackInstallController.finish(success = false, outcomeMessage = "Installation cancelled")
+                    } catch (error: Throwable) {
+                        val errMsg = error.message?.take(240) ?: if (removing) {
+                            AppStrings.get(this@RuntimeSetupService, R.string.vm_remove_failed_named, label)
+                        } else {
+                            AppStrings.get(this@RuntimeSetupService, R.string.vm_install_failed_named, label)
+                        }
+                        DevStackInstallController.finish(success = false, outcomeMessage = errMsg)
+                        showStackFinishedNotification(title = label, detail = errMsg, success = false)
+                    } finally {
+                        releaseWakeLock()
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
+                }
+            }
+            return START_REDELIVER_INTENT
+        }
+
         startForeground(NOTIFICATION_ID, setupNotification(RuntimeSetupController.snapshot.value))
         acquireWakeLock()
         if (installJob?.isActive != true) {
@@ -330,6 +501,50 @@ class RuntimeSetupService : Service() {
         return builder.build()
     }
 
+    private fun stackNotification(
+        title: String,
+        detail: String,
+        progress: Float,
+        indeterminate: Boolean,
+    ): android.app.Notification {
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setContentIntent(openAppIntent())
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+        if (indeterminate) builder.setProgress(0, 0, true)
+        else builder.setProgress(100, (progress * 100).toInt().coerceIn(0, 100), false)
+        builder.addAction(
+            0,
+            AppStrings.get(this, R.string.rt_setup_stop),
+            PendingIntent.getService(
+                this,
+                102,
+                Intent(this, RuntimeSetupService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            ),
+        )
+        return builder.build()
+    }
+
+    private fun showStackFinishedNotification(title: String, detail: String, success: Boolean) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(if (success) "$title · Ready" else "$title · Attention needed")
+            .setContentText(detail)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setContentIntent(openAppIntent())
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(RESULT_NOTIFICATION_ID, notification)
+    }
+
     private fun showFinishedNotification(success: Boolean) {
         val state = RuntimeSetupController.snapshot.value
         val title = AppStrings.get(this, if (success) R.string.rt_setup_ready else R.string.rt_setup_needs_attention)
@@ -376,13 +591,32 @@ class RuntimeSetupService : Service() {
     companion object {
         const val ACTION_START = "com.jarves.mh.START_SETUP"
         const val ACTION_STOP = "com.jarves.mh.STOP_SETUP"
+        const val ACTION_INSTALL_STACK = "com.jarves.mh.INSTALL_DEV_STACK"
+        const val ACTION_REMOVE_STACK = "com.jarves.mh.REMOVE_DEV_STACK"
         const val EXTRA_STACKS = "selected_stacks"
+        const val EXTRA_STACK = "target_stack"
         const val EXTRA_AGENT = "selected_agent"
         private const val CHANNEL_ID = "runtime-setup"
         private const val NOTIFICATION_ID = 51
         private const val RESULT_NOTIFICATION_ID = 52
         private const val NOTIFICATION_THROTTLE_MS = 750L
         private const val MAX_WAKE_LOCK_MS = 45 * 60 * 1_000L
+
+        fun startInstallStack(context: Context, stack: DevStack) {
+            val intent = Intent(context, RuntimeSetupService::class.java).apply {
+                action = ACTION_INSTALL_STACK
+                putExtra(EXTRA_STACK, stack.name)
+            }
+            androidx.core.content.ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun startRemoveStack(context: Context, stack: DevStack) {
+            val intent = Intent(context, RuntimeSetupService::class.java).apply {
+                action = ACTION_REMOVE_STACK
+                putExtra(EXTRA_STACK, stack.name)
+            }
+            androidx.core.content.ContextCompat.startForegroundService(context, intent)
+        }
 
         fun ensureNotificationChannel(context: Context) {
             context.getSystemService(NotificationManager::class.java).createNotificationChannel(
