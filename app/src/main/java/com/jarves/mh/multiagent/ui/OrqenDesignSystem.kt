@@ -17,25 +17,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.jarves.mh.ui.theme.OrqenMint
 
 /**
- * Centralized ORQEN semantic design tokens for Dark, Light, and System themes.
- * Calm, soft, low-visual-noise palette (no harsh neon accents).
+ * Minimalist monochrome semantic tokens — ultra-calm, desaturated, zero neon.
  */
 object OrqenSemanticColors {
-    val Success = Color(0xFF3E8E68)
-    val Warning = Color(0xFFC28B37)
-    val Error = Color(0xFFC65A5A)
-    val Info = Color(0xFF537380)
-    val Running = OrqenMint
-    val Pending = Color(0xFF6B80A8)
-    val Paused = Color(0xFFB58A44)
-    val Recovery = Color(0xFF7D74A8)
-    val RemoteHost = Color(0xFF537380)
-    val LocalHost = Color(0xFF4B8A72)
-    val Neutral = Color(0xFF7E8694)
-    val Disabled = Color(0xFF8C929D)
+    val Success = Color(0xFF6B8F78)
+    val Warning = Color(0xFFA88F5E)
+    val Error = Color(0xFFB56666)
+    val Info = Color(0xFF7A7A7A)
+    val Running = Color(0xFF8C8C8C)
+    val Pending = Color(0xFF787878)
+    val Paused = Color(0xFF998766)
+    val Recovery = Color(0xFF808080)
+    val RemoteHost = Color(0xFF737373)
+    val LocalHost = Color(0xFF6B8F78)
+    val Neutral = Color(0xFF888888)
+    val Disabled = Color(0xFF6E6E6E)
 }
 
 object OrqenSpacing {
@@ -54,18 +52,18 @@ fun OrqenStatusBadge(
 ) {
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
-        color = color.copy(alpha = 0.16f),
-        border = BorderStroke(0.5.dp, color.copy(alpha = 0.45f)),
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Text(
             text = label,
             fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            color = color,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
         )
     }
 }
@@ -84,14 +82,14 @@ fun OrqenSectionHeader(
         Column(Modifier.weight(1f)) {
             Text(
                 text = title,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onBackground,
             )
             if (!subtitle.isNullOrBlank()) {
                 Text(
                     text = subtitle,
-                    fontSize = 11.sp,
+                    fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -111,7 +109,7 @@ fun OrqenEmptyStateCard(
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
@@ -123,11 +121,11 @@ fun OrqenEmptyStateCard(
                 imageVector = icon,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(22.dp),
+                modifier = Modifier.size(20.dp),
             )
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                Text(description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(title, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                Text(description, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -137,28 +135,28 @@ fun OrqenEmptyStateCard(
 fun OrqenMetricPill(
     label: String,
     value: String,
-    accent: Color = OrqenMint,
+    accent: Color = MaterialTheme.colorScheme.onSurface,
     modifier: Modifier = Modifier,
 ) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
                 text = value,
                 fontSize = 16.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = accent,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
                 text = label,
-                fontSize = 10.sp,
+                fontSize = 10.5.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -184,7 +182,8 @@ fun OrqenFilterChipRow(
             FilterChip(
                 selected = selected,
                 onClick = { onSelect(key) },
-                label = { Text(label, fontSize = 11.sp) },
+                label = { Text(label, fontSize = 11.5.sp) },
+                shape = RoundedCornerShape(999.dp),
             )
         }
     }

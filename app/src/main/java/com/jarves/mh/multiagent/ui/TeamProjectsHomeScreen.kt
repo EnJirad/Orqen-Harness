@@ -349,411 +349,496 @@ fun TeamProjectsHomeScreen(
         )
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                modifier = Modifier.padding(top = 8.dp),
-                title = {
-                    Column {
-                        Text(
-                            text = "โปรเจกต์ทีม",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            text = "${teamProjects.size} โปรเจกต์ | ทำงานได้ทีละ 1 โปรเจกต์เท่านั้น",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-            )
-        },
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(MaterialTheme.colorScheme.background),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            // Clean Modern Action Bar: 1 Primary CTA + Quick Start + Compact Import Menu (Zero Clutter)
-            item {
-                var importMenuExpanded by remember { mutableStateOf(false) }
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    var projectSearch by remember { mutableStateOf("") }
+    val filteredProjects = remember(teamProjects, projectSearch) {
+        val q = projectSearch.trim()
+        if (q.isBlank()) teamProjects else teamProjects.filter {
+            it.name.contains(q, ignoreCase = true) ||
+                it.slug.contains(q, ignoreCase = true) ||
+                it.type.displayName.contains(q, ignoreCase = true)
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        // Minimalist Search + New Project Inline Row
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.weight(1f).height(44.dp),
+                ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Button(
-                            onClick = { showNewFolderDialog = true },
-                            enabled = !projectImporting && !gitCloneRunning,
-                            modifier = Modifier.weight(1.35f).height(44.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp),
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = stringResource(R.string.projects_new_project),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        FilledTonalButton(
-                            onClick = onCreateQuickTeamProject,
-                            enabled = !projectImporting && !gitCloneRunning,
-                            modifier = Modifier.weight(0.95f).height(44.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp),
-                        ) {
-                            Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                text = stringResource(R.string.projects_quick_project),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Box {
-                            OutlinedButton(
-                                onClick = { importMenuExpanded = true },
-                                enabled = !projectImporting && !gitCloneRunning,
-                                modifier = Modifier.height(44.dp),
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp),
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("นำเข้า", fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                                Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
-                            }
-                            DropdownMenu(
-                                expanded = importMenuExpanded,
-                                onDismissRequest = { importMenuExpanded = false },
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("นำเข้าไฟล์ ZIP") },
-                                    leadingIcon = { Icon(Icons.Default.FolderZip, null, modifier = Modifier.size(18.dp)) },
-                                    onClick = {
-                                        importMenuExpanded = false
-                                        importZipLauncher.launch("*/*")
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("โคลนจาก Git URL") },
-                                    leadingIcon = { Icon(Icons.Default.Code, null, modifier = Modifier.size(18.dp)) },
-                                    onClick = {
-                                        importMenuExpanded = false
-                                        showGitCloneDialog = true
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(githubLogin?.let { "GitHub ($it)" } ?: "เชื่อมต่อ GitHub") },
-                                    leadingIcon = { Icon(Icons.Default.CloudSync, null, modifier = Modifier.size(18.dp)) },
-                                    onClick = {
-                                        importMenuExpanded = false
-                                        showGitHubDialog = true
-                                        if (githubAuthStatus == GitHubAuthStatus.CONNECTED && githubRepositories.isEmpty()) {
-                                            onRefreshGitHub()
-                                        }
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.team_clone_from_solo)) },
-                                    leadingIcon = { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp)) },
-                                    onClick = {
-                                        importMenuExpanded = false
-                                        showCloneSoloDialog = true
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    if (projectImporting || gitCloneRunning) {
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)),
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
                         )
-                    }
-                }
-            }
-
-            // Folder List
-            if (teamProjects.isEmpty()) {
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(18.dp),
-                        color = MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(52.dp)
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(MaterialTheme.colorScheme.primaryContainer),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Default.FolderShared,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(28.dp),
-                                )
-                            }
-                            Text(
-                                text = "เริ่มต้นสร้างโปรเจกต์แรกของคุณ",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                text = "1. กดสร้างโปรเจกต์ใหม่  →  2. คุยออกแบบกับทีม AI ในโหมด Chat  →  3. สลับเป็นโหมด Task เพื่อให้ทีมลงมือสร้างและบิ้ว APK อัตโนมัติ",
-                                textAlign = TextAlign.Center,
-                                fontSize = 12.5.sp,
-                                lineHeight = 18.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            } else {
-                items(teamProjects, key = { it.id }) { project ->
-                    val isRunningThis = runningTeamProjectId == project.id
-                    var menuOpen by remember(project.id) { mutableStateOf(false) }
-                    var showRename by remember(project.id) { mutableStateOf(false) }
-                    var showIdentityDialog by remember(project.id) { mutableStateOf(false) }
-                    var showDelete by remember(project.id) { mutableStateOf(false) }
-                    var renameText by remember(project.id) { mutableStateOf(project.name) }
-                    var editType by remember(project.id) { mutableStateOf(project.type) }
-                    var editIconKey by remember(project.id) { mutableStateOf(project.iconKey) }
-
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .border(
-                                width = if (isRunningThis) 1.5.dp else 1.dp,
-                                color = if (isRunningThis) OrqenSemanticColors.Success else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
-                                shape = RoundedCornerShape(16.dp),
-                            )
-                            .clickable { onOpenTeamProject(project) },
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 14.dp, end = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(if (isRunningThis) OrqenSemanticColors.Success.copy(alpha = 0.14f) else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    imageVector = com.jarves.mh.ui.ProjectIconCatalog.resolveIcon(project),
-                                    contentDescription = project.type.displayName,
-                                    tint = if (isRunningThis) OrqenSemanticColors.Success else MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(22.dp),
-                                )
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = projectSearch,
+                            onValueChange = { projectSearch = it },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 13.5.sp,
+                            ),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.weight(1f),
+                            decorationBox = { inner ->
+                                if (projectSearch.isEmpty()) {
                                     Text(
-                                        text = project.name,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
+                                        text = "ค้นหาโปรเจกต์ (${teamProjects.size})...",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 13.5.sp,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
-                                    ) {
-                                        Text(
-                                            text = project.type.displayName,
-                                            fontSize = 9.5.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        )
-                                    }
-                                    if (isRunningThis) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = OrqenSemanticColors.Success.copy(alpha = 0.16f),
-                                        ) {
-                                            Text(
-                                                text = stringResource(R.string.team_folder_running_badge),
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = OrqenSemanticColors.Success,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                            )
-                                        }
-                                    }
                                 }
-                                Text(
-                                    text = "/team_workspaces/${project.slug} · ${project.language}",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            Box {
-                                IconButton(onClick = { menuOpen = true }) {
-                                    Icon(
-                                        Icons.Default.MoreVert,
-                                        contentDescription = stringResource(R.string.ws_project_options),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                                    DropdownMenuItem(
-                                        text = { Text("Change Type & Icon") },
-                                        leadingIcon = { Icon(Icons.Default.Palette, contentDescription = null) },
-                                        onClick = {
-                                            menuOpen = false
-                                            editType = project.type
-                                            editIconKey = project.iconKey
-                                            showIdentityDialog = true
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.ws_rename_project)) },
-                                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                                        onClick = {
-                                            menuOpen = false
-                                            renameText = project.name
-                                            showRename = true
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                stringResource(R.string.ws_delete_project),
-                                                color = if (isRunningThis) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Default.Delete,
-                                                contentDescription = null,
-                                                tint = if (isRunningThis) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
-                                            )
-                                        },
-                                        enabled = !isRunningThis,
-                                        onClick = {
-                                            menuOpen = false
-                                            showDelete = true
-                                        },
-                                    )
-                                }
-                            }
+                                inner()
+                            },
+                        )
+                        if (projectSearch.isNotEmpty()) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { projectSearch = "" },
+                            )
                         }
                     }
+                }
+                Button(
+                    onClick = { showNewFolderDialog = true },
+                    enabled = !projectImporting && !gitCloneRunning,
+                    modifier = Modifier.height(44.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        text = stringResource(R.string.ws_create),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
 
-                    if (showIdentityDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showIdentityDialog = false },
-                            title = { Text("Project Type & Icon") },
-                            text = {
-                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Text("Project Type", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        items(com.jarves.mh.model.ProjectType.entries) { pType ->
-                                            FilterChip(
-                                                selected = editType == pType,
-                                                onClick = { editType = pType },
-                                                label = { Text(pType.displayName, fontSize = 11.sp) },
-                                            )
-                                        }
-                                    }
-                                    Text("Project Icon", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                    androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        items(com.jarves.mh.ui.ProjectIconCatalog.builtInIcons, key = { it.key }) { opt ->
-                                            val activeKey = editIconKey.ifBlank { com.jarves.mh.ui.ProjectIconCatalog.defaultIconKeyFor(editType) }
-                                            FilterChip(
-                                                selected = activeKey == opt.key,
-                                                onClick = { editIconKey = opt.key },
-                                                leadingIcon = { Icon(opt.icon, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                                                label = { Text(opt.label, fontSize = 10.5.sp) },
-                                            )
-                                        }
-                                    }
-                                    TextButton(
-                                        onClick = { editIconKey = "" },
-                                        contentPadding = PaddingValues(horizontal = 4.dp),
-                                    ) {
-                                        Text("Reset to default icon for ${editType.displayName}", fontSize = 11.sp)
-                                    }
+        // Clean Horizontal Quick-Action Pill Strip
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.foundation.lazy.LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    item {
+                        MinimalActionPill(
+                            icon = Icons.Default.Bolt,
+                            label = stringResource(R.string.projects_quick_project),
+                            enabled = !projectImporting && !gitCloneRunning,
+                            onClick = onCreateQuickTeamProject,
+                        )
+                    }
+                    item {
+                        MinimalActionPill(
+                            icon = Icons.Default.FolderZip,
+                            label = "ZIP",
+                            enabled = !projectImporting && !gitCloneRunning,
+                            onClick = { importZipLauncher.launch("*/*") },
+                        )
+                    }
+                    item {
+                        MinimalActionPill(
+                            icon = Icons.Default.Code,
+                            label = "Git URL",
+                            enabled = !projectImporting && !gitCloneRunning,
+                            onClick = { showGitCloneDialog = true },
+                        )
+                    }
+                    item {
+                        MinimalActionPill(
+                            icon = Icons.Default.CloudSync,
+                            label = githubLogin?.let { "GitHub · $it" } ?: "GitHub",
+                            enabled = !projectImporting && !gitCloneRunning,
+                            onClick = {
+                                showGitHubDialog = true
+                                if (githubAuthStatus == GitHubAuthStatus.CONNECTED && githubRepositories.isEmpty()) {
+                                    onRefreshGitHub()
                                 }
                             },
-                            confirmButton = {
-                                Button(onClick = {
-                                    onUpdateTeamProjectIdentity(project.id, editType, editIconKey)
-                                    showIdentityDialog = false
-                                }) { Text(stringResource(R.string.action_save)) }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showIdentityDialog = false }) { Text(stringResource(R.string.action_cancel)) }
-                            },
                         )
                     }
-
-                    if (showRename) {
-                        AlertDialog(
-                            onDismissRequest = { showRename = false },
-                            title = { Text(stringResource(R.string.ws_rename_project)) },
-                            text = {
-                                OutlinedTextField(
-                                    value = renameText,
-                                    onValueChange = { renameText = it },
-                                    label = { Text(stringResource(R.string.team_folder_name_hint)) },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            },
-                            confirmButton = {
-                                Button(
-                                    onClick = {
-                                        onRenameTeamProject(project.id, renameText.trim())
-                                        showRename = false
-                                    },
-                                    enabled = renameText.isNotBlank(),
-                                ) { Text(stringResource(R.string.action_save)) }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showRename = false }) { Text(stringResource(R.string.action_cancel)) }
-                            },
+                    item {
+                        MinimalActionPill(
+                            icon = Icons.Default.ContentCopy,
+                            label = stringResource(R.string.team_clone_from_solo),
+                            enabled = !projectImporting && !gitCloneRunning,
+                            onClick = { showCloneSoloDialog = true },
                         )
                     }
+                }
+                if (projectImporting || gitCloneRunning) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)),
+                    )
+                }
+            }
+        }
 
-                    if (showDelete) {
-                        com.jarves.mh.ui.SafeDeleteProjectDialog(
-                            projectName = project.name,
-                            onConfirmDelete = {
-                                showDelete = false
-                                onDeleteTeamProject(project)
+        // Projects Grid (2-column minimalist cards)
+        if (filteredProjects.isEmpty()) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                        Text(
+                            text = if (projectSearch.isNotBlank()) "ไม่พบโปรเจกต์ที่ค้นหา" else "เริ่มต้นสร้างโปรเจกต์แรกของคุณ",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = if (projectSearch.isNotBlank()) {
+                                "ลองค้นหาด้วยคำอื่น หรือสร้างโปรเจกต์ใหม่ได้ทันที"
+                            } else {
+                                "สร้างพื้นที่ทำงานใหม่เพื่อเริ่มคุยและทำงานร่วมกับทีม AI แบบเรียบง่าย"
                             },
-                            onDismiss = { showDelete = false },
+                            textAlign = TextAlign.Center,
+                            fontSize = 12.5.sp,
+                            lineHeight = 18.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             }
+        } else {
+            val rows = filteredProjects.chunked(2)
+            items(rows, key = { row -> row.joinToString("_") { it.id } }) { pair ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    pair.forEach { project ->
+                        val isRunningThis = runningTeamProjectId == project.id
+                        var menuOpen by remember(project.id) { mutableStateOf(false) }
+                        var showRename by remember(project.id) { mutableStateOf(false) }
+                        var showIdentityDialog by remember(project.id) { mutableStateOf(false) }
+                        var showDelete by remember(project.id) { mutableStateOf(false) }
+                        var renameText by remember(project.id) { mutableStateOf(project.name) }
+                        var editType by remember(project.id) { mutableStateOf(project.type) }
+                        var editIconKey by remember(project.id) { mutableStateOf(project.iconKey) }
+
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(
+                                width = if (isRunningThis) 1.4.dp else 0.8.dp,
+                                color = if (isRunningThis) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 132.dp)
+                                .clickable { onOpenTeamProject(project) },
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(34.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(
+                                                    if (isRunningThis) MaterialTheme.colorScheme.primary
+                                                    else MaterialTheme.colorScheme.surfaceVariant,
+                                                ),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Icon(
+                                                imageVector = com.jarves.mh.ui.ProjectIconCatalog.resolveIcon(project),
+                                                contentDescription = project.type.displayName,
+                                                tint = if (isRunningThis) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                        if (isRunningThis) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(7.dp)
+                                                    .clip(CircleShape)
+                                                    .background(OrqenSemanticColors.Success),
+                                            )
+                                        }
+                                    }
+                                    Box {
+                                        IconButton(
+                                            onClick = { menuOpen = true },
+                                            modifier = Modifier.size(28.dp),
+                                        ) {
+                                            Icon(
+                                                Icons.Default.MoreHoriz,
+                                                contentDescription = stringResource(R.string.ws_project_options),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        }
+                                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text("Change Type & Icon") },
+                                                leadingIcon = { Icon(Icons.Default.Palette, contentDescription = null) },
+                                                onClick = {
+                                                    menuOpen = false
+                                                    editType = project.type
+                                                    editIconKey = project.iconKey
+                                                    showIdentityDialog = true
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.ws_rename_project)) },
+                                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                                onClick = {
+                                                    menuOpen = false
+                                                    renameText = project.name
+                                                    showRename = true
+                                                },
+                                            )
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        stringResource(R.string.ws_delete_project),
+                                                        color = if (isRunningThis) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.Default.Delete,
+                                                        contentDescription = null,
+                                                        tint = if (isRunningThis) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                                                    )
+                                                },
+                                                enabled = !isRunningThis,
+                                                onClick = {
+                                                    menuOpen = false
+                                                    showDelete = true
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(Modifier.height(12.dp))
+
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = project.name,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        lineHeight = 18.sp,
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                    ) {
+                                        Text(
+                                            text = project.type.displayName,
+                                            fontSize = 10.5.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (isRunningThis) {
+                                            Text(
+                                                text = "· ${stringResource(R.string.team_folder_running_badge)}",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = OrqenSemanticColors.Success,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (showIdentityDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showIdentityDialog = false },
+                                title = { Text("Project Type & Icon") },
+                                text = {
+                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Text("Project Type", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            items(com.jarves.mh.model.ProjectType.entries) { pType ->
+                                                FilterChip(
+                                                    selected = editType == pType,
+                                                    onClick = { editType = pType },
+                                                    label = { Text(pType.displayName, fontSize = 11.sp) },
+                                                )
+                                            }
+                                        }
+                                        Text("Project Icon", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            items(com.jarves.mh.ui.ProjectIconCatalog.builtInIcons, key = { it.key }) { opt ->
+                                                val activeKey = editIconKey.ifBlank { com.jarves.mh.ui.ProjectIconCatalog.defaultIconKeyFor(editType) }
+                                                FilterChip(
+                                                    selected = activeKey == opt.key,
+                                                    onClick = { editIconKey = opt.key },
+                                                    leadingIcon = { Icon(opt.icon, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                                    label = { Text(opt.label, fontSize = 10.5.sp) },
+                                                )
+                                            }
+                                        }
+                                        TextButton(
+                                            onClick = { editIconKey = "" },
+                                            contentPadding = PaddingValues(horizontal = 4.dp),
+                                        ) {
+                                            Text("Reset to default icon for ${editType.displayName}", fontSize = 11.sp)
+                                        }
+                                    }
+                                },
+                                confirmButton = {
+                                    Button(onClick = {
+                                        onUpdateTeamProjectIdentity(project.id, editType, editIconKey)
+                                        showIdentityDialog = false
+                                    }) { Text(stringResource(R.string.action_save)) }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showIdentityDialog = false }) { Text(stringResource(R.string.action_cancel)) }
+                                },
+                            )
+                        }
+
+                        if (showRename) {
+                            AlertDialog(
+                                onDismissRequest = { showRename = false },
+                                title = { Text(stringResource(R.string.ws_rename_project)) },
+                                text = {
+                                    OutlinedTextField(
+                                        value = renameText,
+                                        onValueChange = { renameText = it },
+                                        label = { Text(stringResource(R.string.team_folder_name_hint)) },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            onRenameTeamProject(project.id, renameText.trim())
+                                            showRename = false
+                                        },
+                                        enabled = renameText.isNotBlank(),
+                                    ) { Text(stringResource(R.string.action_save)) }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showRename = false }) { Text(stringResource(R.string.action_cancel)) }
+                                },
+                            )
+                        }
+
+                        if (showDelete) {
+                            com.jarves.mh.ui.SafeDeleteProjectDialog(
+                                projectName = project.name,
+                                onConfirmDelete = {
+                                    showDelete = false
+                                    onDeleteTeamProject(project)
+                                },
+                                onDismiss = { showDelete = false },
+                            )
+                        }
+                    }
+                    if (pair.size == 1) {
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MinimalActionPill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+            )
         }
     }
 }

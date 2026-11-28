@@ -252,9 +252,7 @@ import com.jarves.mh.runtime.AndroidHealthFix
 import com.jarves.mh.runtime.AndroidHealthStatus
 import com.jarves.mh.runtime.AndroidLogLevel
 import com.jarves.mh.runtime.AndroidLogLine
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.ui.input.pointer.pointerInput
@@ -296,8 +294,7 @@ import com.jarves.mh.multiagent.ui.ProviderManagementScreen
 import androidx.compose.material3.ExtendedFloatingActionButton
 
 private enum class RootScreen(@StringRes val labelRes: Int, val icon: ImageVector) {
-    PROJECTS(R.string.tab_projects, Icons.Default.Folder),
-    TEAM(R.string.tab_team, Icons.Default.Groups),
+    TEAM(R.string.tab_team, Icons.Default.Folder),
     AGENT(R.string.tab_agent, Icons.Default.SmartToy),
     SETTINGS(R.string.tab_settings, Icons.Default.Settings),
 }
@@ -2535,14 +2532,14 @@ private fun RootScreenHost(
     viewModel: MainViewModel,
     projectsListState: LazyListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() },
 ) {
-    var screen by rememberSaveable { mutableStateOf(RootScreen.PROJECTS) }
+    var screen by rememberSaveable { mutableStateOf(RootScreen.TEAM) }
     var showQuickTerminal by rememberSaveable { mutableStateOf(false) }
     var openBackup by rememberSaveable { mutableStateOf(false) }
     var showMcpManager by rememberSaveable { mutableStateOf(false) }
     var showSkillManager by rememberSaveable { mutableStateOf(false) }
 
-    // System Back Button handling across all root tabs & AI Team sub-screens
-    BackHandler(enabled = showSkillManager || showMcpManager || showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST) || screen != RootScreen.PROJECTS) {
+    // System Back Button handling across all root tabs & unified workspace sub-screens
+    BackHandler(enabled = showSkillManager || showMcpManager || showQuickTerminal || (screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST) || screen != RootScreen.TEAM) {
         when {
             showSkillManager -> showSkillManager = false
             showMcpManager -> showMcpManager = false
@@ -2553,8 +2550,8 @@ private fun RootScreenHost(
             screen == RootScreen.TEAM && state.teamScreenMode != TeamScreenMode.PROJECT_LIST -> {
                 viewModel.setTeamScreenMode(TeamScreenMode.DASHBOARD)
             }
-            screen != RootScreen.PROJECTS -> {
-                screen = RootScreen.PROJECTS
+            screen != RootScreen.TEAM -> {
+                screen = RootScreen.TEAM
             }
         }
     }
@@ -2579,66 +2576,110 @@ private fun RootScreenHost(
         state.teamScreenMode == TeamScreenMode.DASHBOARD &&
         state.activeTeamProject != null
 
+    val showTopNav = !insideTeamWorkspace && !showMcpManager && !showSkillManager
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        bottomBar = {
-            if (!keyboardVisible && !insideTeamWorkspace && !showMcpManager && !showSkillManager) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                RootScreen.entries.forEach { tab ->
-                    NavigationBarItem(
-                        selected = screen == tab,
-                        onClick = { screen = tab },
-                        icon = {
-                            BadgedBox(
-                                badge = { if (tab == RootScreen.SETTINGS && !state.backupFeatureSeen) Badge() },
-                            ) { Icon(tab.icon, contentDescription = stringResource(tab.labelRes)) }
-                        },
-                        label = { Text(stringResource(tab.labelRes), fontSize = 11.sp) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        ),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            if (showTopNav) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.background)
+                        .statusBarsPadding(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        // Minimalist monochrome segmented navigation dock at top
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RootScreen.entries.forEach { tab ->
+                                    val selected = screen == tab
+                                    val bg = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
+                                    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = bg,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clickable { screen = tab },
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                                            horizontalArrangement = Arrangement.Center,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            BadgedBox(
+                                                badge = { if (tab == RootScreen.SETTINGS && !state.backupFeatureSeen) Badge() },
+                                            ) {
+                                                Icon(
+                                                    imageVector = tab.icon,
+                                                    contentDescription = stringResource(tab.labelRes),
+                                                    tint = fg,
+                                                    modifier = Modifier.size(16.dp),
+                                                )
+                                            }
+                                            Spacer(Modifier.width(5.dp))
+                                            Text(
+                                                text = stringResource(tab.labelRes),
+                                                fontSize = 11.5.sp,
+                                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                                color = fg,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Integrated quick terminal button in top bar (replaces floating FAB)
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clickable { showQuickTerminal = true },
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Terminal,
+                                    contentDescription = stringResource(R.string.projects_terminal),
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(
+                        thickness = 0.6.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
                     )
                 }
             }
         },
-        floatingActionButton = {
-            if (screen == RootScreen.PROJECTS && !keyboardVisible && !showQuickTerminal) {
-                ExtendedFloatingActionButton(
-                    onClick = { showQuickTerminal = true },
-                    icon = { Icon(Icons.Default.Terminal, contentDescription = null) },
-                    text = { Text(stringResource(R.string.projects_terminal), fontWeight = FontWeight.SemiBold) },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                )
-            }
-        },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding).navigationBarsPadding()) {
             when (screen) {
-                RootScreen.PROJECTS -> ProjectsScreen(
-                    state = state,
-                    listState = projectsListState,
-                    onOpen = viewModel::openProject,
-                    onCreate = viewModel::createProject,
-                    onCreateAndroid = viewModel::createAndroidProject,
-                    onCreateQuickProject = viewModel::createQuickProject,
-                    onImportZip = viewModel::importZipProject,
-                    onCloneGit = viewModel::clonePublicGitRepository,
-                    onStartGitHubLogin = viewModel::startGitHubLogin,
-                    onGenerateNewGitHubCode = viewModel::generateNewGitHubCode,
-                    onRefreshGitHub = viewModel::refreshGitHubRepositories,
-                    onDisconnectGitHub = viewModel::disconnectGitHub,
-                    onCloneGitHub = viewModel::cloneGitHubRepository,
-                    onRenameProject = viewModel::renameProject,
-                    onDeleteProject = viewModel::deleteProject,
-                    onUpdateProjectIdentity = viewModel::updateSingleProjectIdentity,
-                    onSettings = { screen = RootScreen.SETTINGS },
-                    onPing = viewModel::pingApi,
-                    onToggleTheme = viewModel::toggleTheme,
-                    onInstallUpdate = viewModel::installAppUpdate,
-                    onUpdateSoloContinuousConfig = viewModel::updateSoloContinuousConfig,
-                )
                 RootScreen.TEAM -> {
                     when (state.teamScreenMode) {
                         TeamScreenMode.PROJECT_LIST -> com.jarves.mh.multiagent.ui.TeamProjectsHomeScreen(
@@ -2714,6 +2755,8 @@ private fun RootScreenHost(
                                 hasGitRemote = state.teamActiveProjectHasGitRemote,
                                 gitPushRunning = state.teamGitPushRunning,
                                 autoPushGitEnabled = state.teamAutoPushGitEnabled,
+                                parallelSwarmEnabled = state.teamParallelSwarmEnabled,
+                                onToggleParallelSwarm = viewModel::setTeamParallelSwarmEnabled,
                                 collaborationEvents = state.teamCollaborationEvents,
                                 runningTeamProjectId = state.runningTeamProjectId,
                                 runningTeamProjectName = state.teamProjects.firstOrNull { it.id == state.runningTeamProjectId }?.name,
@@ -2748,6 +2791,7 @@ private fun RootScreenHost(
                                 onClearGroupChat = viewModel::clearTeamChat,
                                 onPushToGit = { url, apiKey -> viewModel.pushTeamProjectToGit(url, apiKey) },
                                 onInstallApk = viewModel::installTeamApk,
+                                onSaveAbsoluteFileCopy = viewModel::saveAbsoluteFileCopy,
                                 onToggleAutoPushGit = viewModel::setTeamAutoPushGitEnabled,
                                 onRunTeamTerminalCommand = viewModel::runTeamTerminalCommand,
                                 onClearTeamTerminal = viewModel::clearTeamTerminal,
@@ -2893,8 +2937,18 @@ private fun RootScreenHost(
                             onClearChat = viewModel::clearTeamChat,
                             hasGitRemote = state.teamActiveProjectHasGitRemote,
                             gitPushRunning = state.teamGitPushRunning,
+                            parallelSwarmEnabled = state.teamParallelSwarmEnabled,
+                            onToggleParallelSwarm = viewModel::setTeamParallelSwarmEnabled,
                             onPushToGit = { url, apiKey -> viewModel.pushTeamProjectToGit(url, apiKey) },
                             onInstallApk = viewModel::installTeamApk,
+                            onStartImplementation = {
+                                viewModel.postTeamChatMessage(
+                                    text = "Start building this based on our finalized discussion.",
+                                    type = com.jarves.mh.multiagent.chat.GroupMessageType.TASK_ASSIGNMENT,
+                                    targetSlot = null,
+                                )
+                            },
+                            onCancelThinkingAgent = viewModel::cancelTeamChatAgent,
                             onSendMessageWithImages = { text, type, targetSlot, uris ->
                                 viewModel.postTeamChatMessageWithImages(text, type, targetSlot, uris)
                             },
@@ -2946,74 +3000,46 @@ private fun RootScreenHost(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.background)
-                            .statusBarsPadding(),
+                            .background(MaterialTheme.colorScheme.background),
                     ) {
-                        // Clean, spacious ORQEN Providers Header (never overlaps status bar!)
-                        Column(
+                        // Minimalist underline tab bar (no redundant title bar)
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(MaterialTheme.colorScheme.surface)
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(20.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                BrandMark(compact = true)
-                                Column(Modifier.weight(1f)) {
+                            listOf(
+                                0 to stringResource(R.string.providers_tab_default),
+                                1 to stringResource(R.string.providers_tab_manage_all),
+                            ).forEach { (idx, label) ->
+                                val selected = providersSubTab == idx
+                                Column(
+                                    modifier = Modifier
+                                        .clickable { providersSubTab = idx }
+                                        .padding(top = 12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                ) {
                                     Text(
-                                        text = stringResource(R.string.provider_mgmt_title),
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                    )
-                                    Text(
-                                        text = stringResource(R.string.provider_mgmt_subtitle),
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        text = label,
+                                        fontSize = 13.sp,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (selected) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
-                                }
-                            }
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
-                            ) {
-                                Row(Modifier.padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    listOf(
-                                        0 to stringResource(R.string.providers_tab_default),
-                                        1 to stringResource(R.string.providers_tab_manage_all),
-                                    ).forEach { (idx, label) ->
-                                        val selected = providersSubTab == idx
-                                        Surface(
-                                            shape = RoundedCornerShape(9.dp),
-                                            color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent,
-                                            border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)) else null,
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .clickable { providersSubTab = idx },
-                                        ) {
-                                            Text(
-                                                text = label,
-                                                fontSize = 12.sp,
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                                textAlign = TextAlign.Center,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
-                                            )
-                                        }
-                                    }
+                                    Spacer(Modifier.height(9.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .height(2.dp)
+                                            .width(if (selected) 56.dp else 0.dp)
+                                            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(1.dp)),
+                                    )
                                 }
                             }
                         }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        HorizontalDivider(thickness = 0.6.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
                         Box(Modifier.weight(1f)) {
                             if (providersSubTab == 0) {
                                 AgentScreen(
@@ -5394,13 +5420,28 @@ private fun WorkspaceScreen(
         )
     }
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = {
-                    Column(Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background)
+                    .statusBarsPadding(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = requestBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.tab_projects))
+                    }
+                    Column(Modifier.weight(1f)) {
                         Text(
                             state.activeProject?.name.orEmpty(),
                             fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.combinedClickable(
@@ -5410,7 +5451,6 @@ private fun WorkspaceScreen(
                                 },
                             ),
                         )
-                        // Agent first so it always stays visible; a long chat title is cut with "…".
                         Text(
                             "${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.localizedTitle() else state.provider.kind.localizedTitle()} · ${activeChat?.localizedTitle() ?: stringResource(R.string.tab_chat)}",
                             fontSize = 11.sp,
@@ -5419,43 +5459,63 @@ private fun WorkspaceScreen(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                },
-                navigationIcon = { IconButton(onClick = requestBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.tab_projects)) } },
-                actions = {
                     if (isAndroidProject) {
                         IconButton(
                             onClick = { showAndroidBuild = true },
                             enabled = !state.isRunning && !state.projectTerminalRunning,
                         ) {
-                            if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            if (state.androidBuildRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                             else Icon(Icons.Default.PlayArrow, stringResource(R.string.ws_build_run_android))
                         }
                     }
-                    IconButton(onClick = { showChats = true }) { Icon(Icons.Default.History, stringResource(R.string.ws_project_chats)) }
-                    if (state.isRunning) CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-            )
-        },
-        bottomBar = {
-            if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES }.forEach { tab ->
-                    NavigationBarItem(
-                        selected = selectedTab == tab,
-                        onClick = {
-                            selectedTab = tab
-                            if (tab == WorkspaceTab.FILES) onRefreshFiles()
-                            if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
-                        },
-                        icon = { Icon(tab.icon, stringResource(tab.labelRes)) },
-                        label = { Text(stringResource(tab.labelRes), fontSize = 10.sp) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                        ),
-                    )
+                    IconButton(onClick = { showChats = true }) {
+                        Icon(Icons.Default.History, stringResource(R.string.ws_project_chats))
+                    }
+                    if (state.isRunning) CircularProgressIndicator(Modifier.padding(10.dp).size(18.dp), strokeWidth = 2.dp)
                 }
+                // Minimalist top pill tab rail (replaces bottom NavigationBar)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    WorkspaceTab.entries.filter { it != WorkspaceTab.CHANGES }.forEach { tab ->
+                        val selected = selectedTab == tab
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                            border = if (selected) null else BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.clickable {
+                                selectedTab = tab
+                                if (tab == WorkspaceTab.FILES) onRefreshFiles()
+                                if (tab == WorkspaceTab.TERMINAL) onTerminalOpened()
+                            },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(
+                                    imageVector = tab.icon,
+                                    contentDescription = stringResource(tab.labelRes),
+                                    tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Text(
+                                    text = stringResource(tab.labelRes),
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                HorizontalDivider(thickness = 0.6.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
             }
         },
     ) { padding ->
@@ -8323,30 +8383,23 @@ private fun EmptyState(icon: ImageVector, title: String, body: String) {
 
 @Composable
 private fun BrandMark(modifier: Modifier = Modifier, compact: Boolean = false) {
-    val size = if (compact) 34.dp else 56.dp
-    val iconSize = if (compact) 20.dp else 32.dp
-    val cornerRadius = if (compact) 10.dp else 16.dp
-    val primary = MaterialTheme.colorScheme.primary
+    val size = if (compact) 32.dp else 52.dp
+    val iconSize = if (compact) 18.dp else 28.dp
 
     Box(
         modifier = modifier
             .size(size)
             .background(
-                color = Color(0xFF070A0D),
-                shape = RoundedCornerShape(cornerRadius),
-            )
-            .border(
-                width = 1.2.dp,
-                color = primary.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(cornerRadius),
+                color = MaterialTheme.colorScheme.primary,
+                shape = CircleShape,
             ),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_orqen_mark),
-            contentDescription = "ORQEN",
+            contentDescription = "Workspace",
             modifier = Modifier.size(iconSize),
-            tint = primary,
+            tint = MaterialTheme.colorScheme.onPrimary,
         )
     }
 }

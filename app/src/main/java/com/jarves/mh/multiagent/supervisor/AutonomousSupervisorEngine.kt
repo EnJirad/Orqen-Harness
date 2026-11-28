@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -272,6 +273,7 @@ class AutonomousSupervisorEngine(
             requireDeliverableVerification = true,
             acceptanceChecks = acceptanceCriteria,
         ),
+        parallelSwarmEnabled: Boolean = false,
     ): TaskEntity? {
         val planStartMs = nowProvider()
         val project = taskStore.getProject(projectId) ?: return null
@@ -326,15 +328,30 @@ class AutonomousSupervisorEngine(
                     "Enable a Developer agent instead of silently assigning implementation to SPV ($leaderAgentId).",
             )
         }
-        val devAgentId = nonLeaderDev?.agentId
-            ?: capabilityResolver.selectBestAgent(candidates, setOf("code"))?.agentId
-            ?: candidates.firstOrNull { it.agentId != leaderAgentId }?.agentId
-            ?: candidates.first().agentId
-        val coderAgentIds = candidates
-            .filter { it.agentId != leaderAgentId && ("code" in it.capabilities || it.role.contains("dev", ignoreCase = true) || it.role.contains("engineer", ignoreCase = true) || it.role.contains("specialist", ignoreCase = true)) }
-            .map { it.agentId }
-            .distinct()
-            .ifEmpty { listOf(devAgentId) }
+        // Unified 1-to-N Workspace: when only 1 AI agent is enabled in a true 1-agent workspace,
+        // let that single AI act seamlessly as the all-in-one Solo + Lead Engineer.
+        val isSingleAiMode = allTeamMembers.size == 1 && candidates.size == 1
+        val devAgentId = if (isSingleAiMode) {
+            candidates.first().agentId
+        } else {
+            nonLeaderDev?.agentId
+                ?: capabilityResolver.selectBestAgent(candidates, setOf("code"))?.agentId
+                ?: candidates.firstOrNull { it.agentId != leaderAgentId }?.agentId
+                ?: candidates.first().agentId
+        }
+        val coderAgentIds = when {
+            isSingleAiMode -> listOf(candidates.first().agentId)
+            parallelSwarmEnabled && candidates.size >= 2 -> {
+                // Parallel Swarm Mode: every enabled agent joins the disjoint parallel build pool for maximum speed!
+                val workersFirst = candidates.filter { it.agentId != leaderAgentId }.map { it.agentId }
+                (workersFirst + leaderAgentId).distinct()
+            }
+            else -> candidates
+                .filter { it.agentId != leaderAgentId && ("code" in it.capabilities || it.role.contains("dev", ignoreCase = true) || it.role.contains("engineer", ignoreCase = true) || it.role.contains("specialist", ignoreCase = true)) }
+                .map { it.agentId }
+                .distinct()
+                .ifEmpty { listOf(devAgentId) }
+        }
         // 2-Agent Team Rule: Manager acts as Planner + Supervisor + Independent QA when only Manager + Dev exist.
         val qaAgentId = capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"), excludeAgentIds = setOf(devAgentId))?.agentId
             ?: capabilityResolver.selectBestAgent(candidates, setOf("review", "qa"))?.agentId
@@ -358,6 +375,7 @@ class AutonomousSupervisorEngine(
             devAgentId = devAgentId,
             qaAgentId = qaAgentId,
             coderAgentIds = coderAgentIds,
+            forceParallelAllAgents = parallelSwarmEnabled && coderAgentIds.size >= 2,
         )
         val planValidation = if (existingValidPlan != null) {
             MultiPartPlanManager.verifyPlanIntegrity(wsDir, mpPlan)
@@ -470,6 +488,7 @@ class AutonomousSupervisorEngine(
             requireDeliverableVerification = true,
             acceptanceChecks = acceptanceCriteria,
         ),
+        parallelSwarmEnabled: Boolean = false,
         onTaskCreated: (TaskEntity) -> Unit = {},
     ): TaskEntity? {
         val plannedTask = preparePlan(
@@ -481,6 +500,7 @@ class AutonomousSupervisorEngine(
             attachmentPaths = attachmentPaths,
             budget = budget,
             completionCriteria = completionCriteria,
+            parallelSwarmEnabled = parallelSwarmEnabled,
         ) ?: return null
 
         onTaskCreated(plannedTask)
@@ -489,6 +509,7 @@ class AutonomousSupervisorEngine(
             taskId = plannedTask.taskId,
             team = team,
             requiredDeliverableFiles = requiredDeliverableFiles,
+            parallelSwarmEnabled = parallelSwarmEnabled,
         )
     }
 
@@ -547,6 +568,7 @@ class AutonomousSupervisorEngine(
         taskId: String,
         team: AgentTeamEntity,
         requiredDeliverableFiles: List<String> = emptyList(),
+        parallelSwarmEnabled: Boolean = false,
     ): TaskEntity? {
         if (!activeSupervisedTasks.add(taskId)) {
             taskStore.insertTaskEvent(
@@ -723,12 +745,17 @@ class AutonomousSupervisorEngine(
 
                 // Resource-aware adaptive concurrency: scales dynamically under device memory/CPU
                 // pressure without permanently reducing the user's configured team size.
-                var adaptiveLimit = resourceManager?.recommendedConcurrency(team.maxConcurrentAgents)
-                    ?: team.maxConcurrentAgents
+                val requestedConcurrency = if (parallelSwarmEnabled) {
+                    maxOf(team.maxConcurrentAgents, teamManager.getTeamProfiles(team.teamId, onlyEnabled = true).size)
+                } else {
+                    team.maxConcurrentAgents
+                }
+                var adaptiveLimit = resourceManager?.recommendedConcurrency(requestedConcurrency)
+                    ?: requestedConcurrency
                 if (adaptiveLimit <= 0 && resourceManager != null) {
                     resourceManager.triggerMemoryRelief()
                     kotlinx.coroutines.delay(250L)
-                    adaptiveLimit = resourceManager.recommendedConcurrency(team.maxConcurrentAgents).coerceAtLeast(1)
+                    adaptiveLimit = resourceManager.recommendedConcurrency(requestedConcurrency).coerceAtLeast(1)
                 }
 
                 // Execute independent non-review subtasks concurrently up to adaptiveLimit
@@ -763,6 +790,7 @@ class AutonomousSupervisorEngine(
                         activePhase = "PARALLEL_EXECUTING",
                     )
                     var anyLaunched = false
+                    val parallelRecoveryMutex = kotlinx.coroutines.sync.Mutex()
                     coroutineScope {
                         parallelBatch.map { pStep ->
                             async {
@@ -899,8 +927,95 @@ class AutonomousSupervisorEngine(
                                             ),
                                         )
                                     } else {
-                                        taskStore.upsertStep(runStep.copy(status = StepStatus.READY))
-                                        taskStore.updateExecution(execRec.copy(executionStatus = "FAILED", completedAt = nowProvider(), errorMessage = verOutcome?.details ?: out.error?.message ?: out.summary))
+                                        parallelRecoveryMutex.withLock {
+                                            if (changed.isNotEmpty()) {
+                                                val partialCp = checkpointManager.buildCheckpoint(
+                                                    taskId = taskId,
+                                                    stepId = runStep.stepId,
+                                                    workspaceDir = workspaceDir,
+                                                    modifiedFiles = changed,
+                                                    contextSummary = "Partial progress preserved before parallel recovery: ${changed.joinToString()}",
+                                                )
+                                                taskStore.insertCheckpoint(partialCp)
+                                            }
+                                            val err = out.error ?: StructuredErrorClassifier.classify(
+                                                verOutcome?.details ?: out.summary.ifBlank { "Execution failed" },
+                                            )
+                                            healthMonitor.recordEvent(
+                                                AgentProgressEvent(
+                                                    taskId = taskId,
+                                                    subtaskId = runStep.stepId,
+                                                    agentId = prof.agentId,
+                                                    executionId = execId,
+                                                    eventType = ProgressEventType.FAILED,
+                                                    details = err.message,
+                                                    providerId = prof.providerId,
+                                                    modelId = prof.modelId,
+                                                    errorCategory = err.category,
+                                                    retryAfterMs = err.retryAfterMs,
+                                                    timestampMs = nowProvider(),
+                                                ),
+                                            )
+                                            taskStore.updateExecution(
+                                                execRec.copy(
+                                                    executionStatus = "FAILED",
+                                                    completedAt = nowProvider(),
+                                                    errorType = err.category.name,
+                                                    errorMessage = err.message,
+                                                ),
+                                            )
+                                            val requiredCaps = inferRequiredCapabilities(runStep)
+                                            val recoveryPlan = recoveryEngine.planRecovery(
+                                                task = task,
+                                                step = runStep,
+                                                failedAgent = prof,
+                                                executionId = execId,
+                                                error = err,
+                                                requiredCapabilities = requiredCaps,
+                                                teamCandidates = teamProfiles,
+                                                preservedFiles = changed,
+                                                nowMs = nowProvider(),
+                                            )
+                                            when (recoveryPlan.strategy) {
+                                                RecoveryStrategyKind.RETRY_SAME_MODEL -> {
+                                                    updateMetrics(taskId) { it.copy(retryCount = it.retryCount + 1, recoveryCount = it.recoveryCount + 1) }
+                                                    if (recoveryPlan.backoffMs > 0L) delayFn(recoveryPlan.backoffMs)
+                                                    taskStore.upsertStep(runStep.copy(status = StepStatus.READY, retryCount = runStep.retryCount + 1))
+                                                }
+                                                RecoveryStrategyKind.SWITCH_MODEL_SAME_PROVIDER,
+                                                RecoveryStrategyKind.SWITCH_PROVIDER_AND_MODEL -> {
+                                                    updateMetrics(taskId) { it.copy(recoveryCount = it.recoveryCount + 1) }
+                                                    registry.register(
+                                                        prof.copy(
+                                                            providerId = recoveryPlan.targetProviderId,
+                                                            modelId = recoveryPlan.targetModelId,
+                                                            updatedAt = nowProvider(),
+                                                        ),
+                                                    )
+                                                    taskStore.upsertStep(
+                                                        runStep.copy(
+                                                            status = StepStatus.READY,
+                                                            retryCount = 0,
+                                                            inputContext = buildRecoveryHandoffContext(runStep.inputContext, recoveryPlan),
+                                                        ),
+                                                    )
+                                                }
+                                                RecoveryStrategyKind.REASSIGN_AGENT -> {
+                                                    updateMetrics(taskId) { it.copy(recoveryCount = it.recoveryCount + 1) }
+                                                    taskStore.upsertStep(
+                                                        runStep.copy(
+                                                            assignedAgentId = recoveryPlan.targetAgentId,
+                                                            status = StepStatus.READY,
+                                                            retryCount = 0,
+                                                            inputContext = buildRecoveryHandoffContext(runStep.inputContext, recoveryPlan),
+                                                        ),
+                                                    )
+                                                }
+                                                else -> {
+                                                    taskStore.upsertStep(runStep.copy(status = StepStatus.READY, retryCount = runStep.retryCount + 1))
+                                                }
+                                            }
+                                        }
                                     }
                                 } finally {
                                     locked.forEach { fileLockManager.releaseByAgentId(it, prof.agentId) }
@@ -1394,6 +1509,21 @@ class AutonomousSupervisorEngine(
                             taskStore.upsertStep(fixStep)
                             taskStore.upsertStep(reReviewStep)
                         }
+                        onStepLifecycleUpdate(
+                            StepLifecycleUpdate(
+                                projectId = project.projectId,
+                                taskId = taskId,
+                                stepId = runningStep.stepId,
+                                stepTitle = runningStep.title,
+                                agentId = agentProfile.agentId,
+                                agentDisplayName = agentProfile.displayName,
+                                phase = "REVIEW_REJECTED",
+                                detail = "ตรวจสอบ '${runningStep.title}' เสร็จแล้วครับ พบปัญหาที่ต้องแก้ไข:\n${feedbackBody.take(360)}\n\nกำลังส่งต่อให้ ${devAgent.displayName} แก้ไขและจะตรวจสอบซ้ำอีกครั้งครับ",
+                                modifiedFiles = changedFiles,
+                                stepNumber = runningStep.sequenceNumber,
+                                totalSteps = allSteps.size + 2,
+                            ),
+                        )
                         continue
                     }
 
@@ -2289,7 +2419,8 @@ class AutonomousSupervisorEngine(
                     agentId = AgentSlot.AGENT_1.id,
                     agentDisplayName = "Supervisor",
                     phase = "REMEDIATION",
-                    detail = "Scheduled ${createdSummary.size} remediation step(s):\n" + createdSummary.joinToString("\n") { "• $it" },
+                    detail = "วางแผนเพิ่มเติม / ปรับแผนใหม่ (สาเหตุ: ${reason.take(160)})\nขั้นตอนที่วางแผนใหม่และกำลังส่งต่อให้ทีม:\n" +
+                        createdSummary.joinToString("\n") { "• $it" },
                     stepNumber = (existingSteps.maxOfOrNull { it.sequenceNumber } ?: 0) + 1,
                     totalSteps = seq - 1,
                 ),

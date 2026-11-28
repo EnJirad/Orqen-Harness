@@ -174,6 +174,7 @@ object MultiPartPlanManager {
         devAgentId: String = "agent-02",
         qaAgentId: String = "agent-03",
         coderAgentIds: List<String> = listOf(devAgentId),
+        forceParallelAllAgents: Boolean = false,
     ): MultiPartExecutionPlan {
         val cleanObj = objective.trim()
         val inspection = com.jarves.mh.runtime.SharedWorkspaceExecutionService(workspaceDir, projectId).inspectWorkspaceSummary()
@@ -197,16 +198,21 @@ object MultiPartPlanManager {
             ?.take(56)
             ?.ifBlank { projectName }
             ?: projectName
+        val effectiveCoders = coderAgentIds.filter { it.isNotBlank() }.distinct().ifEmpty { listOf(devAgentId) }
         val rawPartDefs: List<Pair<String, String>> = when {
             explicitSubtasks.isNotEmpty() -> explicitSubtasks.mapIndexed { idx, sub ->
                 "Part ${idx + 1}: ${sub.take(48)}" to sub
             }
+            forceParallelAllAgents && effectiveCoders.size >= 2 -> buildParallelSwarmBreakdown(
+                objective = cleanObj,
+                isAndroidProject = isAndroidProject,
+                agentCount = effectiveCoders.size,
+            )
             complexity == TaskComplexityTier.LARGE -> buildDefaultMultiPartBreakdown(cleanObj, isAndroidProject)
             complexity == TaskComplexityTier.MEDIUM -> buildMediumMultiPartBreakdown(cleanObj, isAndroidProject)
             else -> listOf(shortObjTitle to cleanObj)
         }
 
-        val effectiveCoders = coderAgentIds.filter { it.isNotBlank() }.distinct().ifEmpty { listOf(devAgentId) }
         val enableParallelCoders = effectiveCoders.size >= 2 && rawPartDefs.size >= 2
 
         val parts = mutableListOf<MultiPartSpec>()
@@ -866,6 +872,51 @@ object MultiPartPlanManager {
             return TaskComplexityTier.MEDIUM
         }
         return TaskComplexityTier.SMALL
+    }
+
+    private fun buildParallelSwarmBreakdown(
+        objective: String,
+        isAndroidProject: Boolean,
+        agentCount: Int,
+    ): List<Pair<String, String>> {
+        val count = agentCount.coerceIn(2, 4)
+        return if (isAndroidProject) {
+            when (count) {
+                2 -> listOf(
+                    "Core Logic, Models & State" to "Build clean core domain models, calculation/business logic, and ViewModel/state classes in dedicated non-UI files for: $objective",
+                    "UI Screens, Wiring & APK Build" to "Build Jetpack Compose / Android UI screens, connect to core logic/state, run tests, and assemble verified debug APK for: $objective",
+                )
+                3 -> listOf(
+                    "Core Logic & Domain Models" to "Implement core business logic, data models, and pure unit-testable engine files (disjoint from UI files) for: $objective",
+                    "UI Components & Screens" to "Implement clean Jetpack Compose / Android UI screens, theme, and interactive components (disjoint from core engine files) for: $objective",
+                    "Integration, Tests & APK Build" to "Wire UI screens to core logic in MainActivity/navigation, resolve any contract mismatches, run unit tests, and build verified debug APK for: $objective",
+                )
+                else -> listOf(
+                    "Core Engine & Data Models" to "Implement core business logic, algorithms, and immutable data models in dedicated domain files for: $objective",
+                    "State Management & Persistence" to "Implement ViewModel/state holder, validation, and local storage/history helpers (disjoint files) for: $objective",
+                    "UI Screens & Visual Polish" to "Implement responsive Jetpack Compose / Android UI screens, controls, and visual polish (disjoint UI files) for: $objective",
+                    "Final Integration, Tests & APK Build" to "Connect all modules end-to-end, fix any import/signature mismatches, run unit tests, and assemble verified debug APK for: $objective",
+                )
+            }
+        } else {
+            when (count) {
+                2 -> listOf(
+                    "Core Logic & Data Layer" to "Implement core algorithms, data models, and reusable service/logic modules (disjoint files) for: $objective",
+                    "UI/Interface, Integration & Tests" to "Implement UI/frontend or entrypoints, wire to core logic, and run automated verification tests for: $objective",
+                )
+                3 -> listOf(
+                    "Core Logic & Data Models" to "Implement core domain logic, algorithms, and data contracts in dedicated files for: $objective",
+                    "UI / Presentation Layer" to "Implement UI views, styles, and interactive components in disjoint frontend/presentation files for: $objective",
+                    "Integration & Automated Verification" to "Connect core logic and UI cleanly, resolve any interface mismatches, and run real tests/build checks for: $objective",
+                )
+                else -> listOf(
+                    "Core Engine & Contracts" to "Implement core logic, algorithms, and shared interface contracts in dedicated files for: $objective",
+                    "State, Helpers & Persistence" to "Implement state management, utilities, and data persistence in disjoint helper files for: $objective",
+                    "UI & User Experience" to "Implement UI views, layout, styling, and user interactions in disjoint UI files for: $objective",
+                    "Final Integration & Verification" to "Wire all modules end-to-end, resolve any mismatches, and execute full tests/verification for: $objective",
+                )
+            }
+        }
     }
 
     private fun buildMediumMultiPartBreakdown(objective: String, isAndroid: Boolean): List<Pair<String, String>> =

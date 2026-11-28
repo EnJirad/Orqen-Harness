@@ -1,6 +1,6 @@
 <resources>
     <!-- Multi-Agent AI Workspace -->
-    <string name="tab_team">AI Team</string>
+    <string name="tab_team">Workspaces</string>
     <string name="team_workspace_title">Multi-Agent Workspace</string>
     <string name="team_dashboard">Team Dashboard</string>
     <string name="team_group_chat">Group Chat</string>

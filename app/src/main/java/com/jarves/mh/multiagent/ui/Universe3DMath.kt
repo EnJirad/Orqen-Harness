@@ -63,6 +63,7 @@ data class UniverseCamera(
 enum class UniverseNodeType {
     PROJECT,
     AGENT,
+    OWNER,
 }
 
 data class UniverseNode(
@@ -78,12 +79,14 @@ data class UniverseNode(
     val accentColorArgb: Long,
     val projectId: String? = null,
     val agentSlot: AgentSlot? = null,
+    val isCurrentProject: Boolean = true,
 )
 
 enum class UniverseEdgeType {
     PROJECT_AGENT,
     MANAGER_AGENT,
     AGENT_AGENT,
+    OWNER_AGENT,
 }
 
 data class UniverseEdge(
@@ -222,6 +225,8 @@ object UniverseGraphBuilder {
         activeSnapshot: SupervisorUiSnapshot?,
         collaborationEvents: List<PrioritizedCollaborationEvent>,
         isTeamRunning: Boolean,
+        ownerName: String = "",
+        activeChatTargetSlots: Set<AgentSlot> = emptySet(),
         nowMs: Long = System.currentTimeMillis(),
     ): UniverseGraph {
         val nodes = mutableListOf<UniverseNode>()
@@ -235,25 +240,29 @@ object UniverseGraphBuilder {
             return UniverseGraph(emptyList(), emptyList())
         }
 
-        // 1. Active Project central star + any additional real team projects in outer orbit
+        // 1. Active Project central star + distant outer-galaxy stars for inactive projects
         val activeProjNodeId = activeProject?.let { "project:${it.id}" }
-        uniqueProjects.forEachIndexed { idx, proj ->
+        val otherCount = (uniqueProjects.size - 1).coerceAtLeast(1)
+        var otherIdx = 0
+        uniqueProjects.forEach { proj ->
             val isMain = proj.id == activeProject?.id
             val pos = if (isMain) {
-                Vec3(0f, 0.08f, 0f)
+                Vec3(0f, 0.05f, 0f)
             } else {
-                val outerAngle = ((idx - 1).toFloat() / (uniqueProjects.size - 1).coerceAtLeast(1)) * (2f * PI.toFloat()) + 0.7f
+                val outerAngle = (otherIdx.toFloat() / otherCount) * (2f * PI.toFloat()) + 0.85f
+                otherIdx++
                 Vec3(
-                    x = cos(outerAngle) * 3.15f,
-                    y = sin(outerAngle * 1.5f) * 0.55f + 0.45f,
-                    z = sin(outerAngle) * 2.85f,
+                    x = cos(outerAngle) * 5.85f,
+                    y = sin(outerAngle * 1.4f) * 1.05f + 0.95f,
+                    z = sin(outerAngle) * 5.45f,
                 )
             }
             val projStatus = when {
-                isMain && activeSnapshot?.status == com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.COMPLETED -> "Completed"
-                isMain && activeSnapshot?.status == com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.BLOCKED -> "Blocked"
-                isMain && isTeamRunning -> "Active"
-                else -> "Standby"
+                isMain && activeSnapshot?.status == com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.COMPLETED -> "เสร็จสิ้น"
+                isMain && activeSnapshot?.status == com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.BLOCKED -> "ติดปัญหา"
+                isMain && isTeamRunning -> "กำลังทำงาน"
+                isMain -> "พร้อมใช้งาน"
+                else -> "โปรเจกต์อื่น"
             }
             nodes += UniverseNode(
                 id = "project:${proj.id}",
@@ -264,23 +273,55 @@ object UniverseGraphBuilder {
                 isActive = isMain && isTeamRunning,
                 isError = isMain && activeSnapshot?.status == com.jarves.mh.multiagent.supervisor.SupervisorOperationalStatus.BLOCKED,
                 position = pos,
-                baseRadius = if (isMain) 36f else 24f,
-                accentColorArgb = if (isMain) 0xFF38BDF8L else 0xFF818CF8L,
+                baseRadius = if (isMain) 34f else 17f,
+                accentColorArgb = if (isMain) 0xFF38BDF8L else 0xFF64748BL,
                 projectId = proj.id,
+                isCurrentProject = isMain,
             )
         }
 
+        // 1.5 Company Owner Star (the user's live presence inside the active project constellation)
+        val ownerNodeId = "owner:self"
+        if (activeProject != null) {
+            val resolvedOwner = ownerName.trim().ifBlank { "เจ้าของบริษัท" }
+            nodes += UniverseNode(
+                id = ownerNodeId,
+                type = UniverseNodeType.OWNER,
+                label = resolvedOwner,
+                subtitle = "Owner · ${activeProject.name}",
+                statusLabel = if (activeChatTargetSlots.isNotEmpty()) "กำลังคุยกับทีม" else "ออนไลน์",
+                isActive = true,
+                isError = false,
+                position = Vec3(0f, 1.38f, 0.88f),
+                baseRadius = 26f,
+                accentColorArgb = 0xFFFBBF24L,
+                projectId = activeProject.id,
+                isCurrentProject = true,
+            )
+            if (activeProjNodeId != null) {
+                edges += UniverseEdge(
+                    id = "edge:$ownerNodeId->$activeProjNodeId",
+                    fromId = ownerNodeId,
+                    toId = activeProjNodeId,
+                    type = UniverseEdgeType.OWNER_AGENT,
+                    hasLiveFlow = isTeamRunning || activeChatTargetSlots.isNotEmpty(),
+                    flowLabel = "Owner Command",
+                    intensity = if (isTeamRunning || activeChatTargetSlots.isNotEmpty()) 0.92f else 0.42f,
+                )
+            }
+        }
+
         // 2. Real AI Agent Nodes orbiting the active project on an inclined 3D orbital plane
-        val orbitRadius = if (agents.size <= 2) 1.75f else 1.98f
+        val orbitRadius = if (agents.size <= 2) 1.72f else 1.95f
         val managerNodeId = agents.firstOrNull { it.config.slot == AgentSlot.AGENT_1 }?.let { "agent:${it.config.slot.id}" }
 
         agents.forEachIndexed { idx, agent ->
             val angle = (idx.toFloat() / agents.size.coerceAtLeast(1)) * (2f * PI.toFloat()) - (PI.toFloat() / 2f)
             val elevation = when (agent.config.slot) {
-                AgentSlot.AGENT_1 -> 0.55f
-                AgentSlot.AGENT_2 -> -0.25f
-                AgentSlot.AGENT_3 -> 0.28f
-                AgentSlot.AGENT_4 -> -0.45f
+                AgentSlot.AGENT_1 -> 0.48f
+                AgentSlot.AGENT_2 -> -0.28f
+                AgentSlot.AGENT_3 -> 0.24f
+                AgentSlot.AGENT_4 -> -0.46f
             }
             val pos = Vec3(
                 x = cos(angle) * orbitRadius,
@@ -288,22 +329,25 @@ object UniverseGraphBuilder {
                 z = sin(angle) * orbitRadius,
             )
             val health = activeSnapshot?.agentHealth?.get(agent.config.slot.id)?.healthState
+            val isChattingWithOwner = agent.config.slot in activeChatTargetSlots
             val isError = agent.activityState.activity == ActivityType.ERROR ||
                 health in setOf(AgentHealthState.PROVIDER_ERROR, AgentHealthState.TIMEOUT, AgentHealthState.UNAVAILABLE)
             val isActive = agent.isWorking ||
+                isChattingWithOwner ||
                 health == AgentHealthState.BUSY ||
                 activeSnapshot?.activeAgentId == agent.config.slot.id
             val statusLabel = when {
-                !agent.config.isEnabled -> "Disabled"
-                isError -> "Error"
-                health == AgentHealthState.RECOVERING -> "Recovering"
+                !agent.config.isEnabled -> "ปิดใช้งาน"
+                isError -> "มีปัญหา"
+                isChattingWithOwner -> "กำลังตอบคุณ"
+                health == AgentHealthState.RECOVERING -> "กำลังกู้คืน"
                 isActive -> when (agent.activityState.activity) {
-                    ActivityType.PLANNING -> "Planning"
-                    ActivityType.REVIEWING, ActivityType.TESTING -> "Reviewing"
-                    else -> "Working"
+                    ActivityType.PLANNING -> "กำลังวางแผน"
+                    ActivityType.REVIEWING, ActivityType.TESTING -> "กำลังตรวจงาน"
+                    else -> "กำลังทำงาน"
                 }
-                agent.activityState.activity == ActivityType.COMPLETED -> "Completed"
-                else -> "Idle"
+                agent.activityState.activity == ActivityType.COMPLETED -> "เสร็จสิ้น"
+                else -> "พร้อมใช้งาน"
             }
             val colorArgb = when (agent.config.slot) {
                 AgentSlot.AGENT_1 -> 0xFFF59E0BL // Amber gold (Manager / Lead)
@@ -321,11 +365,25 @@ object UniverseGraphBuilder {
                 isActive = isActive,
                 isError = isError,
                 position = pos,
-                baseRadius = if (agent.config.slot == AgentSlot.AGENT_1) 25f else 22f,
+                baseRadius = if (agent.config.slot == AgentSlot.AGENT_1) 24f else 21f,
                 accentColorArgb = colorArgb,
                 projectId = activeProject?.id,
                 agentSlot = agent.config.slot,
+                isCurrentProject = true,
             )
+
+            // Owner <-> Agent live golden beam when user is chatting with this agent
+            if (activeProject != null && isChattingWithOwner) {
+                edges += UniverseEdge(
+                    id = "edge:$ownerNodeId->$agentNodeId",
+                    fromId = ownerNodeId,
+                    toId = agentNodeId,
+                    type = UniverseEdgeType.OWNER_AGENT,
+                    hasLiveFlow = true,
+                    flowLabel = "Direct Chat",
+                    intensity = 1.0f,
+                )
+            }
 
             // Project <-> Agent real connection
             if (activeProjNodeId != null) {

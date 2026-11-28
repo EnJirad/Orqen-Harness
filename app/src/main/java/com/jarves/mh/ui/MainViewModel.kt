@@ -337,6 +337,7 @@ data class AppUiState(
     val teamGitPushRunning: Boolean = false,
     val teamActiveProjectHasGitRemote: Boolean = false,
     val teamAutoPushGitEnabled: Boolean = false,
+    val teamParallelSwarmEnabled: Boolean = true,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
@@ -982,25 +983,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 _state.value.activeTeamProject?.name ?: "ORQEN",
                                 "$stepPrefix$displayName: ${upd.stepTitle.take(55)}",
                             )
-                            // Keep raw worker output in internal live logs; SPV reports concise verified progress to Owner!
+                            // Each AI directly reports what they built, fixed, or added in clear human-readable language!
                             appendAgentLiveLog(slot, upd.detail.take(400))
-                            val spvSummary = com.jarves.mh.multiagent.collab.SpvConversationRouter.formatSpvStatusReport(
-                                phase = "COMPLETED",
-                                workerName = displayName,
-                                stepNumber = upd.stepNumber,
-                                totalSteps = upd.totalSteps,
-                                stepTitle = upd.stepTitle,
-                                modifiedFiles = upd.modifiedFiles,
-                                detail = upd.detail,
-                            )
+                            val shortFiles = upd.modifiedFiles
+                                .map { it.substringAfterLast('/') }
+                                .distinct()
+                                .take(8)
+                            val cleanDetail = upd.detail.trim().take(340)
+                            val memberCompletionText = buildString {
+                                if (isThai) {
+                                    appendLine("ทำงานเสร็จแล้วครับ: ${upd.stepTitle}")
+                                    if (cleanDetail.isNotBlank()) {
+                                        appendLine("สรุปสิ่งที่ทำ/แก้ไข/เพิ่ม: $cleanDetail")
+                                    }
+                                    if (shortFiles.isNotEmpty()) {
+                                        append("ไฟล์ที่แก้ไข/เพิ่ม: ${shortFiles.joinToString(", ")}")
+                                    }
+                                } else {
+                                    appendLine("Completed: ${upd.stepTitle}")
+                                    if (cleanDetail.isNotBlank()) {
+                                        appendLine("Summary: $cleanDetail")
+                                    }
+                                    if (shortFiles.isNotEmpty()) {
+                                        append("Files changed: ${shortFiles.joinToString(", ")}")
+                                    }
+                                }
+                            }.trim()
                             appendProjectTeamMessage(
                                 projectId = upd.projectId,
-                                senderSlot = AgentSlot.AGENT_1,
-                                senderName = supName,
-                                text = spvSummary,
+                                senderSlot = slot,
+                                senderName = displayName,
+                                text = memberCompletionText,
                                 messageType = GroupMessageType.COMPLETION_REPORT,
                                 workStatus = "Done",
                                 workDetails = upd.modifiedFiles.map { "Modified: $it" },
+                            )
+                        }
+                        "REVIEW_REJECTED" -> {
+                            updateAgentActivity(slot, ActivityType.REVIEWING, upd.stepTitle, "พบปัญหา · ส่งต่อให้ทีมแก้ไข")
+                            _state.update { it.copy(teamTypingAgentName = null, teamTypingAgentSlot = null) }
+                            appendAgentLiveLog(slot, "[REVIEW_REJECTED] ${upd.detail.take(350)}")
+                            appendProjectTeamMessage(
+                                projectId = upd.projectId,
+                                senderSlot = slot,
+                                senderName = displayName,
+                                text = upd.detail,
+                                messageType = GroupMessageType.BUG_REPORT,
+                                workStatus = "Needs Fix",
                             )
                         }
                         "RECOVERING", "FAILED" -> {
@@ -3002,16 +3031,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
-            RuntimeSetupStatus.ERROR -> _state.update {
-                it.copy(
-                    startupStage = StartupStage.ERROR,
-                    startupMessage = snapshot.message,
-                    startupProgress = snapshot.progress,
-                    startupLogs = snapshot.logs,
-                    startupIndeterminate = false,
-                    startupError = snapshot.errorMessage,
-                    startupErrorIsOffline = snapshot.offline,
-                )
+            RuntimeSetupStatus.ERROR -> {
+                // Ignore stale persisted setup errors when runtime is already installed so the
+                // StartupErrorScreen never flashes on normal app launches!
+                if (preferences.runtimeSetupComplete || installer.isInstalled()) {
+                    return
+                }
+                _state.update {
+                    it.copy(
+                        startupStage = StartupStage.ERROR,
+                        startupMessage = snapshot.message,
+                        startupProgress = snapshot.progress,
+                        startupLogs = snapshot.logs,
+                        startupIndeterminate = false,
+                        startupError = snapshot.errorMessage,
+                        startupErrorIsOffline = snapshot.offline,
+                    )
+                }
             }
             RuntimeSetupStatus.CANCELLED -> _state.update {
                 it.copy(
@@ -4054,16 +4090,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         preferences.activeTeamProjectId = project.id
-        val projectHistory = loadProjectTeamChat(project.id)
+        val cachedHistory = teamProjectChats[project.id]?.toList()
         val projectTerminal = teamProjectTerminals[project.id].orEmpty()
         val projectRunning = _state.value.runningTeamProjectId == project.id && _state.value.teamIsRunning
         val projectAwaitingConfirm = pendingStartConfirmation?.projectId == project.id
         val projectActiveTaskId = if (projectRunning) activeSupervisedTaskId else null
-        val hasRemote = detectTeamProjectGitRemote(project.id)
         _state.update {
             it.copy(
                 activeTeamProject = project,
-                teamGroupMessages = projectHistory.toList(),
+                teamGroupMessages = cachedHistory ?: emptyList(),
                 teamTerminalOutput = projectTerminal,
                 teamAgentLiveLogs = if (projectRunning) it.teamAgentLiveLogs else emptyMap(),
                 teamTypingAgentName = if (projectRunning) it.teamTypingAgentName else null,
@@ -4072,9 +4107,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 teamStreamingAgentSlot = if (projectRunning) it.teamStreamingAgentSlot else null,
                 teamStreamingText = if (projectRunning) it.teamStreamingText else "",
                 teamAwaitingStartConfirmation = projectAwaitingConfirm,
-                teamActiveProjectHasGitRemote = hasRemote,
                 activeSupervisedTaskId = projectActiveTaskId,
             )
+        }
+        // Load uncached disk chat history, git remote, & sweep stalled tasks off the Main Thread to guarantee zero ANR!
+        viewModelScope.launch(Dispatchers.IO) {
+            val loadedHistory = if (cachedHistory == null) loadProjectTeamChat(project.id).toList() else null
+            val hasRemote = detectTeamProjectGitRemote(project.id)
+            val recoveredCount = runCatching {
+                autonomousSupervisorEngine.sweepStalledAndOrphanedTasks(project.id)
+            }.getOrDefault(0)
+            val updatedLocks = if (recoveredCount > 0) {
+                fileLockManager.cleanExpiredLocks()
+                fileLockManager.getActiveLocks()
+            } else null
+            withContext(Dispatchers.Main) {
+                if (_state.value.activeTeamProject?.id == project.id) {
+                    _state.update { cur ->
+                        cur.copy(
+                            teamGroupMessages = loadedHistory ?: cur.teamGroupMessages,
+                            teamActiveProjectHasGitRemote = hasRemote,
+                            teamFileLocks = updatedLocks ?: cur.teamFileLocks,
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -6725,6 +6782,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val initialTeamMessages = if (activeTeamId != null) loadProjectTeamChat(activeTeamId).toList() else emptyList()
         val initialHasGitRemote = activeTeamId?.let { detectTeamProjectGitRemote(it) } ?: false
         val initialAutoPushGit = teamGitPrefs.getBoolean("auto_push_git_enabled", false)
+        val initialParallelSwarm = teamGitPrefs.getBoolean("parallel_swarm_enabled", true)
         _state.update {
             it.copy(
                 teamAgents = initialAgents,
@@ -6735,7 +6793,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 teamGroupMessages = initialTeamMessages,
                 teamActiveProjectHasGitRemote = initialHasGitRemote,
                 teamAutoPushGitEnabled = initialAutoPushGit,
+                teamParallelSwarmEnabled = initialParallelSwarm,
             )
+        }
+        if (activeTeamId != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val recoveredCount = runCatching {
+                    autonomousSupervisorEngine.sweepStalledAndOrphanedTasks(activeTeamId)
+                }.getOrDefault(0)
+                if (recoveredCount > 0) {
+                    fileLockManager.cleanExpiredLocks()
+                    val refreshedLocks = fileLockManager.getActiveLocks()
+                    withContext(Dispatchers.Main) {
+                        _state.update { it.copy(teamFileLocks = refreshedLocks) }
+                    }
+                }
+            }
         }
 
         viewModelScope.launch {
@@ -7094,6 +7167,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             projectId = activeProj.id,
                             team = team,
                             objective = pending.proactiveObjective,
+                            parallelSwarmEnabled = _state.value.teamParallelSwarmEnabled,
                             onTaskCreated = { created ->
                                 activeSupervisedTaskId = created.taskId
                                 _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
@@ -7253,7 +7327,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         startTeamForegroundService(activeProj.name, "Resuming autonomous task $tid")
                         serviceStarted = true
                         withContext(Dispatchers.IO) {
-                            autonomousSupervisorEngine.superviseTask(tid, team)
+                            autonomousSupervisorEngine.superviseTask(
+                                taskId = tid,
+                                team = team,
+                                parallelSwarmEnabled = _state.value.teamParallelSwarmEnabled,
+                            )
                         }
                     } else {
                         _state.update { it.copy(teamIsPaused = false) }
@@ -7505,6 +7583,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             taskId = resumableTask.taskId,
                             team = team,
                             requiredDeliverableFiles = requiredDeliverableFiles,
+                            parallelSwarmEnabled = _state.value.teamParallelSwarmEnabled,
                         )
                     } else {
                         // Feed SPV's reorganized, synthesized engineering plan directly to the execution DAG
@@ -7518,6 +7597,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             objective = structuredObjective,
                             requiredDeliverableFiles = requiredDeliverableFiles,
                             attachmentPaths = attachmentPaths,
+                            parallelSwarmEnabled = _state.value.teamParallelSwarmEnabled,
                             onTaskCreated = { created ->
                                 activeSupervisedTaskId = created.taskId
                                 _state.update { it.copy(activeSupervisedTaskId = created.taskId) }
@@ -8057,13 +8137,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun notifyTeamTaskCompleted(projectName: String, summary: String) {
         val app = getApplication<Application>()
-        val title = if (isThaiUiLanguage()) {
-            "งานเสร็จสมบูรณ์: $projectName"
+        val isThai = isThaiUiLanguage()
+        val title = if (isThai) {
+            "$projectName · เสร็จสิ้น"
         } else {
-            "Task Completed: $projectName"
+            "$projectName · Done"
         }
-        // Post directly via NotificationManager on a high-importance channel so the top Android
-        // status bar notification ALWAYS appears reliably even if the app is backgrounded!
+        val lower = summary.lowercase()
+        val shortDetail = when {
+            lower.contains("apk") -> if (isThai) "ทำงานสำเร็จ · พร้อมติดตั้ง APK" else "Completed · APK ready to install"
+            lower.contains("preview") -> if (isThai) "ทำงานสำเร็จ · พร้อมเปิดดู Preview" else "Completed · Preview ready"
+            summary.trim().length in 1..52 -> summary.trim()
+            else -> if (isThai) "ทำงานสำเร็จแล้ว" else "Task completed"
+        }
+        // Post a single crisp Android notification (avoid duplicate service notification).
         runCatching {
             val nm = app.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
             val channelId = "orqen_team_completion_v1"
@@ -8092,23 +8179,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val notif = androidx.core.app.NotificationCompat.Builder(app, channelId)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title)
-                .setContentText(summary)
-                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(summary))
+                .setContentText(shortDetail)
                 .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
                 .setDefaults(android.app.Notification.DEFAULT_ALL)
                 .setAutoCancel(true)
                 .apply { if (pendingIntent != null) setContentIntent(pendingIntent) }
                 .build()
             nm.notify(7100 + (projectName.hashCode() and 0x7FF), notif)
-        }
-        runCatching {
-            app.startService(
-                Intent(app, RuntimeExecutionService::class.java)
-                    .setAction(RuntimeExecutionService.ACTION_NOTIFY_RESULT)
-                    .putExtra(RuntimeExecutionService.EXTRA_PROJECT_NAME, projectName)
-                    .putExtra(RuntimeExecutionService.EXTRA_TITLE, title)
-                    .putExtra(RuntimeExecutionService.EXTRA_DETAIL, summary),
-            )
         }
     }
 
@@ -8187,6 +8264,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 teamAutoPushGitEnabled = enabled,
                 toastMessage = if (enabled) "เปิด Push ขึ้น Git อัตโนมัติแล้ว" else "ปิด Push ขึ้น Git อัตโนมัติแล้ว",
+            )
+        }
+    }
+
+    fun setTeamParallelSwarmEnabled(enabled: Boolean) {
+        teamGitPrefs.edit().putBoolean("parallel_swarm_enabled", enabled).apply()
+        _state.update {
+            it.copy(
+                teamParallelSwarmEnabled = enabled,
+                toastMessage = if (enabled) {
+                    "เปิดโหมด AI ทุกตัวช่วยกันทำพร้อมกันแล้ว"
+                } else {
+                    "ปิดโหมดทำพร้อมกันแล้ว (ทำงานตามลำดับปกติ)"
+                },
             )
         }
     }
@@ -8309,21 +8400,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun installTeamApk(apkPath: String) {
-        val apkFile = File(apkPath)
-        if (!apkFile.isFile || apkFile.length() <= 0L) {
-            _state.update { it.copy(toastMessage = "ไม่พบไฟล์ APK: ${apkFile.name}") }
-            return
+        viewModelScope.launch(Dispatchers.IO) {
+            val apkFile = File(apkPath)
+            if (!apkFile.isFile || apkFile.length() <= 0L) {
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(toastMessage = "ไม่พบไฟล์ APK: ${apkFile.name}") }
+                }
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                _state.update { it.copy(toastMessage = "กำลังเตรียมติดตั้ง ${apkFile.name}…") }
+            }
+            runCatching {
+                com.jarves.mh.runtime.AndroidAppInstaller.install(
+                    context = getApplication(),
+                    apk = apkFile,
+                    launchAfterInstall = true,
+                )
+            }.onFailure { err ->
+                android.util.Log.e("OrqenMainViewModel", "Failed to install team APK: $apkPath", err)
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(toastMessage = "ไม่สามารถเปิดติดตั้ง APK ได้: ${err.message?.take(120) ?: err.javaClass.simpleName}") }
+                }
+            }
         }
-        runCatching {
-            com.jarves.mh.runtime.AndroidAppInstaller.install(
-                context = getApplication(),
-                apk = apkFile,
-                launchAfterInstall = true,
-            )
-            _state.update { it.copy(toastMessage = "กำลังเปิดหน้าติดตั้ง ${apkFile.name}…") }
-        }.onFailure { err ->
-            android.util.Log.e("OrqenMainViewModel", "Failed to install team APK: $apkPath", err)
-            _state.update { it.copy(toastMessage = "ไม่สามารถเปิดติดตั้ง APK ได้: ${err.message?.take(120) ?: err.javaClass.simpleName}") }
+    }
+
+    fun saveAbsoluteFileCopy(sourcePath: String, destUri: Uri) {
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            val sourceFile = File(sourcePath)
+            if (!sourceFile.isFile || sourceFile.length() <= 0L) {
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(toastMessage = "ไม่พบไฟล์ต้นทาง: ${sourceFile.name}") }
+                }
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                _state.update { it.copy(toastMessage = "กำลังบันทึก ${sourceFile.name}…") }
+            }
+            runCatching {
+                app.contentResolver.openOutputStream(destUri)?.use { out ->
+                    sourceFile.inputStream().use { input ->
+                        input.copyTo(out, bufferSize = 64 * 1024)
+                    }
+                } ?: error("ไม่สามารถเปิดปลายทางสำหรับบันทึกไฟล์ได้")
+            }.onSuccess {
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(toastMessage = "บันทึกไฟล์ ${sourceFile.name} เรียบร้อยแล้ว") }
+                }
+            }.onFailure { err ->
+                withContext(Dispatchers.Main) {
+                    _state.update { it.copy(toastMessage = "บันทึกไฟล์ไม่สำเร็จ: ${err.message?.take(120) ?: err.javaClass.simpleName}") }
+                }
+            }
         }
     }
 
@@ -9017,7 +9147,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     _state.value.activeTeamProject?.let { proj ->
                         val team = syncTeamProfilesForProject(proj)
-                        autonomousSupervisorEngine.preparePlan(proj.id, team, finalizedObjective, attachmentPaths = savedPaths)
+                        autonomousSupervisorEngine.preparePlan(
+                            proj.id,
+                            team,
+                            finalizedObjective,
+                            attachmentPaths = savedPaths,
+                            parallelSwarmEnabled = _state.value.teamParallelSwarmEnabled,
+                        )
                     }
                 }
             }
@@ -9293,12 +9429,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     readOnlyTools = true,
                     requestId = chatReqId,
                     onProgress = { chunk ->
+                        if (activeTeamChatRequestIds[responder.config.slot] != chatReqId) return@executeTurn
                         val cleanedChunk = chunk.trim()
                         if (cleanedChunk.isNotBlank() && !cleanedChunk.startsWith("Cache hit")) {
                             appendAgentLiveLog(responder.config.slot, cleanedChunk)
                         }
                     },
                 )
+                // Hard Stop Guard: if the user tapped Stop while this AI was thinking/responding,
+                // immediately abort without posting any fallback message or triggering follow-ups!
+                if (coroutineContext[kotlinx.coroutines.Job]?.isActive != true ||
+                    activeTeamChatRequestIds[responder.config.slot] != chatReqId
+                ) {
+                    return@launch
+                }
                 val replyBody = if (res.isError) {
                     if (isBusyWorker) {
                         "รับทราบครับ $ownerName ตอนนี้ผมกำลังลุยงาน (${responder.activityState.lastAction}) ในโปรเจกต์ ${project.name} อยู่ครับ และยังทำงานต่อให้ไม่สะดุดครับ"
@@ -9515,7 +9659,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else if (_state.value.teamIsRunning && runningId == projectId) {
             _state.value.activeTeamProject?.let { proj ->
                 val team = syncTeamProfilesForProject(proj)
-                autonomousSupervisorEngine.preparePlan(proj.id, team, finalizedObjective)
+                autonomousSupervisorEngine.preparePlan(
+                    proj.id,
+                    team,
+                    finalizedObjective,
+                    parallelSwarmEnabled = _state.value.teamParallelSwarmEnabled,
+                )
             }
             val ceoName = agentNameFor(AgentSlot.AGENT_1)
             val coderName = _state.value.teamAgents.filter { it.config.isEnabled }.getOrNull(1)?.config?.name ?: ceoName

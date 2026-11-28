@@ -75,6 +75,8 @@ import com.jarves.mh.provider.core.ProviderConfig
 import com.jarves.mh.runtime.AntigravityAuthState
 import com.jarves.mh.ui.FileTypeIcon
 import com.jarves.mh.ui.GitHubAuthStatus
+import com.jarves.mh.ui.theme.OrqenObsidian
+import com.jarves.mh.ui.theme.OrqenSurface
 import com.jarves.mh.ui.theme.PocketOrange
 import java.io.File
 import java.text.SimpleDateFormat
@@ -131,6 +133,8 @@ fun TeamWorkspaceScreen(
     hasGitRemote: Boolean = false,
     gitPushRunning: Boolean = false,
     autoPushGitEnabled: Boolean = false,
+    parallelSwarmEnabled: Boolean = true,
+    onToggleParallelSwarm: (Boolean) -> Unit = {},
     collaborationEvents: List<com.jarves.mh.multiagent.model.PrioritizedCollaborationEvent> = emptyList(),
     runningTeamProjectId: String?,
     runningTeamProjectName: String?,
@@ -161,6 +165,7 @@ fun TeamWorkspaceScreen(
     onClearGroupChat: () -> Unit = {},
     onPushToGit: (gitUrl: String?, apiKey: String?) -> Unit = { _, _ -> },
     onInstallApk: (String) -> Unit = {},
+    onSaveAbsoluteFileCopy: (sourcePath: String, destUri: Uri) -> Unit = { _, _ -> },
     onToggleAutoPushGit: (Boolean) -> Unit = {},
     onRunTeamTerminalCommand: (String) -> Unit,
     onClearTeamTerminal: () -> Unit,
@@ -222,40 +227,102 @@ fun TeamWorkspaceScreen(
         }
     }
 
-    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    var pendingChatApkDownloadPath by remember { mutableStateOf<String?>(null) }
+    val chatApkDownloadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/vnd.android.package-archive"),
+    ) { destUri ->
+        val src = pendingChatApkDownloadPath
+        pendingChatApkDownloadPath = null
+        if (destUri != null && !src.isNullOrBlank()) {
+            onSaveAbsoluteFileCopy(src, destUri)
+        }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        bottomBar = {
-            if (!keyboardVisible) NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                TeamWorkspaceTab.entries.forEach { tab ->
-                    val labelText = when (tab) {
-                        TeamWorkspaceTab.CHAT -> stringResource(R.string.tab_chat)
-                        TeamWorkspaceTab.FILES -> stringResource(R.string.tab_files)
-                        TeamWorkspaceTab.TERMINAL -> stringResource(R.string.tab_terminal)
-                        TeamWorkspaceTab.SUPERVISOR -> stringResource(R.string.tab_manager)
-                        TeamWorkspaceTab.PREVIEW -> stringResource(R.string.tab_preview)
-                        TeamWorkspaceTab.SETTINGS -> stringResource(R.string.tab_settings)
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background)
+                    .statusBarsPadding(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clickable { onBackToFolders() },
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
-                    NavigationBarItem(
-                        selected = activeTab == tab,
-                        onClick = { activeTab = tab },
-                        icon = { Icon(tab.icon, contentDescription = labelText) },
-                        label = { Text(labelText, fontSize = 9.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = PocketOrange,
-                            selectedTextColor = PocketOrange,
-                            indicatorColor = PocketOrange.copy(alpha = 0.16f),
-                        ),
-                    )
+                    TeamWorkspaceTab.entries.forEach { tab ->
+                        val selected = activeTab == tab
+                        val labelText = when (tab) {
+                            TeamWorkspaceTab.CHAT -> stringResource(R.string.tab_chat)
+                            TeamWorkspaceTab.FILES -> stringResource(R.string.tab_files)
+                            TeamWorkspaceTab.TERMINAL -> stringResource(R.string.tab_terminal)
+                            TeamWorkspaceTab.SUPERVISOR -> stringResource(R.string.tab_manager)
+                            TeamWorkspaceTab.PREVIEW -> stringResource(R.string.tab_preview)
+                            TeamWorkspaceTab.SETTINGS -> stringResource(R.string.tab_settings)
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                            border = if (selected) null else BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.clickable { activeTab = tab },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(
+                                    imageVector = tab.icon,
+                                    contentDescription = labelText,
+                                    tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Text(
+                                    text = labelText,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
                 }
+                HorizontalDivider(
+                    thickness = 0.6.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f),
+                )
             }
         },
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                .navigationBarsPadding(),
         ) {
             var workspaceBounds by remember { mutableStateOf(IntSize.Zero) }
             Box(
@@ -307,8 +374,14 @@ fun TeamWorkspaceScreen(
                         onClearChat = onClearGroupChat,
                         hasGitRemote = hasGitRemote,
                         gitPushRunning = gitPushRunning,
+                        parallelSwarmEnabled = parallelSwarmEnabled,
+                        onToggleParallelSwarm = onToggleParallelSwarm,
                         onPushToGit = onPushToGit,
                         onInstallApk = onInstallApk,
+                        onDownloadApk = { apkPath ->
+                            pendingChatApkDownloadPath = apkPath
+                            chatApkDownloadLauncher.launch(File(apkPath).name.ifBlank { "app-debug.apk" })
+                        },
                         onOpenPreview = { activeTab = TeamWorkspaceTab.PREVIEW },
                         onOpenFile = { path ->
                             pendingFileToOpen = path
@@ -319,6 +392,7 @@ fun TeamWorkspaceScreen(
                         onDraftTextChanged = onChatDraftChanged,
                         onStartImplementation = onStartImplementation,
                         onCancelThinkingAgent = onCancelThinkingAgent,
+                        showBackButton = false,
                         onSendMessageWithImages = onSendGroupMessageWithImages,
                         onSendMessage = onSendGroupMessage,
                         onBack = onBackToFolders,
@@ -368,6 +442,12 @@ fun TeamWorkspaceScreen(
                     supervisorSnapshots = supervisorSnapshots,
                     isTeamRunning = isTeamRunning || awaitingStartConfirmation,
                     awaitingStartConfirmation = awaitingStartConfirmation,
+                    ownerName = ownerName,
+                    activeChatTargetSlots = buildSet {
+                        addAll(typingAgents.keys)
+                        typingAgentSlot?.let { add(it) }
+                        streamingAgentSlot?.let { add(it) }
+                    },
                     onSelectProject = onSelectProject,
                     onOpenAgentDetail = onOpenAgentDetail,
                     onOpenPlanFile = { rel ->
@@ -431,6 +511,8 @@ fun TeamWorkspaceScreen(
                     continuousConfig = continuousConfig,
                     autoPushGitEnabled = autoPushGitEnabled,
                     onToggleAutoPushGit = onToggleAutoPushGit,
+                    parallelSwarmEnabled = parallelSwarmEnabled,
+                    onToggleParallelSwarm = onToggleParallelSwarm,
                     isTeamRunning = isTeamRunning || awaitingStartConfirmation,
                     runningTeamProjectId = runningTeamProjectId,
                     runningTeamProjectName = runningTeamProjectName,
@@ -485,6 +567,7 @@ private fun TeamFilesTab(
     initialFilePathToOpen: String? = null,
     onConsumedInitialFile: () -> Unit = {},
     onInstallApk: (String) -> Unit = {},
+    onSaveAbsoluteFileCopy: (sourcePath: String, destUri: Uri) -> Unit = { _, _ -> },
     onUploadFiles: (parentRelPath: String, uris: List<Uri>, onDone: () -> Unit) -> Unit = { _, _, _ -> },
     onCreateFolder: (parentRelPath: String, folderName: String, onDone: () -> Unit) -> Unit = { _, _, _ -> },
     onRenameEntry: (relPath: String, newName: String, onDone: () -> Unit) -> Unit = { _, _, _ -> },
@@ -624,18 +707,21 @@ private fun TeamFilesTab(
     LaunchedEffect(initialFilePathToOpen, workspaceDir) {
         val requested = initialFilePathToOpen?.trim()?.removePrefix("/") ?: return@LaunchedEffect
         if (requested.isBlank()) return@LaunchedEffect
-        val direct = File(workspaceDir, requested)
-        val target = when {
-            direct.isFile -> direct
-            else -> workspaceDir.walkTopDown()
-                .maxDepth(6)
-                .filter { it.isFile && !it.path.contains("/.git/") && !it.path.contains("/node_modules/") && !it.path.contains("/build/") }
-                .firstOrNull { f ->
-                    val rel = f.relativeTo(workspaceDir).path
-                    rel.equals(requested, ignoreCase = true) ||
-                        rel.endsWith("/$requested", ignoreCase = true) ||
-                        f.name.equals(requested.substringAfterLast('/'), ignoreCase = true)
-                }
+        val target = withContext(Dispatchers.IO) {
+            val direct = File(workspaceDir, requested)
+            when {
+                direct.isFile -> direct
+                else -> workspaceDir.walkTopDown()
+                    .onEnter { dir -> dir.name !in setOf(".git", "node_modules", ".gradle", ".cxx", "intermediates", "tmp") }
+                    .maxDepth(6)
+                    .filter { it.isFile }
+                    .firstOrNull { f ->
+                        val rel = f.relativeTo(workspaceDir).path
+                        rel.equals(requested, ignoreCase = true) ||
+                            rel.endsWith("/$requested", ignoreCase = true) ||
+                            f.name.equals(requested.substringAfterLast('/'), ignoreCase = true)
+                    }
+            }
         }
         if (target != null && target.isFile) {
             val relPath = target.relativeTo(workspaceDir).path
@@ -648,6 +734,25 @@ private fun TeamFilesTab(
             refreshTick++
         }
         onConsumedInitialFile()
+    }
+
+    // Load selected text file asynchronously off the Main Thread (strictly bounded, skips binaries/APKs)
+    LaunchedEffect(selectedFile) {
+        val file = selectedFile ?: return@LaunchedEffect
+        val ext = file.extension.lowercase()
+        val isBinary = ext in setOf("apk", "png", "jpg", "jpeg", "webp", "gif", "bmp", "so", "dex", "jar", "aar", "zip", "zst", "gz", "tar", "pdf", "mp4", "mp3", "o", "a", "bin", "class")
+        fileContent = if (isBinary) {
+            ""
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val maxBytes = 180_000
+                    val buf = ByteArray(maxBytes)
+                    val read = file.inputStream().use { it.read(buf) }.coerceAtLeast(0)
+                    String(buf, 0, read, Charsets.UTF_8)
+                }.getOrDefault("")
+            }
+        }
     }
 
     LaunchedEffect(workspaceDir, selectedFile) {
@@ -729,9 +834,10 @@ private fun TeamFilesTab(
         val currentFile = selectedFile!!
         val isImageFile = currentFile.extension.lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
         Scaffold(
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = {
                 TopAppBar(
-                    modifier = Modifier.padding(top = 6.dp),
+                    windowInsets = WindowInsets(0, 0, 0, 0),
                     navigationIcon = {
                         IconButton(onClick = { selectedFile = null; savedBanner = false }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -751,7 +857,10 @@ private fun TeamFilesTab(
                         IconButton(onClick = { onShareFile(rel) }) {
                             Icon(Icons.Default.Share, contentDescription = "Share")
                         }
-                        if (!isImageFile) {
+                        val isApkFile = currentFile.extension.equals("apk", ignoreCase = true)
+                        val isBinaryFile = !isImageFile && !isApkFile &&
+                            currentFile.extension.lowercase() in setOf("so", "dex", "jar", "aar", "zip", "zst", "gz", "tar", "pdf", "mp4", "mp3", "o", "a", "bin", "class")
+                        if (!isImageFile && !isApkFile && !isBinaryFile) {
                             TextButton(onClick = {
                                 runCatching { currentFile.writeText(fileContent) }
                                 savedBanner = true
@@ -763,32 +872,196 @@ private fun TeamFilesTab(
                 )
             },
         ) { pad ->
+            val rel = remember(currentFile.absolutePath, workspaceDir) {
+                runCatching { currentFile.relativeTo(workspaceDir).path }.getOrDefault(currentFile.name)
+            }
+            val isApkFile = currentFile.extension.equals("apk", ignoreCase = true)
+            val isBinaryFile = !isImageFile && !isApkFile &&
+                currentFile.extension.lowercase() in setOf("so", "dex", "jar", "aar", "zip", "zst", "gz", "tar", "pdf", "mp4", "mp3", "o", "a", "bin", "class")
             Column(Modifier.fillMaxSize().padding(pad).padding(12.dp)) {
-                if (isImageFile) {
-                    val bmp = remember(currentFile.absolutePath, currentFile.lastModified()) {
-                        runCatching { android.graphics.BitmapFactory.decodeFile(currentFile.absolutePath) }.getOrNull()
+                if (isApkFile) {
+                    val sizeMb = String.format(java.util.Locale.US, "%.1f MB", currentFile.length() / (1024.0 * 1024.0))
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = OrqenSemanticColors.Success.copy(alpha = 0.12f),
+                            border = BorderStroke(1.2.dp, OrqenSemanticColors.Success.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Icon(Icons.Default.Android, contentDescription = "APK", tint = OrqenSemanticColors.Success, modifier = Modifier.size(48.dp))
+                                Text(currentFile.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, textAlign = TextAlign.Center)
+                                Text("$sizeMb · Android Package (APK)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Button(
+                                    onClick = { onInstallApk(currentFile.absolutePath) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = OrqenSemanticColors.Success),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Icon(Icons.Default.Android, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.White)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("ติดตั้ง APK ทันที", fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                                Button(
+                                    onClick = {
+                                        pendingDownloadSingleRelPath = rel
+                                        saveSingleFileLauncher.launch(currentFile.name)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A)),
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp), tint = Color.White)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("ดาวน์โหลด / บันทึก APK", fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+                        }
+                    }
+                } else if (isBinaryFile) {
+                    val sizeKb = String.format(java.util.Locale.US, "%.1f KB", currentFile.length() / 1024.0)
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(24.dp),
+                        ) {
+                            Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
+                            Text(currentFile.name, fontWeight = FontWeight.Bold, fontSize = 14.sp, textAlign = TextAlign.Center)
+                            Text("Binary file · $sizeKb", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            OutlinedButton(
+                                onClick = {
+                                    pendingDownloadSingleRelPath = rel
+                                    saveSingleFileLauncher.launch(currentFile.name)
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("ดาวน์โหลดไฟล์")
+                            }
+                        }
+                    }
+                } else if (isImageFile) {
+                    val bmp by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
+                        initialValue = null,
+                        key1 = currentFile.absolutePath,
+                    ) {
+                        value = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                android.graphics.BitmapFactory.decodeFile(currentFile.absolutePath, bounds)
+                                var sample = 1
+                                while ((bounds.outWidth / sample) > 1280 || (bounds.outHeight / sample) > 1280) {
+                                    sample *= 2
+                                }
+                                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                                android.graphics.BitmapFactory.decodeFile(currentFile.absolutePath, opts)?.asImageBitmap()
+                            }.getOrNull()
+                        }
                     }
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         if (bmp != null) {
                             androidx.compose.foundation.Image(
-                                bitmap = bmp.asImageBitmap(),
+                                bitmap = bmp!!,
                                 contentDescription = currentFile.name,
                                 modifier = Modifier.fillMaxSize().padding(8.dp),
                             )
                         } else {
-                            Text("Unable to decode image", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
                         }
                     }
                 } else {
-                    if (savedBanner) {
-                        Text("Saved", color = Color(0xFF16A34A), fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 6.dp))
+                    var isEditMode by remember(rel) { mutableStateOf(false) }
+                    val isMd = remember(currentFile.name) { isMarkdownFileName(currentFile.name) }
+                    val langBadge = remember(currentFile.name) { detectFileLanguageBadge(currentFile.name) }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                            ) {
+                                Text(
+                                    text = langBadge,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                )
+                            }
+                            if (savedBanner) {
+                                Text("บันทึกแล้ว", color = OrqenSemanticColors.Success, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant),
+                        ) {
+                            Row(Modifier.padding(2.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (!isEditMode) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    modifier = Modifier.clickable { isEditMode = false },
+                                ) {
+                                    Text(
+                                        text = "อ่านสวยๆ",
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (!isEditMode) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isEditMode) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    modifier = Modifier.clickable { isEditMode = true },
+                                ) {
+                                    Text(
+                                        text = "แก้ไข",
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isEditMode) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    )
+                                }
+                            }
+                        }
                     }
-                    OutlinedTextField(
-                        value = fileContent,
-                        onValueChange = { fileContent = it; savedBanner = false },
-                        textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                        modifier = Modifier.fillMaxSize(),
-                    )
+
+                    if (isEditMode) {
+                        OutlinedTextField(
+                            value = fileContent,
+                            onValueChange = { fileContent = it; savedBanner = false },
+                            textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else if (isMd) {
+                        FormattedMarkdownDocumentView(
+                            markdown = fileContent,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        SyntaxHighlightedCodeView(
+                            code = fileContent,
+                            fileName = currentFile.name,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                 }
             }
         }
@@ -796,17 +1069,13 @@ private fun TeamFilesTab(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                modifier = Modifier.padding(top = 6.dp),
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
+                windowInsets = WindowInsets(0, 0, 0, 0),
                 title = {
                     Column {
-                        Text("$projectName · ${stringResource(R.string.tab_files)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("$projectName · ${stringResource(R.string.tab_files)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text("$totalVisibleCount items", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
@@ -853,24 +1122,28 @@ private fun TeamFilesTab(
             if (q.isBlank()) visibleNodes
             else visibleNodes.filter { it.name.contains(q, ignoreCase = true) || it.relPath.contains(q, ignoreCase = true) }
         }
-        val deliverables = remember(workspaceDir, refreshTick) {
-            val found = mutableListOf<File>()
-            val overviewPlan = File(workspaceDir, ".orqen/plan/overview.md")
-            if (overviewPlan.isFile) found += overviewPlan
-            val verifReport = File(workspaceDir, ".orqen/reports/verification_report.md")
-            if (verifReport.isFile) found += verifReport
-            val apkRoot = File(workspaceDir, "app/build/outputs/apk")
-            if (apkRoot.isDirectory) {
-                apkRoot.walkTopDown()
-                    .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) && it.length() > 0L }
-                    .take(3)
-                    .forEach { found += it }
+        var deliverables by remember(workspaceDir) { mutableStateOf<List<File>>(emptyList()) }
+        LaunchedEffect(workspaceDir, refreshTick) {
+            deliverables = withContext(Dispatchers.IO) {
+                val found = mutableListOf<File>()
+                val overviewPlan = File(workspaceDir, ".orqen/plan/overview.md")
+                if (overviewPlan.isFile) found += overviewPlan
+                val verifReport = File(workspaceDir, ".orqen/reports/verification_report.md")
+                if (verifReport.isFile) found += verifReport
+                val apkRoot = File(workspaceDir, "app/build/outputs/apk")
+                if (apkRoot.isDirectory) {
+                    apkRoot.walkTopDown()
+                        .maxDepth(4)
+                        .filter { it.isFile && it.extension.equals("apk", ignoreCase = true) && it.length() > 0L }
+                        .take(3)
+                        .forEach { found += it }
+                }
+                workspaceDir.listFiles()
+                    ?.filter { it.isFile && it.extension.lowercase() in setOf("apk", "zip") && it.length() > 0L }
+                    ?.take(3)
+                    ?.forEach { found += it }
+                found.distinctBy { it.canonicalPath }
             }
-            workspaceDir.listFiles()
-                ?.filter { it.isFile && it.extension.lowercase() in setOf("apk", "zip") && it.length() > 0L }
-                ?.take(3)
-                ?.forEach { found += it }
-            found.distinctBy { it.canonicalPath }
         }
         Column(Modifier.fillMaxSize().padding(pad)) {
             OutlinedTextField(
@@ -913,11 +1186,28 @@ private fun TeamFilesTab(
                                     if (isApk) Icons.Default.Android else Icons.Default.Download,
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp),
-                                    tint = if (isApk) Color(0xFF10B981) else PocketOrange,
+                                    tint = if (isApk) OrqenSemanticColors.Success else PocketOrange,
                                 )
                             },
-                            label = { Text(if (isApk) "Install ${del.name}" else del.name, fontSize = 11.sp) },
+                            label = { Text(if (isApk) "ติดตั้ง ${del.name}" else del.name, fontSize = 11.sp) },
                         )
+                        if (isApk) {
+                            AssistChip(
+                                onClick = {
+                                    pendingDownloadSingleRelPath = rel
+                                    saveSingleFileLauncher.launch(del.name)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Download,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = PocketOrange,
+                                    )
+                                },
+                                label = { Text("ดาวน์โหลด ${del.name}", fontSize = 11.sp) },
+                            )
+                        }
                     }
                 }
             }
@@ -974,8 +1264,7 @@ private fun TeamFilesTab(
                                         }
                                     } else {
                                         highlightedFilePath = node.relPath
-                                        val isImg = node.file.extension.lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
-                                        fileContent = if (isImg) "" else runCatching { node.file.readText().take(200_000) }.getOrDefault("")
+                                        fileContent = ""
                                         selectedFile = node.file
                                         savedBanner = false
                                     }
@@ -1081,8 +1370,7 @@ private fun TeamFilesTab(
                                                         if (!isExpanded) expandedDirs = expandedDirs + node.relPath
                                                     } else {
                                                         highlightedFilePath = node.relPath
-                                                        val isImg = node.file.extension.lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
-                                                        fileContent = if (isImg) "" else runCatching { node.file.readText().take(200_000) }.getOrDefault("")
+                                                        fileContent = ""
                                                         selectedFile = node.file
                                                         savedBanner = false
                                                     }
@@ -1105,8 +1393,7 @@ private fun TeamFilesTab(
                                                     onClick = {
                                                         rowMenuExpanded = false
                                                         highlightedFilePath = node.relPath
-                                                        val isImg = node.file.extension.lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif", "bmp")
-                                                        fileContent = if (isImg) "" else runCatching { node.file.readText().take(200_000) }.getOrDefault("")
+                                                        fileContent = ""
                                                         selectedFile = node.file
                                                         savedBanner = false
                                                     },
@@ -1182,20 +1469,16 @@ private fun TeamTerminalTab(
     var cmdInput by remember { mutableStateOf("") }
     var selectedSubTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Terminal, 1 = Log
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                modifier = Modifier.padding(top = 6.dp),
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
+                windowInsets = WindowInsets(0, 0, 0, 0),
                 title = {
                     Column {
                         Text(
                             text = if (selectedSubTab == 0) "$projectName · ${stringResource(R.string.tab_terminal)}" else "$projectName · Log",
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.SemiBold,
                         )
                         Text(
                             text = if (selectedSubTab == 0) "/workspace/$projectSlug" else "${collaborationEvents.size} Real-time collaboration events",
@@ -1262,7 +1545,7 @@ private fun TeamTerminalTab(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF0D1117),
+                        color = OrqenObsidian,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     ) {
                         Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
@@ -1360,56 +1643,76 @@ private fun TeamDualPreviewTab(
         label = "liveDotAlpha",
     )
 
-    val indexHtmlFile = remember(workspaceDir, reloadNonce, workspaceFingerprint) {
-        listOf(
-            File(workspaceDir, "index.html"),
-            File(workspaceDir, "public/index.html"),
-            File(workspaceDir, "dist/index.html"),
-            File(workspaceDir, "build/index.html"),
-            File(workspaceDir, "web/index.html"),
-            File(workspaceDir, "src/index.html"),
-        ).firstOrNull { it.isFile }
-            ?: workspaceDir.walkTopDown()
-                .maxDepth(4)
-                .onEnter { dir -> dir.name !in setOf(".git", "node_modules", ".gradle") }
-                .firstOrNull { it.isFile && it.extension.equals("html", ignoreCase = true) }
+    // Move ALL Preview filesystem scans off the Main UI Thread to eliminate ANR on fast tab switches!
+    var indexHtmlFile by remember(workspaceDir) { mutableStateOf<File?>(null) }
+    var detectedAppScreens by remember(workspaceDir) { mutableStateOf<List<String>>(emptyList()) }
+    var builtApkFile by remember(workspaceDir) { mutableStateOf<File?>(null) }
+
+    LaunchedEffect(workspaceDir, reloadNonce, workspaceFingerprint) {
+        val (foundHtml, foundScreens, foundApk) = withContext(Dispatchers.IO) {
+            val html = listOf(
+                File(workspaceDir, "index.html"),
+                File(workspaceDir, "public/index.html"),
+                File(workspaceDir, "dist/index.html"),
+                File(workspaceDir, "build/index.html"),
+                File(workspaceDir, "web/index.html"),
+                File(workspaceDir, "src/index.html"),
+            ).firstOrNull { it.isFile }
+                ?: workspaceDir.walkTopDown()
+                    .maxDepth(4)
+                    .onEnter { dir -> dir.name !in setOf(".git", "node_modules", ".gradle", "build") }
+                    .firstOrNull { it.isFile && it.extension.equals("html", ignoreCase = true) }
+
+            val screens = workspaceDir.walkTopDown()
+                .maxDepth(7)
+                .onEnter { dir -> dir.name !in setOf(".git", "node_modules", ".gradle", "build") }
+                .filter {
+                    it.isFile &&
+                        (it.name.endsWith("Screen.kt") ||
+                            it.name.endsWith("Activity.kt") ||
+                            it.name.endsWith("App.kt") ||
+                            (it.path.contains("/res/layout/") && it.name.endsWith(".xml")))
+                }
+                .map { it.relativeTo(workspaceDir).path }
+                .take(40)
+                .toList()
+
+            val apkRoot = File(workspaceDir, "app/build/outputs/apk")
+            val apk = if (apkRoot.isDirectory) {
+                apkRoot.walkTopDown().maxDepth(4).firstOrNull { it.isFile && it.name.endsWith(".apk") }
+            } else {
+                workspaceDir.walkTopDown()
+                    .maxDepth(5)
+                    .onEnter { dir -> dir.name !in setOf(".git", "node_modules", ".gradle") }
+                    .firstOrNull { it.isFile && it.name.endsWith(".apk") }
+            }
+            Triple(html, screens, apk)
+        }
+        indexHtmlFile = foundHtml
+        detectedAppScreens = foundScreens
+        builtApkFile = foundApk
     }
 
-    // Automatic local HTTP server hosting for Web Projects (http://127.0.0.1:<port>)
+    // Automatic local HTTP server hosting for Web Projects (started/stopped safely off main thread!)
     val webServeRoot = remember(indexHtmlFile, workspaceDir) {
         indexHtmlFile?.parentFile ?: workspaceDir
     }
     var localHostedUrl by remember(webServeRoot) { mutableStateOf("") }
-    DisposableEffect(webServeRoot, indexHtmlFile != null) {
+    LaunchedEffect(webServeRoot, indexHtmlFile != null) {
         if (indexHtmlFile == null) {
             localHostedUrl = ""
-            onDispose {}
-        } else {
-            val server = com.jarves.mh.runtime.LocalWorkspaceWebServer(webServeRoot)
-            val startedUrl = runCatching { server.start() }.getOrDefault("")
-            localHostedUrl = startedUrl
-            onDispose {
+            return@LaunchedEffect
+        }
+        val server = com.jarves.mh.runtime.LocalWorkspaceWebServer(webServeRoot)
+        try {
+            localHostedUrl = withContext(Dispatchers.IO) { runCatching { server.start() }.getOrDefault("") }
+            kotlinx.coroutines.awaitCancellation()
+        } finally {
+            localHostedUrl = ""
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
                 runCatching { server.close() }
-                localHostedUrl = ""
             }
         }
-    }
-
-    val detectedAppScreens = remember(workspaceDir, reloadNonce) {
-        workspaceDir.walkTopDown()
-            .maxDepth(7)
-            .filter {
-                it.isFile &&
-                    !it.path.contains("/.git/") &&
-                    !it.path.contains("/build/") &&
-                    (it.name.endsWith("Screen.kt") ||
-                        it.name.endsWith("Activity.kt") ||
-                        it.name.endsWith("App.kt") ||
-                        (it.path.contains("/res/layout/") && it.name.endsWith(".xml")))
-            }
-            .map { it.relativeTo(workspaceDir).path }
-            .take(40)
-            .toList()
     }
 
     LaunchedEffect(detectedAppScreens) {
@@ -1420,28 +1723,29 @@ private fun TeamDualPreviewTab(
         }
     }
 
-    val parsedWidgets = remember(workspaceDir, selectedScreenPath, reloadNonce) {
-        val rel = selectedScreenPath ?: return@remember emptyList()
-        val file = File(workspaceDir, rel)
-        if (!file.isFile) emptyList() else parseAppScreenWidgets(file)
-    }
-
-    val builtApkFile = remember(workspaceDir, reloadNonce) {
-        workspaceDir.walkTopDown()
-            .maxDepth(6)
-            .firstOrNull { it.isFile && it.name.endsWith(".apk") }
+    val parsedWidgets by produceState<List<ParsedUiWidget>>(
+        initialValue = emptyList(),
+        key1 = workspaceDir,
+        key2 = selectedScreenPath,
+        key3 = reloadNonce,
+    ) {
+        val rel = selectedScreenPath
+        value = if (rel == null) {
+            emptyList()
+        } else {
+            withContext(Dispatchers.IO) {
+                val file = File(workspaceDir, rel)
+                if (!file.isFile) emptyList() else parseAppScreenWidgets(file)
+            }
+        }
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                modifier = Modifier.padding(top = 6.dp),
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                title = { Text("$projectName · ${stringResource(R.string.tab_preview)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) },
+                windowInsets = WindowInsets(0, 0, 0, 0),
+                title = { Text("$projectName · ${stringResource(R.string.tab_preview)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold) },
                 actions = {
                     IconButton(onClick = {
                         reloadNonce++
@@ -1491,11 +1795,11 @@ private fun TeamDualPreviewTab(
 
             // Real-Time Live Hot-Reload Status Bar
             Surface(
-                color = if (liveReloadEnabled) Color(0xFF16A34A).copy(alpha = 0.10f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                color = if (liveReloadEnabled) OrqenSemanticColors.Success.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                 shape = RoundedCornerShape(10.dp),
                 border = BorderStroke(
                     1.dp,
-                    if (liveReloadEnabled) Color(0xFF16A34A).copy(alpha = 0.35f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                    if (liveReloadEnabled) OrqenSemanticColors.Success.copy(alpha = 0.35f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                 ),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
             ) {
@@ -1509,7 +1813,7 @@ private fun TeamDualPreviewTab(
                             .size(8.dp)
                             .clip(CircleShape)
                             .background(
-                                if (liveReloadEnabled) Color(0xFF16A34A).copy(alpha = liveDotAlpha)
+                                if (liveReloadEnabled) OrqenSemanticColors.Success.copy(alpha = liveDotAlpha)
                                 else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             ),
                     )
@@ -1518,7 +1822,7 @@ private fun TeamDualPreviewTab(
                             text = if (liveReloadEnabled) stringResource(R.string.team_preview_live_on) else stringResource(R.string.team_preview_live_paused),
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (liveReloadEnabled) Color(0xFF16A34A) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (liveReloadEnabled) OrqenSemanticColors.Success else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
                             text = if (lastSyncedTime != null) {
@@ -1567,7 +1871,7 @@ private fun TeamDualPreviewTab(
                             Text(
                                 text = when {
                                     localHostedUrl.isNotBlank() -> "Local Host: $localHostedUrl"
-                                    indexHtmlFile != null -> "Auto: ${indexHtmlFile.name} (or http://127.0.0.1:3000)"
+                                    indexHtmlFile != null -> "Auto: ${indexHtmlFile?.name.orEmpty()} (or http://127.0.0.1:3000)"
                                     else -> "http://127.0.0.1:3000"
                                 },
                                 fontSize = 11.sp,
@@ -1628,7 +1932,7 @@ private fun TeamDualPreviewTab(
                             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                                 Surface(
                                     shape = RoundedCornerShape(30.dp),
-                                    color = Color(0xFF070A0D),
+                                    color = OrqenObsidian,
                                     border = BorderStroke(2.5.dp, PocketOrange.copy(alpha = 0.65f)),
                                     shadowElevation = 8.dp,
                                     modifier = Modifier
@@ -1641,7 +1945,7 @@ private fun TeamDualPreviewTab(
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .background(Color(0xFF0B1016))
+                                                .background(OrqenSurface)
                                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1696,10 +2000,11 @@ private fun TeamDualPreviewTab(
                                     Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = PocketOrange)
                                     Column(Modifier.weight(1f)) {
                                         Text(stringResource(R.string.team_preview_app_title), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                        val apkSnapshot = builtApkFile
                                         Text(
-                                            text = if (builtApkFile != null) "APK Ready: ${builtApkFile.name}" else stringResource(R.string.team_preview_app_screens_count, detectedAppScreens.size),
+                                            text = if (apkSnapshot != null) "APK Ready: ${apkSnapshot.name}" else stringResource(R.string.team_preview_app_screens_count, detectedAppScreens.size),
                                             fontSize = 11.sp,
-                                            color = if (builtApkFile != null) Color(0xFF16A34A) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            color = if (apkSnapshot != null) OrqenSemanticColors.Success else MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
                                 }

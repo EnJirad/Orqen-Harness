@@ -98,8 +98,11 @@ fun CentralGroupChatScreen(
     onClearChat: (() -> Unit)? = null,
     hasGitRemote: Boolean = false,
     gitPushRunning: Boolean = false,
+    parallelSwarmEnabled: Boolean = true,
+    onToggleParallelSwarm: ((Boolean) -> Unit)? = null,
     onPushToGit: ((gitUrl: String?, apiKey: String?) -> Unit)? = null,
     onInstallApk: ((String) -> Unit)? = null,
+    onDownloadApk: ((String) -> Unit)? = null,
     onOpenPreview: (() -> Unit)? = null,
     onOpenFile: ((String) -> Unit)? = null,
     draftConversationKey: String = "",
@@ -107,6 +110,7 @@ fun CentralGroupChatScreen(
     onDraftTextChanged: (String) -> Unit = {},
     onStartImplementation: (() -> Unit)? = null,
     onCancelThinkingAgent: (AgentSlot) -> Unit = {},
+    showBackButton: Boolean = true,
     onSendMessageWithImages: ((text: String, type: GroupMessageType, targetSlot: AgentSlot?, imageUris: List<Uri>) -> Unit)? = null,
     onSendMessage: (text: String, type: GroupMessageType, targetSlot: AgentSlot?) -> Unit,
     onBack: () -> Unit,
@@ -343,7 +347,7 @@ fun CentralGroupChatScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                modifier = Modifier.padding(top = 6.dp),
+                windowInsets = WindowInsets(0, 0, 0, 0),
                 title = {
                     Column {
                         Text("$teamName · ${stringResource(R.string.team_group_chat)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -351,8 +355,10 @@ fun CentralGroupChatScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    if (showBackButton) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 },
                 actions = {
@@ -394,7 +400,7 @@ fun CentralGroupChatScreen(
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
     ) { padding ->
@@ -549,7 +555,7 @@ fun CentralGroupChatScreen(
                                             else -> Icon(
                                                 imageVector = AgentIconCatalog.iconFor(agent.config),
                                                 contentDescription = null,
-                                                tint = if (!agent.config.isEnabled || act == ActivityType.PAUSED) Color(0xFFF59E0B) else accent,
+                                                tint = if (!agent.config.isEnabled || act == ActivityType.PAUSED) Color(0xFFA88F5E) else accent,
                                                 modifier = Modifier.size(13.dp),
                                             )
                                         }
@@ -569,6 +575,47 @@ fun CentralGroupChatScreen(
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.weight(1f),
                                         )
+                                    }
+                                }
+                                if (onToggleParallelSwarm != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                                        border = BorderStroke(0.75.dp, MaterialTheme.colorScheme.outlineVariant),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { onToggleParallelSwarm(!parallelSwarmEnabled) },
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Groups,
+                                                contentDescription = null,
+                                                tint = if (parallelSwarmEnabled) OrqenSemanticColors.Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(15.dp),
+                                            )
+                                            Text(
+                                                text = "Parallel Swarm: ${if (parallelSwarmEnabled) "เปิด (ทำพร้อมกันทุกตัว)" else "ปิด (ทำตามลำดับ)"}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.weight(1f),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(7.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        if (parallelSwarmEnabled) OrqenSemanticColors.Success
+                                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                                    ),
+                                            )
+                                        }
                                     }
                                 }
                                 if (hasIssueDetail) {
@@ -660,6 +707,7 @@ fun CentralGroupChatScreen(
                         senderIcon = senderAgent?.let { AgentIconCatalog.iconFor(it.config) },
                         onOpenFile = onOpenFile,
                         onInstallApk = onInstallApk,
+                        onDownloadApk = onDownloadApk,
                         onOpenPreview = onOpenPreview,
                         onSendAsTask = { taskPrompt ->
                             pendingUserSendScroll = true
@@ -681,6 +729,7 @@ fun CentralGroupChatScreen(
                             agentSlot = streamingAgentSlot,
                             agentIcon = streamAgent?.let { AgentIconCatalog.iconFor(it.config) },
                             text = streamingText,
+                            onStop = streamingAgentSlot?.let { slot -> { onCancelThinkingAgent(slot) } },
                         )
                     }
                 }
@@ -756,8 +805,7 @@ fun CentralGroupChatScreen(
 
             // Input Bar
             Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 3.dp,
+                color = MaterialTheme.colorScheme.background,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(12.dp)) {
@@ -983,8 +1031,8 @@ fun CentralGroupChatScreen(
                             onClick = { showUploadSheet = true },
                             modifier = Modifier
                                 .size(40.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)),
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
                         ) {
                             Icon(
                                 imageVector = Icons.Default.AttachFile,
@@ -1032,9 +1080,9 @@ fun CentralGroupChatScreen(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.background)
-                                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .border(0.8.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(22.dp))
                                 .padding(horizontal = 14.dp, vertical = 11.dp),
                         ) {
                             if (inputValue.text.isEmpty()) {
@@ -1082,11 +1130,11 @@ fun CentralGroupChatScreen(
                             enabled = canSend,
                             modifier = Modifier
                                 .size(42.dp)
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(CircleShape)
                                 .background(if (canSend) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
                         ) {
                             Icon(
-                                Icons.AutoMirrored.Filled.Send,
+                                Icons.Default.ArrowUpward,
                                 contentDescription = "Send",
                                 tint = if (canSend) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(18.dp),
@@ -1145,10 +1193,10 @@ internal fun BouncingWaveDots(
  * which AI agent is speaking, typing, or working in Group Chat.
  */
 internal fun agentAccentColor(slot: AgentSlot?): Color = when (slot) {
-    AgentSlot.AGENT_1 -> Color(0xFF10B981) // Emerald Mint (Supervisor)
-    AgentSlot.AGENT_2 -> Color(0xFF6B80A8) // Muted Slate Blue
-    AgentSlot.AGENT_3 -> Color(0xFFA78BFA) // Violet Purple
-    AgentSlot.AGENT_4 -> Color(0xFFF59E0B) // Amber Gold
+    AgentSlot.AGENT_1 -> Color(0xFFB8B8B8) // Light gray (Supervisor)
+    AgentSlot.AGENT_2 -> Color(0xFF9A9A9A) // Mid gray
+    AgentSlot.AGENT_3 -> Color(0xFF8A8F96) // Cool gray
+    AgentSlot.AGENT_4 -> Color(0xFF96908A) // Warm gray
     null -> OrqenMint
 }
 
@@ -1185,6 +1233,7 @@ private fun AiStreamingBubble(
     agentSlot: AgentSlot? = null,
     agentIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     text: String,
+    onStop: (() -> Unit)? = null,
 ) {
     val accent = agentAccentColor(agentSlot)
     Column(
@@ -1217,12 +1266,29 @@ private fun AiStreamingBubble(
                 color = accent,
             )
             ThinkingPulseSpark(color = accent, size = 12.dp)
+            if (onStop != null) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.16f),
+                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.55f)),
+                    modifier = Modifier.size(22.dp).clickable(onClick = onStop),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.Stop,
+                            contentDescription = "หยุด",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(13.dp),
+                        )
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(4.dp))
         Column(
             modifier = Modifier
                 .widthIn(max = 315.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(14.dp))
                 .background(MaterialTheme.colorScheme.surface)
                 .background(accent.copy(alpha = 0.10f))
                 .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -1252,13 +1318,14 @@ private fun AiTypingWaveBubble(
         horizontalAlignment = Alignment.Start,
     ) {
         Surface(
-            shape = RoundedCornerShape(8.dp),
+            shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(0.8.dp, accent.copy(alpha = 0.28f)),
         ) {
             Row(
                 modifier = Modifier
-                    .background(accent.copy(alpha = 0.10f))
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                    .background(accent.copy(alpha = 0.08f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
@@ -1291,29 +1358,19 @@ private fun AiTypingWaveBubble(
                     color = accent.copy(alpha = 0.9f),
                 )
                 if (onCancel != null) {
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(2.dp))
                     Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
-                        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
-                        modifier = Modifier.clickable(onClick = onCancel),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.16f),
+                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f)),
+                        modifier = Modifier.size(24.dp).clickable(onClick = onCancel),
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
+                        Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Cancel",
+                                imageVector = Icons.Default.Stop,
+                                contentDescription = "หยุด",
                                 tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(12.dp),
-                            )
-                            Text(
-                                text = "ยกเลิก",
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(14.dp),
                             )
                         }
                     }
@@ -1461,6 +1518,7 @@ fun GroupChatBubble(
     senderIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     onOpenFile: ((String) -> Unit)? = null,
     onInstallApk: ((String) -> Unit)? = null,
+    onDownloadApk: ((String) -> Unit)? = null,
     onOpenPreview: (() -> Unit)? = null,
     onSendAsTask: ((String) -> Unit)? = null,
 ) {
@@ -1659,15 +1717,20 @@ fun GroupChatBubble(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     items(message.imagePaths) { imgPath ->
-                        val bmp = remember(imgPath) {
-                            runCatching {
-                                val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-                                BitmapFactory.decodeFile(imgPath, opts)?.asImageBitmap()
-                            }.getOrNull()
+                        val bmp by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
+                            initialValue = null,
+                            key1 = imgPath,
+                        ) {
+                            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                runCatching {
+                                    val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+                                    BitmapFactory.decodeFile(imgPath, opts)?.asImageBitmap()
+                                }.getOrNull()
+                            }
                         }
                         if (bmp != null) {
                             Image(
-                                bitmap = bmp,
+                                bitmap = bmp!!,
                                 contentDescription = "Uploaded reference image",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
@@ -1720,14 +1783,16 @@ fun GroupChatBubble(
             val apkPath = message.apkFilePath?.takeIf { it.isNotBlank() }
             if (apkPath != null && onInstallApk != null) {
                 val apkFile = remember(apkPath) { java.io.File(apkPath) }
-                val apkSizeMb = remember(apkPath) {
-                    val bytes = runCatching { apkFile.length() }.getOrDefault(0L)
-                    if (bytes > 0L) String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0)) else "APK"
+                val apkSizeMb by produceState(initialValue = "APK", key1 = apkPath) {
+                    value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        val bytes = runCatching { apkFile.length() }.getOrDefault(0L)
+                        if (bytes > 0L) String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0)) else "APK"
+                    }
                 }
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = Color(0xFF10B981).copy(alpha = 0.14f),
-                    border = BorderStroke(1.2.dp, Color(0xFF10B981).copy(alpha = 0.65f)),
+                    color = Color(0xFF6B8F78).copy(alpha = 0.14f),
+                    border = BorderStroke(1.2.dp, Color(0xFF6B8F78).copy(alpha = 0.65f)),
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                 ) {
                     Column(
@@ -1741,7 +1806,7 @@ fun GroupChatBubble(
                             Icon(
                                 imageVector = Icons.Default.Android,
                                 contentDescription = "APK",
-                                tint = Color(0xFF10B981),
+                                tint = Color(0xFF6B8F78),
                                 modifier = Modifier.size(22.dp),
                             )
                             Column(Modifier.weight(1f)) {
@@ -1756,19 +1821,38 @@ fun GroupChatBubble(
                                 Text(
                                     text = "$apkSizeMb · พร้อมติดตั้งลงเครื่องทันที",
                                     fontSize = 10.5.sp,
-                                    color = Color(0xFF10B981),
+                                    color = Color(0xFF6B8F78),
                                 )
                             }
                         }
-                        Button(
-                            onClick = { onInstallApk(apkPath) },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
-                            shape = RoundedCornerShape(10.dp),
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
-                            Spacer(Modifier.width(6.dp))
-                            Text("ดาวน์โหลดและติดตั้ง APK", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                            Button(
+                                onClick = { onInstallApk(apkPath) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6B8F78)),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Icon(Icons.Default.Android, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                                Spacer(Modifier.width(5.dp))
+                                Text("ติดตั้งทันที", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+                            }
+                            if (onDownloadApk != null) {
+                                Button(
+                                    onClick = { onDownloadApk(apkPath) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A)),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                                    Spacer(Modifier.width(5.dp))
+                                    Text("ดาวน์โหลด", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+                                }
+                            }
                         }
                     }
                 }
@@ -2096,12 +2180,12 @@ fun TypeSelectorChip(
 }
 
 fun getMessageTypeColor(type: GroupMessageType): Color = when (type) {
-    GroupMessageType.TASK_ASSIGNMENT -> Color(0xFF1976D2) // Blue
-    GroupMessageType.PROGRESS_UPDATE -> Color(0xFF388E3C) // Green
-    GroupMessageType.COMPLETION_REPORT -> Color(0xFF2E7D32)
-    GroupMessageType.BUG_REPORT -> Color(0xFFD32F2F) // Red
-    GroupMessageType.REVIEW_REQUEST -> Color(0xFFF57C00) // Orange
-    GroupMessageType.APPROVAL -> Color(0xFF7B1FA2) // Purple
-    GroupMessageType.SYSTEM -> Color(0xFF616161)
-    GroupMessageType.NORMAL -> Color(0xFF757575)
+    GroupMessageType.TASK_ASSIGNMENT -> Color(0xFF8C8C8C)
+    GroupMessageType.PROGRESS_UPDATE -> Color(0xFF7F8F84)
+    GroupMessageType.COMPLETION_REPORT -> Color(0xFF6B8F78)
+    GroupMessageType.BUG_REPORT -> Color(0xFFB56666)
+    GroupMessageType.REVIEW_REQUEST -> Color(0xFFA88F5E)
+    GroupMessageType.APPROVAL -> Color(0xFF8A8A8A)
+    GroupMessageType.SYSTEM -> Color(0xFF707070)
+    GroupMessageType.NORMAL -> Color(0xFF7A7A7A)
 }

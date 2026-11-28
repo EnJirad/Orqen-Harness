@@ -124,12 +124,16 @@ object TaskContextBuilder {
                 }
                 if (!step.requiresReview && peerCoders.isNotEmpty()) {
                     appendLine()
-                    appendLine("## Parallel Multi-Coder Collaboration Protocol")
-                    appendLine("- Multiple coding agents are dividing this project to finish faster:")
+                    appendLine("## Parallel Multi-Coder Collaboration Protocol (FAST SWARM)")
+                    appendLine("- Multiple AI agents are building this project simultaneously on disjoint modules:")
                     peerCoders.take(4).forEach { peer ->
                         appendLine("  - ${peer.assignedAgentId} owns #${peer.sequenceNumber} '${peer.title}'")
                     }
-                    appendLine("- Inspect current workspace files first, build your assigned scope cleanly without duplicating teammate work, and coordinate shared contracts via `[MSG to=<agentId>]`.")
+                    appendLine("- STRICT CONTRACT & OWNERSHIP RULES:")
+                    appendLine("  1. Stay strictly within your assigned module/files so you NEVER overwrite a teammate's files.")
+                    appendLine("  2. Inspect existing workspace packages, models, and interfaces first so all imports, class names, and function signatures match cleanly.")
+                    appendLine("  3. If you expose a class/function for another module, keep its signature clean and broadcast it via `[MSG to=<agentId>]`.")
+                    appendLine("  4. If you are on the final Integration/Verification step, wire all modules together, fix any import/signature mismatch, and run build/tests until 100% green.")
                 }
                 appendLine()
             }

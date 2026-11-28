@@ -47,12 +47,21 @@ object AndroidAppInstaller {
         }
         if (isMiuiDevice()) {
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", apk)
-            context.startActivity(
-                Intent(Intent.ACTION_INSTALL_PACKAGE, uri).apply {
-                    setDataAndType(uri, "application/vnd.android.package-archive")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                },
-            )
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching {
+                context.startActivity(viewIntent)
+            }.onFailure {
+                @Suppress("DEPRECATION")
+                context.startActivity(
+                    Intent(Intent.ACTION_INSTALL_PACKAGE, uri).apply {
+                        setDataAndType(uri, "application/vnd.android.package-archive")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
+            }
             return operationId
         }
         val installer = context.packageManager.packageInstaller

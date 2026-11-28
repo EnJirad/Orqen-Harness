@@ -83,6 +83,8 @@ fun TeamDashboardScreen(
     continuousConfig: ContinuousExecutionConfig = ContinuousExecutionConfig(),
     autoPushGitEnabled: Boolean = false,
     onToggleAutoPushGit: (Boolean) -> Unit = {},
+    parallelSwarmEnabled: Boolean = true,
+    onToggleParallelSwarm: (Boolean) -> Unit = {},
     isTeamRunning: Boolean,
     runningTeamProjectId: String? = null,
     runningTeamProjectName: String? = null,
@@ -360,20 +362,16 @@ fun TeamDashboardScreen(
     val isLockedByOtherProject = runningTeamProjectId != null && runningTeamProjectId != activeProject?.id
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
-                modifier = Modifier.padding(top = 8.dp),
-                navigationIcon = {
-                    IconButton(onClick = onBackToProjects) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to folders")
-                    }
-                },
+                windowInsets = WindowInsets(0, 0, 0, 0),
                 title = {
                     Column {
                         Text(
                             text = teamName.ifBlank { stringResource(R.string.team_workspace_title) },
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -388,15 +386,15 @@ fun TeamDashboardScreen(
                 },
                 actions = {
                     Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = if (isTeamRunning) Color(0xFF2E7D32) else MaterialTheme.colorScheme.outlineVariant,
+                        shape = RoundedCornerShape(999.dp),
+                        color = if (isTeamRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.padding(end = 12.dp),
                     ) {
                         Text(
                             text = if (isTeamRunning) "ACTIVE" else "IDLE",
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
+                            color = if (isTeamRunning) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                         )
                     }
@@ -501,7 +499,7 @@ fun TeamDashboardScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, tint = OrqenSemanticColors.Success, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(10.dp))
                             Column {
                                 Text(
@@ -524,13 +522,60 @@ fun TeamDashboardScreen(
                 }
             }
 
+            // 1.6 Parallel Swarm Mode Toggle Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp)),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            Icon(
+                                imageVector = Icons.Default.Groups,
+                                contentDescription = null,
+                                tint = if (parallelSwarmEnabled) OrqenSemanticColors.Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "โหมด AI ทุกตัวช่วยกันทำพร้อมกัน (Parallel Swarm)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Text(
+                                    text = if (parallelSwarmEnabled) {
+                                        "เปิดใช้งาน — แยกโมดูลให้ AI หลายตัวช่วยกันเขียนโค้ดพร้อมกัน"
+                                    } else {
+                                        "ปิดใช้งาน — ให้ AI ทำงานตามลำดับขั้นตอนปกติ"
+                                    },
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = parallelSwarmEnabled,
+                            onCheckedChange = onToggleParallelSwarm,
+                        )
+                    }
+                }
+            }
+
             // 2. Control Panel (with Single-Project Lock + Prominent Group Chat Command Button)
             if (isLockedByOtherProject) {
                 item {
                     Surface(
                         shape = RoundedCornerShape(14.dp),
-                        color = Color(0xFFF59E0B).copy(alpha = 0.14f),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.45f)),
+                        color = OrqenSemanticColors.Warning.copy(alpha = 0.14f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, OrqenSemanticColors.Warning.copy(alpha = 0.45f)),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -538,7 +583,7 @@ fun TeamDashboardScreen(
                                 text = stringResource(R.string.team_locked_by_other_project, runningTeamProjectName ?: ""),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFFD97706),
+                                color = OrqenSemanticColors.Warning,
                             )
                             OutlinedButton(
                                 onClick = onJumpToRunningProject,
@@ -889,9 +934,9 @@ fun AgentCard(
                         )
                         Spacer(Modifier.height(4.dp))
                         val (connColor, connText) = when (connectionLevel) {
-                            2 -> Color(0xFF22C55E) to (connectionDetail?.let { "${stringResource(R.string.conn_status_connected)} · $it" } ?: stringResource(R.string.conn_status_connected))
-                            1 -> Color(0xFFF59E0B) to if (connectionLoading) stringResource(R.string.conn_status_connecting) else stringResource(R.string.conn_status_waiting_network)
-                            else -> Color(0xFFEF4444) to stringResource(R.string.conn_status_disconnected)
+                            2 -> OrqenSemanticColors.Success to (connectionDetail?.let { "${stringResource(R.string.conn_status_connected)} · $it" } ?: stringResource(R.string.conn_status_connected))
+                            1 -> OrqenSemanticColors.Warning to if (connectionLoading) stringResource(R.string.conn_status_connecting) else stringResource(R.string.conn_status_waiting_network)
+                            else -> OrqenSemanticColors.Error to stringResource(R.string.conn_status_disconnected)
                         }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -1058,9 +1103,9 @@ fun QuotaMonitorCard(
                         val usedPct = ((1f - remaining) * 100).toInt()
                         val badgeColor = when {
                             !isAvail -> MaterialTheme.colorScheme.onSurfaceVariant
-                            remaining > 0.25f -> Color(0xFF16A34A)
-                            remaining > 0.12f -> Color(0xFFD97706)
-                            else -> Color(0xFFDC2626)
+                            remaining > 0.25f -> OrqenSemanticColors.Success
+                            remaining > 0.12f -> OrqenSemanticColors.Warning
+                            else -> OrqenSemanticColors.Error
                         }
 
                         Column(

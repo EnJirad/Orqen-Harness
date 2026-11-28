@@ -50,6 +50,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 enum class ManagerTab {
@@ -87,6 +89,8 @@ fun ManagerWorkspaceScreen(
     supervisorSnapshots: Map<String, SupervisorUiSnapshot>,
     isTeamRunning: Boolean,
     awaitingStartConfirmation: Boolean,
+    ownerName: String = "",
+    activeChatTargetSlots: Set<AgentSlot> = emptySet(),
     onSelectProject: (Project) -> Unit = {},
     onOpenAgentDetail: (AgentSlot) -> Unit = {},
     onOpenPlanFile: (String) -> Unit = {},
@@ -101,9 +105,25 @@ fun ManagerWorkspaceScreen(
     val activeSnapshot = activeSupervisedTaskId?.let { supervisorSnapshots[it] }
         ?: supervisorSnapshots.values.lastOrNull()
 
-    val multiPartPlan = remember(workspaceDir, activeSnapshot?.completedSteps, activeSnapshot?.status, isTeamRunning) {
-        MultiPartPlanManager.loadPlan(workspaceDir)
+    val planState by produceState<Pair<MultiPartExecutionPlan?, Set<String>>>(
+        initialValue = null to emptySet(),
+        key1 = workspaceDir,
+        key2 = activeSnapshot?.completedSteps,
+        key3 = isTeamRunning,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            val loaded = runCatching { MultiPartPlanManager.loadPlan(workspaceDir) }.getOrNull()
+            val reports = loaded?.parts
+                ?.mapNotNull { part ->
+                    if (File(workspaceDir, part.reportRelativePath).isFile) part.reportRelativePath else null
+                }
+                ?.toSet()
+                .orEmpty()
+            loaded to reports
+        }
     }
+    val multiPartPlan = planState.first
+    val existingReportPaths = planState.second
 
     val allDecisions = remember(supervisorSnapshots, activeSnapshot) {
         val combined = linkedMapOf<String, SupervisorDecisionRecord>()
@@ -146,7 +166,7 @@ fun ManagerWorkspaceScreen(
                         inspectedPart = null
                         onOpenPlanFile(part.specRelativePath)
                     }) { Text("เปิด Spec") }
-                    if (File(workspaceDir, part.reportRelativePath).isFile) {
+                    if (part.reportRelativePath in existingReportPaths) {
                         TextButton(onClick = {
                             inspectedPart = null
                             onOpenPlanFile(part.reportRelativePath)
@@ -189,6 +209,7 @@ fun ManagerWorkspaceScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             Column(
                 modifier = Modifier
@@ -196,18 +217,13 @@ fun ManagerWorkspaceScreen(
                     .background(MaterialTheme.colorScheme.surface),
             ) {
                 TopAppBar(
-                    modifier = Modifier.padding(top = 4.dp),
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    },
+                    windowInsets = WindowInsets(0, 0, 0, 0),
                     title = {
                         Column {
                             Text(
                                 text = stringResource(R.string.manager_title_fmt, project.name),
                                 style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
+                                fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -299,6 +315,8 @@ fun ManagerWorkspaceScreen(
                     collaborationEvents = collaborationEvents,
                     providerConfigs = providerConfigs,
                     isTeamRunning = isTeamRunning,
+                    ownerName = ownerName,
+                    activeChatTargetSlots = activeChatTargetSlots,
                     onSelectProject = onSelectProject,
                     onOpenAgentConfig = onOpenAgentDetail,
                 )
@@ -315,6 +333,20 @@ fun ManagerWorkspaceScreen(
 
 // ==================== TAB 1: STATUS (สถานะ) ====================
 
+private fun formatHumanRelativeTime(timestampMs: Long?): String {
+    if (timestampMs == null || timestampMs <= 0L) return "ยังไม่มีกิจกรรม"
+    val diffMs = (System.currentTimeMillis() - timestampMs).coerceAtLeast(0L)
+    val secs = diffMs / 1000L
+    val mins = secs / 60L
+    val hours = mins / 60L
+    return when {
+        secs < 45L -> "เมื่อสักครู่"
+        mins < 60L -> "$mins นาทีที่แล้ว"
+        hours < 24L -> "$hours ชม. ที่แล้ว"
+        else -> SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(timestampMs))
+    }
+}
+
 @Composable
 private fun ManagerStatusTab(
     agents: List<AgentState>,
@@ -329,7 +361,11 @@ private fun ManagerStatusTab(
     awaitingStartConfirmation: Boolean,
     onOpenAgentDetail: (AgentSlot) -> Unit,
 ) {
-    val timeFmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    val totalSteps = activeSnapshot?.totalSteps ?: tasks.size
+    val doneSteps = activeSnapshot?.completedSteps ?: tasks.count { it.status == com.jarves.mh.multiagent.tasks.TaskStatus.COMPLETED }
+    val workingCount = agents.count { it.isWorking }
+    val pendingSteps = (totalSteps - doneSteps - workingCount).coerceAtLeast(0)
+    val blockedCount = tasks.count { it.status == com.jarves.mh.multiagent.tasks.TaskStatus.BLOCKED || it.status == com.jarves.mh.multiagent.tasks.TaskStatus.FAILED }
 
     LazyColumn(
         modifier = Modifier
@@ -338,182 +374,106 @@ private fun ManagerStatusTab(
         contentPadding = PaddingValues(vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Section B: กำลังควบคุมและสั่งงานทีม (Manager Control Overview)
+        // Section 1: ภาพรวมงานและสถานะทีม (Human-readable Project Overview & Progress)
         item {
             OrqenSectionHeader(
-                title = stringResource(R.string.manager_section_control),
-                subtitle = activeSnapshot?.taskId ?: if (isTeamRunning) "Active Session" else "Standby",
+                title = "ภาพรวมโปรเจกต์และการสั่งงาน",
+                subtitle = if (isTeamRunning) "ทีมกำลังทำงาน" else "พร้อมรับคำสั่ง",
             )
         }
         item {
-            if (activeSnapshot == null) {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Default.Hub, contentDescription = null, tint = OrqenSemanticColors.Running)
-                            Text(
-                                text = if (awaitingStartConfirmation) "Manager กำลังรอยืนยันในแชทกลุ่ม" else "Manager พร้อมควบคุมทีม AI",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                            )
-                        }
-                        Text(
-                            text = if (awaitingStartConfirmation) {
-                                "Manager ตรวจพบงานค้างและส่งสรุปไปที่แชทกลุ่มแล้ว พิมพ์ยืนยันในแชทเพื่อเริ่มสั่งงานทีม"
-                            } else {
-                                "เมื่อคุณสั่งงานในแชทกลุ่ม Manager จะวางแผน มอบหมายงานให้ทีม (รวมถึงแบ่งเขียนโค้ดแบบขนานเมื่อมีหลายตัว) และติดตามผลแบบเรียลไทม์ที่นี่"
-                            },
-                            fontSize = 12.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            } else {
-                val (statusLabel, statusColor) = managerOperationalStatus(activeSnapshot.status)
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.2.dp, statusColor.copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (isTeamRunning && activeSnapshot.status != SupervisorOperationalStatus.COMPLETED) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = statusColor)
-                                } else {
-                                    Box(Modifier.size(10.dp).clip(CircleShape).background(statusColor))
-                                }
-                                Text(statusLabel, fontWeight = FontWeight.Bold, fontSize = 14.5.sp, color = statusColor)
-                            }
-                            OrqenStatusBadge(activeSnapshot.taskId, statusColor)
-                        }
-                        if (!activeSnapshot.activeAgentName.isNullOrBlank()) {
-                            Text(
-                                text = "ผู้รับมอบหมายปัจจุบัน: ${activeSnapshot.activeAgentName}",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text("กิจกรรมควบคุมล่าสุด", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(
-                                    text = activeSnapshot.statusDetail.ifBlank { "Manager กำลังประสานงานและตรวจสอบผลลัพธ์ของทีม" },
-                                    fontSize = 12.5.sp,
-                                )
-                            }
-                        }
-                    }
-                }
+            val (statusHeadline, statusColor) = when {
+                activeSnapshot != null -> managerOperationalStatus(activeSnapshot.status)
+                awaitingStartConfirmation -> "รอยืนยันเริ่มงานในแชท" to OrqenSemanticColors.Pending
+                isTeamRunning -> "ทีมกำลังทำงานอยู่" to OrqenSemanticColors.Running
+                else -> "พร้อมรับคำสั่งใหม่" to OrqenSemanticColors.Success
             }
-        }
-
-        // Section C: ความคืบหน้าของงาน (Real Task Progress — zero mock percentages)
-        item {
-            OrqenSectionHeader(title = stringResource(R.string.manager_section_progress))
-        }
-        item {
-            val totalSteps = activeSnapshot?.totalSteps ?: tasks.size
-            val doneSteps = activeSnapshot?.completedSteps ?: tasks.count { it.status == com.jarves.mh.multiagent.tasks.TaskStatus.COMPLETED }
-            val inProgressCount = agents.count { it.isWorking }
-            val pendingSteps = (totalSteps - doneSteps - inProgressCount).coerceAtLeast(0)
-            val blockedCount = tasks.count { it.status == com.jarves.mh.multiagent.tasks.TaskStatus.BLOCKED || it.status == com.jarves.mh.multiagent.tasks.TaskStatus.FAILED }
-
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                border = BorderStroke(1.2.dp, statusColor.copy(alpha = 0.45f)),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (!activeSnapshot?.activeStepTitle.isNullOrBlank()) {
-                        Text(
-                            text = "งานปัจจุบัน: ${activeSnapshot!!.activeStepTitle}",
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (isTeamRunning && activeSnapshot?.status != SupervisorOperationalStatus.COMPLETED) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = statusColor)
+                            } else {
+                                Box(Modifier.size(10.dp).clip(CircleShape).background(statusColor))
+                            }
+                            Text(statusHeadline, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = statusColor)
+                        }
+                        if (totalSteps > 0) {
+                            val pct = ((doneSteps.toFloat() / totalSteps.toFloat()).coerceIn(0f, 1f) * 100f).roundToInt()
+                            OrqenStatusBadge("$doneSteps/$totalSteps ($pct%)", statusColor)
+                        }
                     }
+
+                    // Plain-language summary of what the team is currently doing
+                    val currentHeadline = when {
+                        !activeSnapshot?.activeStepTitle.isNullOrBlank() -> activeSnapshot!!.activeStepTitle
+                        !activeSnapshot?.statusDetail.isNullOrBlank() -> activeSnapshot!!.statusDetail
+                        awaitingStartConfirmation -> "Manager สรุปแผนงานไว้ในแชทแล้ว พิมพ์ยืนยันเพื่อเริ่มลงมือทำ"
+                        else -> "สั่งงานในแชทกลุ่มเพื่อให้ Manager วางแผนและกระจายงานให้ทีม AI"
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                text = if (!activeSnapshot?.activeAgentName.isNullOrBlank()) {
+                                    "กำลังดำเนินการโดย: ${activeSnapshot!!.activeAgentName}"
+                                } else {
+                                    "สถานะล่าสุด"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = currentHeadline,
+                                fontSize = 12.5.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+
                     if (totalSteps > 0) {
                         val ratio = (doneSteps.toFloat() / totalSteps.toFloat()).coerceIn(0f, 1f)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                        ) {
-                            Text("เสร็จแล้ว $doneSteps จาก $totalSteps ขั้นตอน", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
-                            Text("${(ratio * 100f).roundToInt()}%", fontSize = 12.5.sp, fontWeight = FontWeight.Bold, color = OrqenSemanticColors.Running)
-                        }
                         LinearProgressIndicator(
                             progress = { ratio },
                             modifier = Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(4.dp)),
-                            color = OrqenSemanticColors.Running,
-                        )
-                    } else {
-                        Text(
-                            text = "ยังไม่มีขั้นตอนที่เริ่มรันในรอบนี้",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = statusColor,
                         )
                     }
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         OrqenMetricPill("เสร็จแล้ว", "$doneSteps", OrqenSemanticColors.Success, Modifier.weight(1f))
-                        OrqenMetricPill("กำลังทำ", "$inProgressCount", OrqenSemanticColors.Running, Modifier.weight(1f))
-                        OrqenMetricPill("รอดำเนินการ", "$pendingSteps", OrqenSemanticColors.Pending, Modifier.weight(1f))
+                        OrqenMetricPill("กำลังทำ", "$workingCount", OrqenSemanticColors.Running, Modifier.weight(1f))
+                        OrqenMetricPill("รอคิว", "$pendingSteps", OrqenSemanticColors.Pending, Modifier.weight(1f))
                         if (blockedCount > 0) {
                             OrqenMetricPill("ติดปัญหา", "$blockedCount", OrqenSemanticColors.Error, Modifier.weight(1f))
-                        }
-                    }
-
-                    if (collaborationEvents.isNotEmpty()) {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                        Text("กิจกรรมล่าสุดของทีม", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        collaborationEvents.takeLast(3).reversed().forEach { ev ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    text = ev.event.message.ifBlank { ev.event.type.name },
-                                    fontSize = 11.5.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Text(
-                                    text = timeFmt.format(Date(ev.event.timestamp)),
-                                    fontSize = 10.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
                         }
                     }
                 }
             }
         }
 
-        // Section A: สถานะสมาชิก (All AI Agents in Team)
+        // Section 2: สถานะสมาชิกทีม AI (Clear Human-Friendly Member Cards)
         item {
             OrqenSectionHeader(
-                title = stringResource(R.string.manager_section_members),
-                subtitle = "${agents.count { it.isWorking }} กำลังทำงาน · ${agents.size} สมาชิก",
+                title = "สถานะสมาชิกทีม AI",
+                subtitle = "$workingCount กำลังทำงาน · ${agents.size} คน",
             )
         }
         items(agents, key = { it.config.slot.id }) { agent ->
@@ -528,69 +488,205 @@ private fun ManagerStatusTab(
             val (statusLabel, statusColor, statusIcon) = resolveAgentRealtimeStatus(agent, healthRec?.healthState, isConnected)
             val providerLabel = providerCfg?.name ?: agent.config.providerId.ifBlank { "Antigravity" }
             val modelLabel = healthRec?.modelId?.takeIf { it.isNotBlank() } ?: agent.config.modelId.ifBlank { "Default" }
-            val taskText = agent.activityState.currentTask.ifBlank { agent.activityState.lastAction }
+
+            val currentWork = agent.activityState.currentTask
                 .takeIf { it.isNotBlank() && !it.equals("Idle", ignoreCase = true) }
-                ?: stringResource(agent.activityState.activity.labelRes)
-            val updatedAt = healthRec?.lastActivityAtMs?.takeIf { it > 0L }?.let { timeFmt.format(Date(it)) } ?: "-"
+                ?: if (agent.isWorking) stringResource(agent.activityState.activity.labelRes) else "พักรอรับคำสั่ง"
+
+            val hasIssue = agent.activityState.activity == ActivityType.ERROR ||
+                healthRec?.healthState in setOf(AgentHealthState.PROVIDER_ERROR, AgentHealthState.TIMEOUT, AgentHealthState.UNAVAILABLE) ||
+                !isConnected
+            val recentHealthErr = healthRec?.recentProviderErrors?.lastOrNull()?.takeIf { it.isNotBlank() }
+            val issueOrLastNote = when {
+                !isConnected -> "ยังไม่เชื่อมต่อบัญชีหรือ API Key (แตะเพื่อตั้งค่า)"
+                recentHealthErr != null -> "ปัญหาล่าสุด: $recentHealthErr"
+                agent.activityState.activity == ActivityType.ERROR -> "เกิดข้อผิดพลาดในการทำงานล่าสุด"
+                agent.activityState.lastAction.isNotBlank() && !agent.activityState.lastAction.equals("Idle", ignoreCase = true) ->
+                    "งานล่าสุด: ${agent.activityState.lastAction}"
+                else -> "สถานะปกติ · พร้อมรับงาน"
+            }
+            val lastSeenLabel = formatHumanRelativeTime(healthRec?.lastActivityAtMs)
 
             Card(
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, accent.copy(alpha = 0.45f)),
+                border = BorderStroke(
+                    1.dp,
+                    if (hasIssue) OrqenSemanticColors.Error.copy(alpha = 0.55f) else accent.copy(alpha = 0.4f),
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { onOpenAgentDetail(agent.config.slot) },
             ) {
-                Row(
+                Column(
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Agent3DOrbAvatar(
-                        icon = AgentIconCatalog.iconFor(agent.config),
-                        accent = accent,
-                        sizeDp = 38.dp,
-                    )
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(agent.config.name, fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    // Header row: Avatar + Name/Role + Status badge
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Agent3DOrbAvatar(
+                            icon = AgentIconCatalog.iconFor(agent.config),
+                            accent = accent,
+                            sizeDp = 38.dp,
+                        )
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text(
+                                text = agent.config.name,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = accent,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = "${agent.config.role.title} · $providerLabel ($modelLabel)",
+                                fontSize = 10.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = statusColor.copy(alpha = 0.14f),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Icon(statusIcon, contentDescription = null, tint = statusColor, modifier = Modifier.size(13.dp))
+                                Text(statusLabel, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = statusColor)
+                            }
+                        }
+                    }
+
+                    // Human-readable 2-row detail block: What they are doing & Any issue/last note
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("กำลังทำ:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    text = currentWork,
+                                    fontSize = 11.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = if (hasIssue) "ปัญหา:" else "บันทึก:",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (hasIssue) OrqenSemanticColors.Error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Text(
+                                    text = issueOrLastNote,
+                                    fontSize = 11.sp,
+                                    color = if (hasIssue) OrqenSemanticColors.Error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+
+                    // Footer row: Connection status + Last seen relative time
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                             Box(
                                 modifier = Modifier
                                     .size(7.dp)
                                     .clip(CircleShape)
                                     .background(if (isConnected) OrqenSemanticColors.Success else OrqenSemanticColors.Error),
                             )
+                            Text(
+                                text = if (isConnected) "เชื่อมต่อแล้ว" else "ยังไม่เชื่อมต่อ",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isConnected) OrqenSemanticColors.Success else OrqenSemanticColors.Error,
+                            )
                         }
                         Text(
-                            text = "$providerLabel · $modelLabel",
+                            text = "อัปเดตล่าสุด: $lastSeenLabel",
                             fontSize = 10.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            text = taskText,
-                            fontSize = 11.5.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            text = "การเชื่อมต่อ: ${if (isConnected) "เชื่อมต่อแล้ว" else "ยังไม่เชื่อมต่อ"} · อัปเดต: $updatedAt",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
                         )
                     }
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = statusColor.copy(alpha = 0.14f),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Icon(statusIcon, contentDescription = null, tint = statusColor, modifier = Modifier.size(13.dp))
-                            Text(statusLabel, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = statusColor)
+                }
+            }
+        }
+
+        // Section 3: กิจกรรมล่าสุดของทีม (Cleanly Separated Recent Team Activity)
+        if (collaborationEvents.isNotEmpty()) {
+            item {
+                OrqenSectionHeader(
+                    title = "กิจกรรมล่าสุดของทีม",
+                    subtitle = "${collaborationEvents.size} รายการ",
+                )
+            }
+            item {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        collaborationEvents.takeLast(5).reversed().forEachIndexed { idx, ev ->
+                            val senderLabel = ev.event.senderSlot?.let { slot ->
+                                agents.firstOrNull { it.config.slot == slot }?.config?.name ?: slot.id
+                            } ?: "Team"
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.Top,
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                                ) {
+                                    Text(
+                                        text = senderLabel,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        maxLines = 1,
+                                    )
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = ev.event.message.ifBlank { ev.event.type.name },
+                                        fontSize = 11.5.sp,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = formatHumanRelativeTime(ev.event.timestamp),
+                                        fontSize = 9.5.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            if (idx < minOf(collaborationEvents.size, 5) - 1) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                            }
                         }
                     }
                 }
@@ -854,11 +950,16 @@ private fun PlanPartCard(
                     onClick = { onOpenPlanFile(part.specRelativePath) },
                     contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                 ) { Text("View Spec", fontSize = 10.5.sp) }
-                if (File(workspaceDir, part.reportRelativePath).isFile) {
-                    TextButton(
-                        onClick = { onOpenPlanFile(part.reportRelativePath) },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                    ) { Text("View Report", fontSize = 10.5.sp) }
+                if (part.reportRelativePath.isNotBlank()) {
+                    val hasReport by produceState(initialValue = false, workspaceDir, part.reportRelativePath) {
+                        value = withContext(Dispatchers.IO) { File(workspaceDir, part.reportRelativePath).isFile }
+                    }
+                    if (hasReport) {
+                        TextButton(
+                            onClick = { onOpenPlanFile(part.reportRelativePath) },
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                        ) { Text("View Report", fontSize = 10.5.sp) }
+                    }
                 }
             }
         }
@@ -981,16 +1082,16 @@ private fun DecisionRecordCard(
 // ==================== SHARED HELPERS ====================
 
 private fun managerOperationalStatus(status: SupervisorOperationalStatus): Pair<String, Color> = when (status) {
-    SupervisorOperationalStatus.PLANNING -> "กำลังวิเคราะห์และวางแผนงาน" to Color(0xFF3B82F6)
-    SupervisorOperationalStatus.SUPERVISING -> "กำลังควบคุมและสั่งงานทีม" to Color(0xFF16A34A)
+    SupervisorOperationalStatus.PLANNING -> "กำลังวิเคราะห์และวางแผนงาน" to OrqenSemanticColors.Info
+    SupervisorOperationalStatus.SUPERVISING -> "กำลังควบคุมและสั่งงานทีม" to OrqenSemanticColors.Success
     SupervisorOperationalStatus.VERIFYING -> "กำลังตรวจสอบคุณภาพและผลทดสอบ" to OrqenSemanticColors.Info
-    SupervisorOperationalStatus.RECOVERING -> "กำลังกู้คืนขั้นตอนอัตโนมัติ" to Color(0xFFF59E0B)
-    SupervisorOperationalStatus.REASSIGNING -> "กำลังสลับมอบหมายงานให้เอเจนต์สำรอง" to Color(0xFFF59E0B)
-    SupervisorOperationalStatus.COMPLETED -> "ทำงานเสร็จสมบูรณ์แล้ว" to Color(0xFF10B981)
-    SupervisorOperationalStatus.PAUSED -> "พักการทำงานชั่วคราว" to Color(0xFFF59E0B)
-    SupervisorOperationalStatus.BLOCKED -> "รอการแก้ไขหรือคำสั่งเพิ่มเติม" to Color(0xFFDC2626)
-    SupervisorOperationalStatus.CANCELLED -> "ยกเลิกงานแล้ว" to Color(0xFF64748B)
-    SupervisorOperationalStatus.IDLE -> "พร้อมรับคำสั่ง" to Color(0xFF64748B)
+    SupervisorOperationalStatus.RECOVERING -> "กำลังกู้คืนขั้นตอนอัตโนมัติ" to OrqenSemanticColors.Warning
+    SupervisorOperationalStatus.REASSIGNING -> "กำลังสลับมอบหมายงานให้เอเจนต์สำรอง" to OrqenSemanticColors.Warning
+    SupervisorOperationalStatus.COMPLETED -> "ทำงานเสร็จสมบูรณ์แล้ว" to OrqenSemanticColors.Success
+    SupervisorOperationalStatus.PAUSED -> "พักการทำงานชั่วคราว" to OrqenSemanticColors.Warning
+    SupervisorOperationalStatus.BLOCKED -> "รอการแก้ไขหรือคำสั่งเพิ่มเติม" to OrqenSemanticColors.Error
+    SupervisorOperationalStatus.CANCELLED -> "ยกเลิกงานแล้ว" to OrqenSemanticColors.Neutral
+    SupervisorOperationalStatus.IDLE -> "พร้อมรับคำสั่ง" to OrqenSemanticColors.Neutral
 }
 
 private fun resolveAgentRealtimeStatus(
@@ -1005,13 +1106,13 @@ private fun resolveAgentRealtimeStatus(
         health in setOf(AgentHealthState.PROVIDER_ERROR, AgentHealthState.TIMEOUT) ->
         Triple("Error", OrqenSemanticColors.Error, Icons.Default.ErrorOutline)
     agent.isWorking || health == AgentHealthState.BUSY -> when (agent.activityState.activity) {
-        ActivityType.PLANNING -> Triple("Planning", Color(0xFF3B82F6), Icons.Default.Psychology)
+        ActivityType.PLANNING -> Triple("Planning", OrqenSemanticColors.Info, Icons.Default.Psychology)
         ActivityType.REVIEWING, ActivityType.TESTING -> Triple("Working", OrqenSemanticColors.Running, Icons.Default.Verified)
         else -> Triple("Working", OrqenSemanticColors.Running, Icons.Default.PlayArrow)
     }
     agent.activityState.activity == ActivityType.COMPLETED -> Triple("Completed", OrqenSemanticColors.Success, Icons.Default.CheckCircle)
     agent.activityState.activity == ActivityType.WAITING -> Triple("Waiting", OrqenSemanticColors.Pending, Icons.Default.Schedule)
-    else -> Triple("Idle", Color(0xFF3B82F6), Icons.Default.RadioButtonChecked)
+    else -> Triple("Idle", OrqenSemanticColors.Neutral, Icons.Default.RadioButtonChecked)
 }
 
 private fun partStatusColor(status: ExecutionPartStatus): Color = when (status) {

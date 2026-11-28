@@ -98,6 +98,7 @@ class ManagerWorkspaceAndParallelCoderTest {
         )
 
         assertEquals(1, graph.nodes.count { it.type == UniverseNodeType.PROJECT })
+        assertEquals(1, graph.nodes.count { it.type == UniverseNodeType.OWNER })
         assertEquals(3, graph.nodes.count { it.type == UniverseNodeType.AGENT })
         // Parallel coders should have an active AGENT_AGENT sync edge
         assertTrue(graph.edges.any { it.type == UniverseEdgeType.AGENT_AGENT && it.hasLiveFlow })
@@ -108,7 +109,7 @@ class ManagerWorkspaceAndParallelCoderTest {
         // Verify 3D projection, hit testing, and camera transforms
         val cam = UniverseCamera.Default.rotated(0.25f, -0.1f).zoomed(1.2f).panned(12f, -8f)
         val projected = Universe3DProjector.projectNodes(graph.nodes, cam, 1080f, 1920f, is2DFallback = false)
-        assertEquals(4, projected.size)
+        assertEquals(5, projected.size)
         val topNode = projected.last()
         val hit = Universe3DProjector.hitTest(projected, topNode.screenX, topNode.screenY)
         assertNotNull(hit)

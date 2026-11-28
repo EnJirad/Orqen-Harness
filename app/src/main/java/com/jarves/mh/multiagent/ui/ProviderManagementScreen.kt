@@ -71,7 +71,7 @@ fun ProviderManagementScreen(
         topBar = {
             if (!embedded) {
                 TopAppBar(
-                    modifier = Modifier.padding(top = 4.dp),
+                    windowInsets = WindowInsets(0, 0, 0, 0),
                     title = {
                         Column {
                             Text(stringResource(R.string.provider_mgmt_title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)

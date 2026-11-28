@@ -89,6 +89,8 @@ fun AiUniverse3DScreen(
     collaborationEvents: List<PrioritizedCollaborationEvent>,
     providerConfigs: List<ProviderConfig>,
     isTeamRunning: Boolean,
+    ownerName: String = "",
+    activeChatTargetSlots: Set<AgentSlot> = emptySet(),
     onSelectProject: (Project) -> Unit = {},
     onOpenAgentConfig: (AgentSlot) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -115,7 +117,7 @@ fun AiUniverse3DScreen(
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var animPhase by remember { mutableFloatStateOf(0f) }
 
-    val graph = remember(activeProject, allProjects, agents, activeSnapshot, collaborationEvents, isTeamRunning) {
+    val graph = remember(activeProject, allProjects, agents, activeSnapshot, collaborationEvents, isTeamRunning, ownerName, activeChatTargetSlots) {
         UniverseGraphBuilder.buildFromRuntime(
             activeProject = activeProject,
             allTeamProjects = allProjects,
@@ -123,6 +125,8 @@ fun AiUniverse3DScreen(
             activeSnapshot = activeSnapshot,
             collaborationEvents = collaborationEvents,
             isTeamRunning = isTeamRunning,
+            ownerName = ownerName,
+            activeChatTargetSlots = activeChatTargetSlots,
         )
     }
 
@@ -290,32 +294,42 @@ fun AiUniverse3DScreen(
                     val w = size.width
                     val h = size.height
 
-                    // 1. Subtle deep-space nebulae
+                    // 1. Multi-layer deep-space nebulae (cosmic blue, amethyst, subtle golden dust)
                     drawCircle(
                         brush = Brush.radialGradient(
-                            colors = listOf(Color(0xFF1D4ED8).copy(alpha = 0.16f), Color.Transparent),
-                            center = Offset(w * 0.25f - camera.yawRad * 26f, h * 0.28f - camera.pitchRad * 18f),
-                            radius = minOf(w, h) * 0.58f,
+                            colors = listOf(Color(0xFF0EA5E9).copy(alpha = 0.16f), Color(0xFF1D4ED8).copy(alpha = 0.08f), Color.Transparent),
+                            center = Offset(w * 0.24f - camera.yawRad * 26f, h * 0.26f - camera.pitchRad * 18f),
+                            radius = minOf(w, h) * 0.62f,
                         ),
-                        center = Offset(w * 0.25f - camera.yawRad * 26f, h * 0.28f - camera.pitchRad * 18f),
-                        radius = minOf(w, h) * 0.58f,
+                        center = Offset(w * 0.24f - camera.yawRad * 26f, h * 0.26f - camera.pitchRad * 18f),
+                        radius = minOf(w, h) * 0.62f,
                     )
                     drawCircle(
                         brush = Brush.radialGradient(
-                            colors = listOf(Color(0xFF7C3AED).copy(alpha = 0.14f), Color.Transparent),
+                            colors = listOf(Color(0xFF7C3AED).copy(alpha = 0.16f), Color(0xFF4F46E5).copy(alpha = 0.06f), Color.Transparent),
                             center = Offset(w * 0.78f + camera.yawRad * 22f, h * 0.68f + camera.pitchRad * 16f),
-                            radius = minOf(w, h) * 0.52f,
+                            radius = minOf(w, h) * 0.56f,
                         ),
                         center = Offset(w * 0.78f + camera.yawRad * 22f, h * 0.68f + camera.pitchRad * 16f),
-                        radius = minOf(w, h) * 0.52f,
+                        radius = minOf(w, h) * 0.56f,
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Color(0xFFF59E0B).copy(alpha = 0.09f), Color.Transparent),
+                            center = Offset(w * 0.52f - camera.yawRad * 14f, h * 0.22f + camera.pitchRad * 12f),
+                            radius = minOf(w, h) * 0.42f,
+                        ),
+                        center = Offset(w * 0.52f - camera.yawRad * 14f, h * 0.22f + camera.pitchRad * 12f),
+                        radius = minOf(w, h) * 0.42f,
                     )
 
-                    // 2. Parallax background starfield
-                    backgroundStars.forEach { star ->
+                    // 2. Twinkling parallax background starfield
+                    backgroundStars.forEachIndexed { idx, star ->
                         val px = ((star.nx * w - camera.yawRad * 45f * star.depth) % w + w) % w
                         val py = ((star.ny * h - camera.pitchRad * 35f * star.depth) % h + h) % h
+                        val twinkle = 0.72f + 0.28f * sin(animPhase * 2.2f + idx * 0.9f)
                         drawCircle(
-                            color = Color(0xFFE2E8F0).copy(alpha = star.alpha),
+                            color = Color(0xFFE2E8F0).copy(alpha = (star.alpha * twinkle).coerceIn(0.08f, 0.9f)),
                             radius = star.radiusPx,
                             center = Offset(px, py),
                         )
@@ -323,9 +337,9 @@ fun AiUniverse3DScreen(
 
                     // 3. Orbital guide ring around the active project
                     if (activeProject != null && agents.isNotEmpty()) {
-                        val orbitRadius = if (agents.size <= 2) 1.75f else 1.98f
+                        val orbitRadius = if (agents.size <= 2) 1.72f else 1.95f
                         val ringPath = Path()
-                        val segments = 48
+                        val segments = 56
                         for (s in 0..segments) {
                             val theta = (s.toFloat() / segments) * (2f * PI.toFloat())
                             val pt = Vec3(cos(theta) * orbitRadius, 0f, sin(theta) * orbitRadius)
@@ -334,29 +348,39 @@ fun AiUniverse3DScreen(
                         }
                         drawPath(
                             path = ringPath,
-                            color = Color(0xFF38BDF8).copy(alpha = 0.14f),
-                            style = Stroke(width = 1.2f),
+                            color = Color(0xFF38BDF8).copy(alpha = 0.16f),
+                            style = Stroke(width = 1.3f),
                         )
                     }
 
-                    // 4. Thin energy connections & real-event directional particles
+                    // 4. Energy connections & real-event directional plasma particles
                     graph.edges.forEachIndexed { edgeIdx, edge ->
                         val from = projectedById[edge.fromId] ?: return@forEachIndexed
                         val to = projectedById[edge.toId] ?: return@forEachIndexed
                         val baseColor = when (edge.type) {
+                            UniverseEdgeType.OWNER_AGENT -> Color(0xFFFBBF24)
                             UniverseEdgeType.PROJECT_AGENT -> Color(to.node.accentColorArgb)
                             UniverseEdgeType.MANAGER_AGENT -> Color(0xFFF59E0B)
                             UniverseEdgeType.AGENT_AGENT -> Color(0xFF38BDF8)
                         }
-                        val lineAlpha = if (edge.hasLiveFlow) 0.52f else 0.18f
-                        val strokeW = if (edge.hasLiveFlow) 2.2f else 1.1f
+                        val lineAlpha = when {
+                            edge.type == UniverseEdgeType.OWNER_AGENT && edge.hasLiveFlow -> 0.82f
+                            edge.hasLiveFlow -> 0.56f
+                            edge.type == UniverseEdgeType.OWNER_AGENT -> 0.32f
+                            else -> 0.16f
+                        }
+                        val strokeW = when {
+                            edge.type == UniverseEdgeType.OWNER_AGENT && edge.hasLiveFlow -> 2.8f
+                            edge.hasLiveFlow -> 2.2f
+                            else -> 1.1f
+                        }
 
                         drawLine(
                             brush = Brush.linearGradient(
                                 colors = listOf(
-                                    baseColor.copy(alpha = lineAlpha * 0.55f),
+                                    baseColor.copy(alpha = lineAlpha * 0.6f),
                                     baseColor.copy(alpha = lineAlpha),
-                                    Color(to.node.accentColorArgb).copy(alpha = lineAlpha * 0.7f),
+                                    Color(to.node.accentColorArgb).copy(alpha = lineAlpha * 0.75f),
                                 ),
                                 start = Offset(from.screenX, from.screenY),
                                 end = Offset(to.screenX, to.screenY),
@@ -367,50 +391,62 @@ fun AiUniverse3DScreen(
                             cap = StrokeCap.Round,
                         )
 
-                        // Real-event directional particles ONLY when edge.hasLiveFlow is true (max 3 per edge)
+                        // Real-event directional particles ONLY when edge.hasLiveFlow is true
                         if (edge.hasLiveFlow) {
-                            val particleCount = 3
+                            val particleCount = if (edge.type == UniverseEdgeType.OWNER_AGENT) 4 else 3
                             for (p in 0 until particleCount) {
-                                val t = ((animPhase * 0.65f + (p.toFloat() / particleCount) + edgeIdx * 0.17f) % 1f)
+                                val t = ((animPhase * 0.68f + (p.toFloat() / particleCount) + edgeIdx * 0.17f) % 1f)
                                 val px = from.screenX + (to.screenX - from.screenX) * t
                                 val py = from.screenY + (to.screenY - from.screenY) * t
-                                // Soft glowing trail
-                                val trailT = (t - 0.07f).coerceAtLeast(0f)
+                                val trailT = (t - 0.08f).coerceAtLeast(0f)
                                 val tx = from.screenX + (to.screenX - from.screenX) * trailT
                                 val ty = from.screenY + (to.screenY - from.screenY) * trailT
                                 drawLine(
-                                    color = baseColor.copy(alpha = 0.45f),
+                                    color = baseColor.copy(alpha = 0.55f),
                                     start = Offset(tx, ty),
                                     end = Offset(px, py),
-                                    strokeWidth = 3.2f,
+                                    strokeWidth = if (edge.type == UniverseEdgeType.OWNER_AGENT) 4.0f else 3.2f,
                                     cap = StrokeCap.Round,
                                 )
                                 drawCircle(
-                                    color = Color.White.copy(alpha = 0.92f),
-                                    radius = 3.4f,
+                                    color = if (edge.type == UniverseEdgeType.OWNER_AGENT) Color(0xFFFEF3C7) else Color.White.copy(alpha = 0.94f),
+                                    radius = if (edge.type == UniverseEdgeType.OWNER_AGENT) 3.8f else 3.2f,
                                     center = Offset(px, py),
                                 )
                             }
                         }
                     }
 
-                    // 5. Glowing 3D Spherical Nodes (sorted back-to-front for true 3D depth)
+                    // 5. Glowing 3D Planets & Stars (sorted back-to-front for true 3D depth)
                     projectedNodes.forEach { pn ->
                         val node = pn.node
                         val accent = Color(node.accentColorArgb)
                         val center = Offset(pn.screenX, pn.screenY)
+                        val isDistantOther = node.type == UniverseNodeType.PROJECT && !node.isCurrentProject
                         val pulse = if (node.isActive) {
-                            1f + 0.12f * sin(animPhase * 4.2f + pn.depthZ)
+                            1f + 0.10f * sin(animPhase * 3.8f + pn.depthZ)
                         } else 1f
                         val isSelected = selectedNodeId == node.id
 
-                        // Outer atmospheric halo
-                        val haloRadius = pn.screenRadius * (if (isSelected) 2.55f else 2.05f) * pulse
+                        // Multi-layer atmospheric corona
+                        val haloRadius = pn.screenRadius * (
+                            when {
+                                isSelected -> 2.75f
+                                node.type == UniverseNodeType.OWNER -> 2.45f
+                                isDistantOther -> 1.55f
+                                else -> 2.15f
+                            }
+                            ) * pulse
                         drawCircle(
                             brush = Brush.radialGradient(
                                 colors = listOf(
-                                    accent.copy(alpha = if (node.isActive || isSelected) 0.42f else 0.22f),
-                                    accent.copy(alpha = 0.06f),
+                                    accent.copy(alpha = when {
+                                        isDistantOther -> 0.14f
+                                        node.type == UniverseNodeType.OWNER || isSelected -> 0.48f
+                                        node.isActive -> 0.40f
+                                        else -> 0.22f
+                                    }),
+                                    accent.copy(alpha = if (isDistantOther) 0.03f else 0.09f),
                                     Color.Transparent,
                                 ),
                                 center = center,
@@ -420,67 +456,97 @@ fun AiUniverse3DScreen(
                             radius = haloRadius,
                         )
 
-                        // Tilted orbital ring on Project nodes or active/selected Agent nodes
-                        if (node.type == UniverseNodeType.PROJECT || node.isActive || isSelected) {
-                            val rx = pn.screenRadius * 1.55f
-                            val ry = pn.screenRadius * 0.54f
-                            val ringPath = Path()
-                            val segs = 28
-                            for (i in 0..segs) {
-                                val a = (i.toFloat() / segs) * (2f * PI.toFloat())
-                                val ox = center.x + cos(a) * rx
-                                val oy = center.y + sin(a) * ry
-                                if (i == 0) ringPath.moveTo(ox, oy) else ringPath.lineTo(ox, oy)
+                        // Tilted planetary rings on Active Project, Owner Star, or active/selected Agents
+                        if (!isDistantOther && (node.type == UniverseNodeType.PROJECT || node.type == UniverseNodeType.OWNER || node.isActive || isSelected)) {
+                            val ringCount = if (node.type == UniverseNodeType.OWNER || node.type == UniverseNodeType.PROJECT) 2 else 1
+                            for (rIdx in 0 until ringCount) {
+                                val mult = if (rIdx == 0) 1.58f else 1.88f
+                                val tilt = if (rIdx == 0) 0.48f else 0.34f
+                                val rx = pn.screenRadius * mult
+                                val ry = pn.screenRadius * tilt
+                                val ringPath = Path()
+                                val segs = 32
+                                for (i in 0..segs) {
+                                    val a = (i.toFloat() / segs) * (2f * PI.toFloat())
+                                    val ox = center.x + cos(a) * rx
+                                    val oy = center.y + sin(a) * ry
+                                    if (i == 0) ringPath.moveTo(ox, oy) else ringPath.lineTo(ox, oy)
+                                }
+                                drawPath(
+                                    path = ringPath,
+                                    color = accent.copy(alpha = if (isSelected) 0.78f else if (rIdx == 0) 0.46f else 0.24f),
+                                    style = Stroke(width = if (isSelected) 2.0f else if (rIdx == 0) 1.4f else 0.9f),
+                                )
                             }
-                            drawPath(
-                                path = ringPath,
-                                color = accent.copy(alpha = if (isSelected) 0.72f else 0.36f),
-                                style = Stroke(width = if (isSelected) 2f else 1.3f),
-                            )
                         }
 
-                        // 3D lit sphere with top-left specular highlight
+                        // 3D lit planet sphere with specular highlight + deep shadow limb
                         val highlightOffset = Offset(
-                            center.x - pn.screenRadius * 0.32f,
-                            center.y - pn.screenRadius * 0.32f,
+                            center.x - pn.screenRadius * 0.34f,
+                            center.y - pn.screenRadius * 0.34f,
                         )
                         drawCircle(
                             brush = Brush.radialGradient(
-                                colors = listOf(
-                                    Color.White.copy(alpha = 0.88f),
-                                    accent.copy(alpha = 0.95f),
-                                    accent.copy(alpha = 0.48f),
-                                    Color(0xFF060B18),
-                                ),
+                                colors = if (isDistantOther) {
+                                    listOf(
+                                        Color(0xFFCBD5E1).copy(alpha = 0.55f),
+                                        accent.copy(alpha = 0.55f),
+                                        Color(0xFF0B1120),
+                                    )
+                                } else {
+                                    listOf(
+                                        Color.White.copy(alpha = 0.94f),
+                                        accent.copy(alpha = 0.96f),
+                                        accent.copy(alpha = 0.52f),
+                                        Color(0xFF040814),
+                                    )
+                                },
                                 center = highlightOffset,
-                                radius = pn.screenRadius * 1.32f,
+                                radius = pn.screenRadius * 1.38f,
                             ),
                             center = center,
                             radius = pn.screenRadius,
                         )
 
+                        // Subtle inner specular sheen
+                        if (!isDistantOther) {
+                            drawCircle(
+                                color = Color.White.copy(alpha = 0.24f),
+                                radius = pn.screenRadius * 0.28f,
+                                center = Offset(center.x - pn.screenRadius * 0.32f, center.y - pn.screenRadius * 0.32f),
+                            )
+                        }
+
                         // Crisp rim / selection ring
                         drawCircle(
-                            color = if (node.isError) Color(0xFFEF4444) else if (isSelected) Color.White else accent.copy(alpha = 0.8f),
-                            radius = pn.screenRadius + if (isSelected) 2.5f else 0.5f,
+                            color = when {
+                                node.isError -> Color(0xFFEF4444)
+                                isSelected -> Color.White
+                                isDistantOther -> accent.copy(alpha = 0.45f)
+                                node.type == UniverseNodeType.OWNER -> Color(0xFFFEF08A)
+                                else -> accent.copy(alpha = 0.85f)
+                            },
+                            radius = pn.screenRadius + if (isSelected) 2.5f else 0.6f,
                             center = center,
-                            style = Stroke(width = if (isSelected) 2.4f else 1.1f),
+                            style = Stroke(width = if (isSelected) 2.4f else 1.2f),
                         )
                     }
                 }
 
-                // 6. Crisp role icons inside orbs + floating star labels
+                // 6. Crisp role icons inside orbs + compact clean floating star labels
                 val density = LocalDensity.current
                 projectedNodes.forEach { pn ->
                     val node = pn.node
                     val accent = Color(node.accentColorArgb)
+                    val isDistantOther = node.type == UniverseNodeType.PROJECT && !node.isCurrentProject
                     val matchedAgent = node.agentSlot?.let { slot -> agents.firstOrNull { it.config.slot == slot } }
                     val nodeIcon: ImageVector = when {
+                        node.type == UniverseNodeType.OWNER -> Icons.Default.Person
                         node.type == UniverseNodeType.PROJECT -> Icons.Default.Hub
                         matchedAgent != null -> AgentIconCatalog.iconFor(matchedAgent.config)
                         else -> Icons.Default.SmartToy
                     }
-                    val iconSizeDp = with(density) { (pn.screenRadius * 0.88f).coerceIn(14f, 28f).toDp() }
+                    val iconSizeDp = with(density) { (pn.screenRadius * 0.84f).coerceIn(11f, 26f).toDp() }
                     val iconOffsetPx = with(density) { (iconSizeDp / 2).toPx() }
 
                     Box(
@@ -497,47 +563,63 @@ fun AiUniverse3DScreen(
                         Icon(
                             imageVector = nodeIcon,
                             contentDescription = node.label,
-                            tint = Color.White,
+                            tint = if (isDistantOther) Color.White.copy(alpha = 0.65f) else Color.White,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
 
-                    // Label beneath orb
-                    val labelY = pn.screenY + pn.screenRadius + 8f
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                    // Compact single-line pill beneath orb (tap orb for full structured details)
+                    val labelY = pn.screenY + pn.screenRadius + 5f
+                    val pillWidthDp = if (isDistantOther) 82.dp else 94.dp
+                    Box(
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .offset {
                                 IntOffset(
-                                    (pn.screenX - 58.dp.toPx()).roundToInt(),
+                                    (pn.screenX - (pillWidthDp / 2).toPx()).roundToInt(),
                                     labelY.roundToInt(),
                                 )
                             }
-                            .width(116.dp),
+                            .width(pillWidthDp),
                     ) {
                         Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF070E22).copy(alpha = 0.78f),
-                            border = BorderStroke(0.6.dp, accent.copy(alpha = 0.45f)),
+                            shape = RoundedCornerShape(999.dp),
+                            color = Color(0xFF060C1D).copy(alpha = if (isDistantOther) 0.52f else 0.72f),
+                            border = BorderStroke(
+                                0.5.dp,
+                                if (node.isError) Color(0xFFEF4444).copy(alpha = 0.75f)
+                                else accent.copy(alpha = if (isDistantOther) 0.28f else 0.5f),
+                            ),
                         ) {
-                            Column(
+                            Row(
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
-                                Text(
-                                    text = node.label,
-                                    color = Color.White,
-                                    fontSize = if (node.type == UniverseNodeType.PROJECT) 11.sp else 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
+                                Box(
+                                    modifier = Modifier
+                                        .size(5.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            when {
+                                                node.isError -> Color(0xFFEF4444)
+                                                node.type == UniverseNodeType.OWNER -> Color(0xFF22C55E)
+                                                node.isActive -> accent
+                                                else -> accent.copy(alpha = 0.45f)
+                                            },
+                                        ),
                                 )
                                 Text(
-                                    text = node.statusLabel,
-                                    color = if (node.isError) Color(0xFFF87171) else accent,
-                                    fontSize = 8.5.sp,
+                                    text = node.label,
+                                    color = if (isDistantOther) Color(0xFF94A3B8) else Color.White,
+                                    fontSize = when {
+                                        isDistantOther -> 8.sp
+                                        node.type == UniverseNodeType.OWNER || node.type == UniverseNodeType.PROJECT -> 9.5.sp
+                                        else -> 9.sp
+                                    },
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                         }
@@ -634,6 +716,16 @@ fun AiUniverse3DScreen(
                             onOpenConfig = { onOpenAgentConfig(agent.config.slot) },
                         )
                     }
+                }
+                UniverseNodeType.OWNER -> {
+                    UniverseOwnerDetailPanel(
+                        node = node,
+                        activeProject = activeProject,
+                        agents = agents,
+                        activeChatTargetSlots = activeChatTargetSlots,
+                        isTeamRunning = isTeamRunning,
+                        onClose = { selectedNodeId = null },
+                    )
                 }
                 UniverseNodeType.PROJECT -> {
                     val proj = allProjects.firstOrNull { it.id == node.projectId } ?: activeProject
@@ -788,6 +880,61 @@ private fun UniverseAgentDetailPanel(
                 Spacer(Modifier.width(6.dp))
                 Text("ตั้งค่า Agent", color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             }
+        }
+    }
+}
+
+@Composable
+private fun UniverseOwnerDetailPanel(
+    node: UniverseNode,
+    activeProject: Project?,
+    agents: List<AgentState>,
+    activeChatTargetSlots: Set<AgentSlot>,
+    isTeamRunning: Boolean,
+    onClose: () -> Unit,
+) {
+    val accent = Color(node.accentColorArgb)
+    val activeTargets = agents.filter { it.config.slot in activeChatTargetSlots }
+    val workingAgents = agents.filter { it.isWorking }
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Color(0xFF0B1328).copy(alpha = 0.96f),
+        border = BorderStroke(1.2.dp, accent.copy(alpha = 0.65f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 300.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(14.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Agent3DOrbAvatar(icon = Icons.Default.Person, accent = accent, sizeDp = 44.dp)
+                Column(Modifier.weight(1f)) {
+                    Text(node.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("เจ้าของบริษัท · Company Owner", color = accent, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                }
+                OrqenStatusBadge(node.statusLabel, Color(0xFF22C55E))
+                IconButton(onClick = onClose, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF94A3B8), modifier = Modifier.size(18.dp))
+                }
+            }
+            DetailKeyValueRow("โปรเจกต์ที่กำลังเปิดอยู่", activeProject?.name ?: "-")
+            DetailKeyValueRow(
+                "สถานะการสื่อสาร",
+                when {
+                    activeTargets.isNotEmpty() -> "กำลังคุยกับ: ${activeTargets.joinToString(", ") { it.config.name }}"
+                    isTeamRunning && workingAgents.isNotEmpty() -> "กำลังติดตามงานของ: ${workingAgents.joinToString(", ") { it.config.name }}"
+                    else -> "ออนไลน์ · พร้อมสั่งงานทีม AI"
+                },
+            )
+            DetailKeyValueRow("สมาชิกทีมภายใต้โปรเจกต์นี้", "${agents.size} คน (${workingAgents.size} กำลังทำงาน)")
         }
     }
 }
