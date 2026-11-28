@@ -113,6 +113,7 @@ class AutonomousSupervisorEngine(
     private val providerConfigResolver: (providerId: String) -> com.jarves.mh.provider.core.ProviderConfig? = { null },
     private val supervisorModelPoolProvider: () -> List<ModelCandidate> = { emptyList() },
     private val unavailableProviders: () -> Set<String> = { emptySet() },
+    val resourceManager: com.jarves.mh.multiagent.runtime.AgentResourceManager? = null,
     private val advisor: SupervisorAdvisor = DeterministicNoOpAdvisor,
     private val hasPendingOwnerApproval: (taskId: String) -> Boolean = { tid ->
         collabStore.listApprovalsForTask(tid).any { it.status == ApprovalStatus.PENDING }
@@ -720,13 +721,23 @@ class AutonomousSupervisorEngine(
                         step.dependencies.all { it in completedIds }
                 }
 
-                // Execute independent non-review subtasks concurrently up to team.maxConcurrentAgents
+                // Resource-aware adaptive concurrency: scales dynamically under device memory/CPU
+                // pressure without permanently reducing the user's configured team size.
+                var adaptiveLimit = resourceManager?.recommendedConcurrency(team.maxConcurrentAgents)
+                    ?: team.maxConcurrentAgents
+                if (adaptiveLimit <= 0 && resourceManager != null) {
+                    resourceManager.triggerMemoryRelief()
+                    kotlinx.coroutines.delay(250L)
+                    adaptiveLimit = resourceManager.recommendedConcurrency(team.maxConcurrentAgents).coerceAtLeast(1)
+                }
+
+                // Execute independent non-review subtasks concurrently up to adaptiveLimit
                 // across distinct coding agents (FileLockManager enforces per-file write safety at runtime!)
-                val parallelBatch = if (runnableSteps.size > 1 && team.maxConcurrentAgents > 1) {
+                val parallelBatch = if (runnableSteps.size > 1 && adaptiveLimit > 1) {
                     val seenAgents = mutableSetOf<String>()
                     val selected = mutableListOf<TaskStepEntity>()
                     for (s in runnableSteps) {
-                        if (selected.size >= team.maxConcurrentAgents) break
+                        if (selected.size >= adaptiveLimit) break
                         if (s.requiresReview) continue
                         if (taskStore.findIdempotency(s.idempotencyKey) != null) continue
                         if (s.assignedAgentId in seenAgents) continue

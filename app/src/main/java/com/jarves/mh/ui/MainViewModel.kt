@@ -179,6 +179,14 @@ data class DeveloperDiagnostics(
     val appPssBytes: Long = 0L,
     val javaHeapBytes: Long = 0L,
     val javaHeapMaxBytes: Long = 0L,
+    val nativeHeapBytes: Long = 0L,
+    val graphicsMemoryBytes: Long = 0L,
+    val activeThreadCount: Int = 0,
+    val runningProotProcesses: Int = 0,
+    val responseCacheBytes: Long = 0L,
+    val gcCount: Long = 0L,
+    val memoryPressureLevel: String = "NORMAL",
+    val adaptiveConcurrencyLimit: Int = 4,
     val activeProcesses: List<String> = emptyList(),
     val messageCount: Int = 0,
     val liveActivityCount: Int = 0,
@@ -802,6 +810,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             },
         )
     }
+    val resourceManager = com.jarves.mh.multiagent.runtime.AgentResourceManager()
+
     val autonomousSupervisorEngine: com.jarves.mh.multiagent.supervisor.AutonomousSupervisorEngine by lazy {
         com.jarves.mh.multiagent.supervisor.AutonomousSupervisorEngine(
             taskStore = orqenTaskStore,
@@ -814,6 +824,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 autoContinueAfterCheckpoint = true,
             ),
             mcpManager = mcpConnectionManager,
+            resourceManager = resourceManager,
             modelPoolProvider = {
                 val isAgySignedIn = _state.value.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN ||
                     _state.value.teamAgentAntigravityAuth.values.any { it.status == AntigravityAuthStatus.SIGNED_IN }
@@ -1607,10 +1618,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun onMemoryTrim(level: Int) {
+        resourceManager.onTrimMemory(level)
+        releaseMemoryCaches()
+    }
+
     /** Drops only rebuildable or already-persisted data when Android reports memory pressure. */
     fun releaseMemoryCaches() {
         folderMetadataCache.clear()
         cachedRecentExitSummary = null
+        val activeTeamProjId = _state.value.activeTeamProject?.id
+        // Evict inactive project chats & terminals from RAM (all history remains persisted on disk).
+        val inactiveChatKeys = teamProjectChats.keys.filter { it != activeTeamProjId }
+        inactiveChatKeys.forEach { teamProjectChats.remove(it) }
+        if (activeTeamProjId != null) {
+            teamProjectChats[activeTeamProjId]?.let { msgs ->
+                if (msgs.size > 120) {
+                    val trimmed = msgs.takeLast(120).toMutableList()
+                    teamProjectChats[activeTeamProjId] = trimmed
+                }
+            }
+        }
+        val inactiveTermKeys = teamProjectTerminals.keys.filter { it != activeTeamProjId }
+        inactiveTermKeys.forEach { teamProjectTerminals.remove(it) }
+        // Trim AI response cache and inactive project memory caches.
+        val pressure = resourceManager.currentPressureLevel()
+        if (pressure == com.jarves.mh.multiagent.runtime.MemoryPressureLevel.CRITICAL) {
+            teamAgentRunner.clearResponseCache()
+        } else {
+            teamAgentRunner.trimCacheToBytes(512L * 1024L)
+        }
+        teamAgentRunner.reapDeadProcesses()
+        runCatching { autonomousSupervisorEngine.memoryManager.trimInMemoryCache(keepProjectId = activeTeamProjId) }
         _state.update { current ->
             current.copy(
                 projectTerminalLines = current.projectTerminalLines.takeLast(MEMORY_PRESSURE_TERMINAL_LINES),
@@ -1625,8 +1664,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun collectDeveloperDiagnostics(): DeveloperDiagnostics {
         val current = _state.value
-        val memory = Debug.MemoryInfo().also(Debug::getMemoryInfo)
-        val runtime = Runtime.getRuntime()
+        val snap = resourceManager.captureSnapshot(
+            configuredMaxAgents = current.teamAgents.count { it.config.isEnabled }.coerceAtLeast(1),
+            runningProotProcesses = teamAgentRunner.activeProcessCount(),
+            responseCacheBytes = teamAgentRunner.cacheBytes(),
+        )
         val active = buildList {
             if (current.isRunning) add(current.agentKind.title)
             if (current.projectTerminalRunning || projectTerminalProcess?.isAlive == true) add(str(R.string.an_process_project_terminal))
@@ -1639,9 +1681,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .filter { it.isFile && it.name.startsWith("runtime-output-") }
             .sumOf(File::length)
         return DeveloperDiagnostics(
-            appPssBytes = memory.totalPss.toLong() * 1_024L,
-            javaHeapBytes = runtime.totalMemory() - runtime.freeMemory(),
-            javaHeapMaxBytes = runtime.maxMemory(),
+            appPssBytes = snap.pssBytes,
+            javaHeapBytes = snap.javaHeapUsedBytes,
+            javaHeapMaxBytes = snap.javaHeapMaxBytes,
+            nativeHeapBytes = snap.nativeHeapBytes,
+            graphicsMemoryBytes = snap.graphicsMemoryBytes,
+            activeThreadCount = snap.activeThreadCount,
+            runningProotProcesses = snap.runningProotProcesses,
+            responseCacheBytes = snap.responseCacheBytes,
+            gcCount = snap.gcCount,
+            memoryPressureLevel = snap.pressureLevel.name,
+            adaptiveConcurrencyLimit = snap.adaptiveConcurrencyLimit,
             activeProcesses = active,
             messageCount = current.messages.size,
             liveActivityCount = current.liveProcess.size,
@@ -1652,7 +1702,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             fileEntries = current.workspaceFiles.size,
             runtimeCacheBytes = runtimeCache,
             recentExit = recentAppExitSummary(),
-            refreshedAtMillis = System.currentTimeMillis(),
+            refreshedAtMillis = snap.capturedAtMs,
         )
     }
 
@@ -9286,23 +9336,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         append("รายการนี้มีผลกระทบสำคัญ กรุณายืนยันก่อนดำเนินการ: ${approvalNotes.joinToString(", ")}")
                     }
                 }
-                val lines = finalReply.lines()
-                if (lines.size > 1) {
-                    val step = (lines.size / 10).coerceAtLeast(1)
-                    var shown = step
-                    while (shown < lines.size) {
-                        val partial = lines.take(shown).joinToString("\n")
-                        _state.update {
-                            it.copy(
-                                teamStreamingAgentName = responder.config.name,
-                                teamStreamingAgentSlot = responder.config.slot,
-                                teamStreamingText = partial,
-                            )
-                        }
-                        delay(50L)
-                        shown += step
-                    }
-                }
+                // Avoid O(N^2) intermediate string copies and 10x full AppUiState recompositions:
+                // post the completed reply directly in a single atomic state update.
                 _state.update {
                     if (it.teamStreamingAgentSlot == responder.config.slot) {
                         it.copy(

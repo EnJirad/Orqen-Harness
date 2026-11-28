@@ -77,8 +77,8 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
-            mainViewModel.releaseMemoryCaches()
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE) {
+            mainViewModel.onMemoryTrim(level)
         }
     }
 }

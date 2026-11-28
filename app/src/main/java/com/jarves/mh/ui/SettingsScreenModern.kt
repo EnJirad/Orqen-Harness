@@ -870,6 +870,11 @@ private fun DeveloperDiagnosticsContent(
             stringResource(R.string.diagnostics_java_heap),
             "${formatDiagnosticBytes(diagnostics.javaHeapBytes)} / ${formatDiagnosticBytes(diagnostics.javaHeapMaxBytes)}",
         )
+        RuntimeInfoRow("Native Heap", formatDiagnosticBytes(diagnostics.nativeHeapBytes))
+        RuntimeInfoRow("Graphics Memory", formatDiagnosticBytes(diagnostics.graphicsMemoryBytes))
+        RuntimeInfoRow("Memory Pressure", "${diagnostics.memoryPressureLevel} (max ${diagnostics.adaptiveConcurrencyLimit} agents)")
+        RuntimeInfoRow("Active Threads / PRoot", "${diagnostics.activeThreadCount} threads · ${diagnostics.runningProotProcesses} PRoot")
+        RuntimeInfoRow("AI Response Cache / GC", "${formatDiagnosticBytes(diagnostics.responseCacheBytes)} · ${diagnostics.gcCount} GC")
     }
     DiagnosticsCard(stringResource(R.string.diagnostics_processes)) {
         Text(

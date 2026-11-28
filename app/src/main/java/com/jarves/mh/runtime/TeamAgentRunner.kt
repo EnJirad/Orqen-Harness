@@ -56,14 +56,40 @@ class TeamAgentRunner(
         val cachedAtMs: Long,
     )
 
-    private val localResponseCache = object : LinkedHashMap<String, CachedTurnEntry>(48, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedTurnEntry>?): Boolean = size > 40
-    }
+    private val localResponseCache = com.jarves.mh.multiagent.runtime.ByteBoundedLruCache<String, CachedTurnEntry>(
+        maxBytes = 2L * 1024L * 1024L,
+        ttlMs = 10L * 60_000L,
+        sizeOf = { key, entry ->
+            (key.length.toLong() + entry.result.responseText.length.toLong()) * 2L + 128L
+        },
+    )
 
     private val activeProcesses = java.util.concurrent.ConcurrentHashMap<String, Process>()
 
     fun clearResponseCache() {
-        synchronized(localResponseCache) { localResponseCache.clear() }
+        localResponseCache.clear()
+    }
+
+    fun cacheBytes(): Long = localResponseCache.currentBytes()
+
+    fun trimCacheToBytes(targetBytes: Long): Int = localResponseCache.trimToBytes(targetBytes)
+
+    fun activeProcessCount(): Int {
+        reapDeadProcesses()
+        return activeProcesses.size
+    }
+
+    fun reapDeadProcesses(): Int {
+        var reaped = 0
+        val it = activeProcesses.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (!e.value.isAlive) {
+                it.remove()
+                reaped++
+            }
+        }
+        return reaped
     }
 
     fun cancelRequest(requestId: String): Boolean {
@@ -141,8 +167,8 @@ class TeamAgentRunner(
         } else null
 
         if (cacheKey != null) {
-            val hit = synchronized(localResponseCache) { localResponseCache[cacheKey] }
-            if (hit != null && (System.currentTimeMillis() - hit.cachedAtMs) < 10 * 60_000L) {
+            val hit = localResponseCache.get(cacheKey)
+            if (hit != null) {
                 onProgress("Cache hit (0 tokens used)")
                 return@withContext hit.result
             }
@@ -240,9 +266,7 @@ class TeamAgentRunner(
         }
 
         if (cacheKey != null && !result.isError && result.writtenFiles.isEmpty()) {
-            synchronized(localResponseCache) {
-                localResponseCache[cacheKey] = CachedTurnEntry(result, System.currentTimeMillis())
-            }
+            localResponseCache.put(cacheKey, CachedTurnEntry(result, System.currentTimeMillis()))
         }
         result
     }

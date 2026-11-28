@@ -75,6 +75,8 @@ class HierarchicalMemoryManager(
         """([A-Za-z0-9_\-./]+\.(?:kt|java|xml|html|css|js|ts|tsx|jsx|json|py|md|gradle|kts|yml|yaml|sql|sh))""",
         RegexOption.IGNORE_CASE,
     )
+    private val cacheLock = Any()
+    private val structuredCache = LinkedHashMap<String, List<StructuredMemoryEntry>>(16, 0.75f, true)
 
     // ==================== 5-SCOPE STRUCTURED MEMORY API ====================
 
@@ -286,9 +288,12 @@ class HierarchicalMemoryManager(
     }
 
     private fun loadProjectEntries(projectId: String): List<StructuredMemoryEntry> {
+        synchronized(cacheLock) {
+            structuredCache[projectId]?.let { return it }
+        }
         val draft = store.getChatDraft("$MEMORY_INDEX_PREFIX$projectId") ?: return emptyList()
         if (draft.draftText.isBlank()) return emptyList()
-        return runCatching {
+        val parsed = runCatching {
             val arr = JSONArray(draft.draftText)
             buildList {
                 for (i in 0 until arr.length()) {
@@ -324,9 +329,20 @@ class HierarchicalMemoryManager(
                 }
             }
         }.getOrDefault(emptyList())
+        synchronized(cacheLock) {
+            structuredCache[projectId] = parsed
+            while (structuredCache.size > MAX_CACHED_PROJECTS) {
+                val eldest = structuredCache.keys.firstOrNull() ?: break
+                structuredCache.remove(eldest)
+            }
+        }
+        return parsed
     }
 
     private fun saveProjectEntries(projectId: String, entries: List<StructuredMemoryEntry>) {
+        synchronized(cacheLock) {
+            structuredCache[projectId] = entries.toList()
+        }
         val arr = JSONArray()
         entries.forEach { e ->
             arr.put(
@@ -527,11 +543,29 @@ class HierarchicalMemoryManager(
 
     fun estimateTokens(text: String): Int = if (text.isEmpty()) 0 else (text.length / 4).coerceAtLeast(1)
 
+    /**
+     * Evicts in-memory project memory caches under memory pressure while keeping
+     * all structured memories durably persisted in [OrqenTaskStore] for lazy reload.
+     */
+    fun trimInMemoryCache(keepProjectId: String? = null): Int = synchronized(cacheLock) {
+        if (keepProjectId == null) {
+            val count = structuredCache.size
+            structuredCache.clear()
+            return@synchronized count
+        }
+        val toRemove = structuredCache.keys.filter { it != keepProjectId }
+        toRemove.forEach { structuredCache.remove(it) }
+        toRemove.size
+    }
+
+    fun inMemoryProjectCount(): Int = synchronized(cacheLock) { structuredCache.size }
+
     companion object {
         private const val MEMORY_INDEX_PREFIX = "orqen_mem_v1:"
         private const val MIN_LEARNING_CHARS = 24
         private const val MAX_ENTRY_CONTENT_CHARS = 1_200
         private const val MAX_ENTRIES_PER_PROJECT = 160
+        private const val MAX_CACHED_PROJECTS = 8
         private const val MAX_PROJECT_MEMORY_CHARS = 8_000
         private const val MAX_TASK_MEMORY_CHARS = 6_000
         private const val MAX_CONVERSATION_SUMMARY_CHARS = 6_000
