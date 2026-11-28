@@ -31,6 +31,9 @@ class OrqenTaskDatabaseHelper(
         super.onConfigure(db)
         if (!db.isReadOnly) {
             runCatching { db.setForeignKeyConstraintsEnabled(true) }
+            runCatching { db.enableWriteAheadLogging() }
+            runCatching { db.rawQuery("PRAGMA busy_timeout = 10000", null).close() }
+            runCatching { db.rawQuery("PRAGMA synchronous = NORMAL", null).close() }
         }
     }
 
@@ -749,6 +752,19 @@ class OrqenTaskDatabaseHelper(
     companion object {
         const val DATABASE_NAME = "orqen_autonomous_tasks.db"
         const val DATABASE_VERSION = 8
+        private val instances = java.util.concurrent.ConcurrentHashMap<String, OrqenTaskDatabaseHelper>()
+
+        /**
+         * Process-wide singleton per database name so UI, AI Team workers, CollaborationStore,
+         * McpStore, and background JobScheduler recovery all share one serialized SQLite connection
+         * pool instead of competing across multiple file connections (prevents SQLITE_BUSY).
+         */
+        fun getInstance(context: Context, dbName: String = DATABASE_NAME): OrqenTaskDatabaseHelper {
+            val appCtx = context.applicationContext
+            return instances[dbName] ?: synchronized(instances) {
+                instances.getOrPut(dbName) { OrqenTaskDatabaseHelper(appCtx, dbName) }
+            }
+        }
     }
 }
 
@@ -756,20 +772,30 @@ class SqliteOrqenTaskStore(
     private val dbHelper: OrqenTaskDatabaseHelper,
 ) : OrqenTaskStore {
 
-    constructor(context: Context) : this(OrqenTaskDatabaseHelper(context))
+    constructor(context: Context) : this(OrqenTaskDatabaseHelper.getInstance(context))
 
     override val schemaVersion: Int
         get() = OrqenTaskDatabaseHelper.DATABASE_VERSION
 
     override fun <T> runInTransaction(block: () -> T): T {
-        val db = dbHelper.writableDatabase
-        db.beginTransaction()
-        return try {
-            val result = block()
-            db.setTransactionSuccessful()
-            result
-        } finally {
-            db.endTransaction()
+        val retryDelaysMs = longArrayOf(50L, 150L, 350L, 700L)
+        var attempt = 0
+        while (true) {
+            try {
+                val db = dbHelper.writableDatabase
+                db.beginTransactionNonExclusive()
+                return try {
+                    val result = block()
+                    db.setTransactionSuccessful()
+                    result
+                } finally {
+                    db.endTransaction()
+                }
+            } catch (err: android.database.sqlite.SQLiteDatabaseLockedException) {
+                if (attempt >= retryDelaysMs.size) throw err
+                Thread.sleep(retryDelaysMs[attempt])
+                attempt++
+            }
         }
     }
 

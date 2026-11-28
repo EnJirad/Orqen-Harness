@@ -19,7 +19,7 @@ class SqliteCollaborationStore(
     private val dbHelper: OrqenTaskDatabaseHelper,
 ) : CollaborationStore {
 
-    constructor(context: Context) : this(OrqenTaskDatabaseHelper(context))
+    constructor(context: Context) : this(OrqenTaskDatabaseHelper.getInstance(context))
 
     /**
      * P0 Fix: UPDATE-then-INSERT upsert avoids SQLite `CONFLICT_REPLACE` (`INSERT OR REPLACE`)

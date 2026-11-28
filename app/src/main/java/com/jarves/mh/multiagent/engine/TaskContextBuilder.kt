@@ -88,6 +88,12 @@ object TaskContextBuilder {
 
         return buildString {
             appendLine(envelope.renderEnvelopeText())
+            appendLine("## Autonomous Goal-Driven Teamwork Protocol (Shared Blackboard)")
+            appendLine("- IMMUTABLE GOAL ANCHOR: Every architectural decision, code change, and review MUST directly advance the Owner's goal (`${task.title}`).")
+            appendLine("- INDEPENDENT CRITICAL THINKING: Think independently as a senior specialist. Inspect real workspace files before assuming anything, flag edge cases or design flaws early, and never blindly approve broken or incomplete work.")
+            appendLine("- BLACKBOARD DISCIPLINE: Coordinate through verified artifacts, file paths, and concise summaries rather than redundant chatter. Respect file locks and teammate deliverables.")
+            appendLine("- TWO-TIER SELF-CHECK: Verify both deterministic correctness (compiles, tests/checks pass) and semantic quality (matches user intent, clean architecture, zero regressions) before marking your step complete.")
+            appendLine()
             if (project.projectMemory.isNotBlank()) {
                 appendLine("## Project Memory (${project.projectName})")
                 appendLine(project.projectMemory.take(800))

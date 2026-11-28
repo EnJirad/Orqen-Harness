@@ -741,7 +741,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         com.jarves.mh.runtime.TeamAgentRunner(getApplication(), installer, providerManager, skillManager = skillManager)
     }
     private val orqenDbHelper by lazy {
-        com.jarves.mh.multiagent.persistence.OrqenTaskDatabaseHelper(getApplication())
+        com.jarves.mh.multiagent.persistence.OrqenTaskDatabaseHelper.getInstance(getApplication())
     }
     private val orqenTaskStore by lazy {
         com.jarves.mh.multiagent.persistence.SqliteOrqenTaskStore(orqenDbHelper)
